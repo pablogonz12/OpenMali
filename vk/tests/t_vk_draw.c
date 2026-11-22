@@ -128,7 +128,7 @@ case_skipped(const char *n)
    } while (0)
 
 #define DEV_FNS(X)                                                                                 \
-   X(DestroyDevice) X(GetDeviceQueue) X(AllocateMemory) X(FreeMemory) X(MapMemory) X(UnmapMemory) X(InvalidateMappedMemoryRanges)  \
+   X(DestroyDevice) X(GetDeviceQueue) X(AllocateMemory) X(FreeMemory) X(MapMemory) X(UnmapMemory) X(InvalidateMappedMemoryRanges) X(FlushMappedMemoryRanges)  \
    X(CreateFence) X(DestroyFence) X(WaitForFences) X(ResetFences) X(QueueSubmit) X(DeviceWaitIdle)  \
    X(CreateImage) X(DestroyImage) X(GetImageMemoryRequirements) X(BindImageMemory)                  \
    X(CreateImageView) X(DestroyImageView) X(GetImageSubresourceLayout) X(CreateBuffer)             \
@@ -2046,6 +2046,15 @@ alpha_hist(const char *tag, struct scene *s)
           tag, b[0], b[1], b[2], b[3], b[4], b[5]);
 }
 
+/* the colour readback memory is only HOST_VISIBLE: make the GPU's writes visible to the host mapping before it is read */
+static void
+inval_col(struct scene *s)
+{
+   VkMappedMemoryRange mmr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = s->colmem, .offset = 0,
+                              .size = VK_WHOLE_SIZE};
+   InvalidateMappedMemoryRanges(dev, 1, &mmr);
+}
+
 /* Does loadOp LOAD restore every sample? pass 1 clears and draws A (store, resolve), pass 2 LOADs with no
  * draw at all and stores/resolves again: coverage must be identical to pass 1. This isolates the preload
  * from the second draw, so a shortfall is the per-sample restore and not geometry or depth. */
@@ -2063,20 +2072,27 @@ load_roundtrip(const char *name)
    VkFence f;
    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
    CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   g_hostread = 1;   /* colour-write -> HOST_READ dependency in scene_draw: the coverage is read through the mapping */
    int ok = scene_create(&s, 0);
    g_load = 0;
+   if (ok) {   /* known destination: the resolve target must not hold stale nonzero alpha that could fake coverage */
+      memset(s.px, 0, (size_t)s.pitch * H);
+      VkMappedMemoryRange z = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = s.colmem, .offset = 0,
+                               .size = VK_WHOLE_SIZE};
+      FlushMappedMemoryRanges(dev, 1, &z);
+   }
    float AB[1][4] = {{1, 0, -.5f, 0}};
    uint32_t c1 = 0, c2 = 0;
    if (ok) ok = scene_draw(&s, 1, AB, f);          /* pass 1: clear + A, stored and resolved */
-   if (ok) c1 = count_cov(&s);
+   if (ok) { inval_col(&s); c1 = count_cov(&s); }
    /* The deferred resolve (storeOp STORE + resolve attachment) used to read a 0x0 region and copy nothing, so c1 was
     * 0 and the c1==c2==c3 compares below were 0 == 0. A pass that rendered nothing is a failure, not a match. */
-   CHECK(c1 > 1000, "%s: coverage %u - the MSAA store/resolve path produced no pixels (vacuous compare)", name, c1);
+   CHECK(g_fake || c1 > 1000, "%s: coverage %u - the MSAA store/resolve path produced no pixels (vacuous compare)", name, c1);
    if (!g_fake) alpha_hist("after_pass1", &s);
    s.second = 1;
    if (ok) ok = scene_draw(&s, 0, AB, f);          /* pass 2: LOAD, no draws, store + resolve */
    s.second = 0;
-   if (ok) c2 = count_cov(&s);
+   if (ok) { inval_col(&s); c2 = count_cov(&s); }
    if (!g_fake) alpha_hist("after_load_no_draw", &s);
    /* stage 3: LOAD then DRAW a triangle that covers nothing new (the same A again): if the draw drops the samples
     * the preload restored, coverage falls here; if it keeps them, coverage is unchanged and the loss in the real
@@ -2085,7 +2101,7 @@ load_roundtrip(const char *name)
    if (ok) ok = scene_draw(&s, 1, AB, f);
    s.second = 0;
    uint32_t c3 = 0;
-   if (ok) c3 = count_cov(&s);
+   if (ok) { inval_col(&s); c3 = count_cov(&s); }
    if (!g_fake) alpha_hist("after_load_and_same_draw", &s);
    if (ok) {
       if (g_fake) {
@@ -2097,6 +2113,7 @@ load_roundtrip(const char *name)
                 name, c1, c2, c3, c1 == c2 && c1 == c3 ? "true" : "false");
       }
    }
+   g_hostread = 0;
    scene_destroy(&s);
    DestroyFence(dev, f, NULL);
    g_msaa = 0;
