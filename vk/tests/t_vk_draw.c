@@ -1041,6 +1041,109 @@ br_destroy(struct br_res *r)
    }
 }
 
+/* Degradation rows: three legal-Vulkan recordings that a compositor (zink / ANGLE / CEF) makes and that used to
+ * poison the whole command buffer with VK_ERROR_FEATURE_NOT_PRESENT at vkEndCommandBuffer. Each sub-case records a
+ * clear-only frame (no pipeline needed) and reports the vkEndCommandBuffer result, which is the failing-first signal:
+ *  a nullslot  - colourAttachmentCount 2 with the second view null (zink always emits N slots)
+ *  b msaa      - 4x MSAA colour pass with a vkCmdClearAttachments colour clear inside it (+ resolve target)
+ *  c rt1       - vkCmdClearAttachments naming colorAttachment 1 while only RT0 is bound (degrades, must not fail)
+ * Pixel contents need a device; the recording result is what the host fake can decide. */
+static int
+test_degrade(const char *name)
+{
+   static const struct { VkFormat f; VkSampleCountFlagBits s; int nullslot, msaa, rt1; const char *what; } cfg[] = {
+      {VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, 1, 0, 0, "nullslot"},
+      {VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_4_BIT, 0, 1, 0, "msaa-clear"},
+      {VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, 0, 0, 1, "clear-rt1"},
+   };
+   const unsigned w = 32, h = 32;
+   int bad = 0;
+   for (unsigned k = 0; k < sizeof cfg / sizeof cfg[0]; k++) {
+      VkImage im = VK_NULL_HANDLE, res = VK_NULL_HANDLE;
+      VkDeviceMemory mem = VK_NULL_HANDLE, rmem = VK_NULL_HANDLE;
+      VkImageView iv = VK_NULL_HANDLE, rv = VK_NULL_HANDLE;
+      VkCommandPool pool = VK_NULL_HANDLE;
+      VkCommandBuffer cb = VK_NULL_HANDLE;
+      if (cfg[k].msaa && !(g_fbcounts & VK_SAMPLE_COUNT_4_BIT)) {   /* MALI_EXPERIMENTAL_MSAA=0: not advertised */
+         printf("{\"test\":\"%s\",\"case\":\"%s\",\"skipped\":\"4x not supported\",\"ok\":true}\n", name, cfg[k].what);
+         continue;
+      }
+      VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+                              .format = cfg[k].f, .extent = {w, h, 1}, .mipLevels = 1, .arrayLayers = 1,
+                              .samples = cfg[k].s, .tiling = VK_IMAGE_TILING_LINEAR,
+                              .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+      VkMemoryRequirements mr;
+      VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+      if (CreateImage(dev, &ii, NULL, &im) != VK_SUCCESS) { g_fail = 1; break; }
+      GetImageMemoryRequirements(dev, im, &mr);
+      ai.allocationSize = mr.size; ai.memoryTypeIndex = (uint32_t)memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+      if (AllocateMemory(dev, &ai, NULL, &mem) != VK_SUCCESS || BindImageMemory(dev, im, mem, 0) != VK_SUCCESS) { g_fail = 1; break; }
+      VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = im, .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                  .format = cfg[k].f, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+      if (CreateImageView(dev, &vi, NULL, &iv) != VK_SUCCESS) { g_fail = 1; break; }
+      if (cfg[k].msaa) {   /* the resolve target a 4x pass must have */
+         VkImageCreateInfo ri2 = ii;
+         ri2.samples = VK_SAMPLE_COUNT_1_BIT;
+         ri2.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+         if (CreateImage(dev, &ri2, NULL, &res) != VK_SUCCESS) { g_fail = 1; break; }
+         GetImageMemoryRequirements(dev, res, &mr);
+         ai.allocationSize = mr.size; ai.memoryTypeIndex = (uint32_t)memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+         if (AllocateMemory(dev, &ai, NULL, &rmem) != VK_SUCCESS || BindImageMemory(dev, res, rmem, 0) != VK_SUCCESS) { g_fail = 1; break; }
+         VkImageViewCreateInfo rvi = vi;
+         rvi.image = res;
+         if (CreateImageView(dev, &rvi, NULL, &rv) != VK_SUCCESS) { g_fail = 1; break; }
+      }
+      VkRenderingAttachmentInfo att[2];
+      memset(att, 0, sizeof att);
+      att[0] = (VkRenderingAttachmentInfo){.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = iv,
+                                          .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                          .resolveMode = cfg[k].msaa ? VK_RESOLVE_MODE_AVERAGE_BIT : VK_RESOLVE_MODE_NONE,
+                                          .resolveImageView = rv, .resolveImageLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                          .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+      att[1] = (VkRenderingAttachmentInfo){.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = VK_NULL_HANDLE,
+                                          .imageLayout = VK_IMAGE_LAYOUT_GENERAL, .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                                          .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE};
+      VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {w, h}}, .layerCount = 1,
+                            .colorAttachmentCount = cfg[k].nullslot ? 2u : 1u, .pColorAttachments = att};
+      VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+      VkCommandBufferAllocateInfo cai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                                         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+      VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+      VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+      VkFence fence = VK_NULL_HANDLE;
+      if (CreateCommandPool(dev, &pci, NULL, &pool) != VK_SUCCESS) { g_fail = 1; break; }
+      cai.commandPool = pool;
+      if (AllocateCommandBuffers(dev, &cai, &cb) != VK_SUCCESS || BeginCommandBuffer(cb, &bi) != VK_SUCCESS) { g_fail = 1; break; }
+      CmdBeginRendering(cb, &ri);
+      if (cfg[k].msaa || cfg[k].rt1) {
+         VkClearAttachment ca = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .colorAttachment = cfg[k].rt1 ? 1u : 0u};
+         ca.clearValue.color.float32[0] = 0.25f; ca.clearValue.color.float32[1] = 0.5f;
+         ca.clearValue.color.float32[2] = 0.75f; ca.clearValue.color.float32[3] = 1.0f;
+         VkClearRect cr = {.rect = {{0, 0}, {w / 2, h / 2}}, .baseArrayLayer = 0, .layerCount = 1};   /* a sub-rectangle too: the quad path */
+         CmdClearAttachments(cb, 1, &ca, 1, &cr);
+      }
+      CmdEndRendering(cb);
+      VkResult er = EndCommandBuffer(cb);
+      printf("{\"test\":\"%s\",\"case\":\"%s\",\"vkenv_result\":%d,\"ok\":%s}\n", name, cfg[k].what, (int)er,
+             er == VK_SUCCESS ? "true" : "false");
+      if (er != VK_SUCCESS) {
+         printf("FAIL  %s: vkEndCommandBuffer returned %d (a legal frame must not be refused)\n", cfg[k].what, (int)er);
+         bad = 1;
+      }
+      (void)CreateFence(dev, &fi, NULL, &fence);
+      if (fence) DestroyFence(dev, fence, NULL);
+      if (pool) DestroyCommandPool(dev, pool, NULL);
+      if (rv) DestroyImageView(dev, rv, NULL);
+      if (iv) DestroyImageView(dev, iv, NULL);
+      if (res) DestroyImage(dev, res, NULL);
+      if (im) DestroyImage(dev, im, NULL);
+      if (rmem) FreeMemory(dev, rmem, NULL);
+      if (mem) FreeMemory(dev, mem, NULL);
+   }
+   g_fail |= bad;
+   return !bad;
+}
+
 /* one pass into an image: CLEAR blue (the earlier submission's source) or the frame's own DONT_CARE pass */
 static int
 br_pass(struct br_res *r, VkCommandBuffer cb, int src, VkPipeline pipe, int variant)
@@ -3217,6 +3320,7 @@ main(int argc, char **argv)
       if (g_feat.multiViewport) ok &= test_mode("multivp", MODE_MVP, 8192.0, 0.5);
       else printf("{\"test\":\"multivp\",\"skipped\":\"multiViewport not advertised\",\"ok\":true}\n");
    }
+   if (ok && CASE_ON("degrade")) ok &= test_degrade("degrade");
    if (ok && CASE_ON("clearatt")) ok &= test_mode("clearatt", MODE_CLEARATT, 0, 0);
    if (ok && CASE_ON("clearquad")) ok &= test_mode("clearquad", MODE_CLEARQUAD, 0, 0);
    if (ok && CASE_ON("clearquad_zs")) { g_clearzs = 1; ok &= test_mode("clearquad_zs", MODE_CLEARQUAD, 0, 0); g_clearzs = 0; }

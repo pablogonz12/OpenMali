@@ -56,6 +56,31 @@ unsupported(struct mali_cmd_buffer *cmd, const char *what)
    vk_command_buffer_set_error(&cmd->vk, VK_ERROR_FEATURE_NOT_PRESENT);
 }
 
+/* Legal-but-unimplemented state: render the closest legal thing, log ONE line, do not poison the command buffer.
+ * PanVK's only vk_command_buffer_set_error is OOM (panvk_vX_cmd_desc_state.c:82); illegal state is UNREACHABLE and
+ * unimplemented-but-legal state is emitted best-effort or the draw is skipped. One refused call used to make
+ * vkEndCommandBuffer return VK_ERROR_FEATURE_NOT_PRESENT, which zink turns into GL_CONTEXT_LOST: Chromium then
+ * reports "Disabling GPU acceleration: Disabled/RuntimeDetect" and Steam's CEF compositor loses the GPU for the
+ * whole session (cef-gpu-cmf.md). Three classes (audit-refusals.md "Sticky-error policy"):
+ *   - corrupting (wrong shader/pipeline, no index buffer, a clear we cannot express): unsupported(), sticky;
+ *   - degradable (extra colour attachments, a clear of an attachment we do not render, MSAA->1x, exotic blend):
+ *     degrade(), log once, continue with the closest legal behaviour;
+ *   - app bugs (draw outside a pass, End inside one): unsupported(), sticky - the layers report them anyway. */
+static void
+degrade(struct mali_cmd_buffer *cmd, const char *what)
+{
+   static const char *seen[16];
+   static unsigned nseen;
+   bool first = false, found = false;
+   for (unsigned i = 0; i < nseen; i++)
+      if (seen[i] == what || (seen[i] && !strcmp(seen[i], what)))
+         found = true;
+   if (!found && nseen < sizeof seen / sizeof seen[0]) { seen[nseen++] = what; first = true; }
+   if (first && getenv("MALI_PIPE_DBG"))
+      fprintf(stderr, "mali_cmd: degraded: %s (the frame continues)\n", what);
+   (void)cmd;
+}
+
 /* M15: record a GPU write against this command buffer so the platform layer only CSYNCs BOs that changed
  * (vk/MEMORY.md). Over-subscribing is harmless; missing a write is stale data, so every write path calls this. */
 void
@@ -1042,15 +1067,22 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    f->area[1] = ri->renderArea.offset.y;
    f->area[2] = (int32_t)ri->renderArea.extent.width;
    f->area[3] = (int32_t)ri->renderArea.extent.height;
-   /* no colour attachment (depth/stencil only, or nothing at all): the frame gets a write-disabled dummy render target (as panvk's null RT) */
+   /* Count the non-null colour views only: a legal frame may name N slots and leave views null (zink always emits N),
+    * and must not lose the whole command buffer for it. We render the first non-null one and drop any others with one
+    * log line (real MRT is #358), never a sticky error. */
    bool no_col = true;
-   for (uint32_t i = 0; i < ri->colorAttachmentCount; i++)
-      if (ri->pColorAttachments[i].imageView) no_col = false;
-   if (!no_col && (ri->colorAttachmentCount != 1 || !ri->pColorAttachments[0].imageView)) {
-      unsupported(cmd, "need exactly one colour attachment");
-      return;
+   uint32_t c0 = 0, ncol = 0;
+   for (uint32_t i = 0; i < ri->colorAttachmentCount; i++) {
+      if (!ri->pColorAttachments[i].imageView)
+         continue;
+      if (no_col)
+         c0 = i;
+      no_col = false;
+      ncol++;
    }
-   const VkRenderingAttachmentInfo *ca = no_col ? NULL : &ri->pColorAttachments[0];
+   if (ncol > 1 || (ncol == 1 && c0 != 0))
+      degrade(cmd, "several colour attachment slots (rendering the first non-null one)");
+   const VkRenderingAttachmentInfo *ca = no_col ? NULL : &ri->pColorAttachments[c0];
    bool load = false;
    struct mali_preload_src psrc;
    memset(&psrc, 0, sizeof psrc);
@@ -1420,9 +1452,14 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
          if (!a)
             continue;
          bool zc = a & VK_IMAGE_ASPECT_DEPTH_BIT, sc = a & VK_IMAGE_ASPECT_STENCIL_BIT;
-         if ((zc && !f->has_zs) || (sc && !f->has_st) || f->samples != 1) {
-            unsupported(cmd, "CmdClearAttachments depth/stencil quad: no single-sampled attachment of that aspect");
-            return;
+         if ((zc && !f->has_zs) || (sc && !f->has_st)) {
+            degrade(cmd, "CmdClearAttachments of a depth/stencil aspect this pass does not have");
+            continue;
+         }
+         if (f->samples != 1) {
+            /* the depth/stencil quad writes one sample per fragment; at 4x that is not the clear Vulkan asks for */
+            degrade(cmd, "CmdClearAttachments depth/stencil inside a multisampled pass");
+            continue;
          }
          for (uint32_t r = 0; r < nr; r++) {
             if (rects[r].baseArrayLayer != 0 || rects[r].layerCount != 1) {
@@ -1468,16 +1505,19 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
          cmd->dirty = MALI_D_ALL;
          return;
       }
-      if (!f->has_colour || f->samples != 1) {
-         unsupported(cmd, "CmdClearAttachments quad: no single-sampled colour attachment");
+      if (!f->has_colour) {
+         degrade(cmd, "CmdClearAttachments colour quad without a colour attachment");
          return;
       }
+      /* Multisampled passes included: the constant-colour quad is an ordinary draw into the tile, so every sample of
+       * the covered pixels gets the clear colour, which is the clear (PanVK clears through its meta shaders the same
+       * way: panvk_vX_meta_clear draws the rect, it does not special-case samples). */
       for (uint32_t i = 0; i < na; i++) {
          if (!(att[i].aspectMask & VK_IMAGE_ASPECT_COLOR_BIT))
             continue;
          if (att[i].colorAttachment != 0) {
-            unsupported(cmd, "colour attachment index");
-            return;
+            degrade(cmd, "CmdClearAttachments of colour attachment > 0 (only RT0 is rendered)");
+            continue;
          }
          for (uint32_t r = 0; r < nr; r++) {
             if (rects[r].baseArrayLayer != 0 || rects[r].layerCount != 1) {
@@ -1509,8 +1549,8 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
    for (uint32_t i = 0; i < na; i++) {
       if (att[i].aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) {
          if (att[i].colorAttachment != 0) {
-            unsupported(cmd, "colour attachment index");
-            return;
+            degrade(cmd, "CmdClearAttachments of colour attachment > 0 (only RT0 is rendered)");
+            continue;
          }
          f->colour.clear = true;   /* a loadOp CLEAR patch of the FBD */
          memcpy(f->colour.clear_color, att[i].clearValue.color.float32, sizeof f->colour.clear_color);
