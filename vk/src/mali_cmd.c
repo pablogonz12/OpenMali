@@ -1264,8 +1264,13 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          const VkRenderingAttachmentInfo *cx = &ri->pColorAttachments[i];
          struct mali_cmd_target tx;
          memset(&tx, 0, sizeof tx);
-         if (g_res.image_view(cx->imageView, &tx) || tx.is_zs || tx.samples > 1 || tx.width != t.width || tx.height != t.height) {
-            unsupported(cmd, "colour attachment view (size / samples must match attachment 0)");
+         /* the view must COVER the render area, not match attachment 0's extent: a 128x128 RT0 and a 64x64 RT1 rendering a
+          * 64x64 area are legal (each target keeps its own row stride) */
+         const int32_t ax = f->area[0], ay = f->area[1];
+         const uint32_t aw = f->area[2] > 0 ? (uint32_t)f->area[2] : 1u, ah = f->area[3] > 0 ? (uint32_t)f->area[3] : 1u;
+         if (g_res.image_view(cx->imageView, &tx) || tx.is_zs || tx.samples > 1 || ax < 0 || ay < 0 ||
+             (uint32_t)ax + aw > tx.width || (uint32_t)ay + ah > tx.height) {
+            unsupported(cmd, "colour attachment view (smaller than the render area / samples must match attachment 0)");
             return;
          }
          if (is_load_op(cx->loadOp)) {
