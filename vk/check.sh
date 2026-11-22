@@ -260,6 +260,18 @@ for g in v11 v13; do
    run "vk_feat provoking $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only provoking
 done
 
+# shaderCullDistance, named so the gate cannot drop it: cull.vert (three thirds) separates the cull rule from the clip
+# rule - all three vertices negative vanishes, ONE negative vertex is drawn whole, and a clip distance in the same
+# shader still clips. The pixel assertion runs on hardware; the fake backend compiles and submits the draw, and the
+# case's limits assertion (maxCullDistances 8, combined >= clip) runs on both.
+for g in v11 v13; do
+   run "vk_feat cull $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only cull
+   # slot > 0: 3 clip + 3 cull distances (6 components), the cull decision made on the second slot. The FS reads the
+   # flags at the varying the VS reports; a load that counts the slot twice, or takes the base from the FS's
+   # num_inputs, makes the two stages disagree and mali_pipeline refuses the pipeline (this case fails, no pixels needed).
+   run "vk_feat cull2 $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only cull2
+done
+
 # M11: compute through the ICD (fake backend: compile, CS build and submit; results only on hardware).
 for g in v11 v13; do
    run "vk_compute $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_compute" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --loop 200
