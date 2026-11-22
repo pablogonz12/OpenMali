@@ -7,6 +7,7 @@
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <errno.h>
 #include <signal.h>
 #include <ucontext.h>
 #include <stdarg.h>
@@ -145,6 +146,8 @@ mali_trace_fatal(int sig, siginfo_t *si, void *ucv)
    ucontext_t *uc = ucv;
    int slot = mali_trace_slot(sig);
    struct sigaction *prev = slot >= 0 && mali_trace_have_prev[slot] ? &mali_trace_prev[slot] : NULL;
+   /* the interrupted code sees the errno it had before the fault, not ENOSPC/EIO from this diagnostic's own writes */
+   const int entry_errno = errno;
 
    /* a fault inside the logging (a damaged stack, an unmapped trace buffer) re-enters here: log nothing more, just chain */
    if (mali_trace_in_handler)
@@ -178,12 +181,31 @@ chain:
    mali_trace_in_handler = 0;
    /* the program's own handler: same arguments, same effect, and its return just returns */
    if (prev && prev->sa_handler != SIG_DFL) {
-      if (prev->sa_handler == SIG_IGN)
+      if (prev->sa_handler == SIG_IGN) {
+         errno = entry_errno;
          return;
-      if (prev->sa_flags & SA_SIGINFO)
-         prev->sa_sigaction(sig, si, ucv);
+      }
+      /* the kernel's protections for the previous handler are not applied to a handler we call ourselves: block its
+       * mask (and the signal itself unless it asked for SA_NODEFER) for the duration of the call */
+      struct sigaction p = *prev;
+      sigset_t block = p.sa_mask, old;
+      if (!(p.sa_flags & SA_NODEFER))
+         sigaddset(&block, sig);
+      sigprocmask(SIG_BLOCK, &block, &old);
+      /* a one-shot previous handler has already had its disposition reset by the kernel in the normal case: consume
+       * it here, or a re-raise inside it would call it again instead of taking the default action */
+      if (p.sa_flags & SA_RESETHAND) {
+         struct sigaction dfl = {.sa_handler = SIG_DFL};
+         sigemptyset(&dfl.sa_mask);
+         sigaction(sig, &dfl, NULL);
+         mali_trace_have_prev[slot] = false;
+      }
+      errno = entry_errno;
+      if (p.sa_flags & SA_SIGINFO)
+         p.sa_sigaction(sig, si, ucv);
       else
-         prev->sa_handler(sig);
+         p.sa_handler(sig);
+      sigprocmask(SIG_SETMASK, &old, NULL);
       return;
    }
    /* SIG_DFL: nothing else wanted this signal, so this one is fatal. backtrace() is not async-signal-safe, hence only here. */
@@ -220,9 +242,16 @@ mali_trace_init(void)
    }
    mali_trace("load %s", name);
    for (int i = 0; i < MALI_TRACE_NSIG; i++) {
-      struct sigaction sa = { .sa_sigaction = mali_trace_fatal, .sa_flags = SA_SIGINFO | SA_NODEFER };
+      /* SA_RESTART/SA_ONSTACK are properties of the installed action, so they have to be carried over or the
+       * replacement changes behaviour: a read() the program expected to restart would return EINTR, and a handler
+       * that needs the alternate stack would run on a possibly exhausted one */
+      mali_trace_have_prev[i] = sigaction(mali_trace_sigs[i], NULL, &mali_trace_prev[i]) == 0;
+      struct sigaction sa = { .sa_sigaction = mali_trace_fatal,
+                              .sa_flags = SA_SIGINFO | SA_NODEFER |
+                                          (mali_trace_prev[i].sa_flags & (SA_RESTART | SA_ONSTACK)) };
       sigemptyset(&sa.sa_mask);
-      mali_trace_have_prev[i] = sigaction(mali_trace_sigs[i], &sa, &mali_trace_prev[i]) == 0;
+      if (sigaction(mali_trace_sigs[i], &sa, NULL) != 0)
+         mali_trace_have_prev[i] = false;
    }
 }
 
@@ -234,6 +263,12 @@ mali_trace_fini(void)
    for (int i = 0; i < MALI_TRACE_NSIG; i++) {
       if (!mali_trace_have_prev[i])
          continue;
+      /* only while the disposition is still ours: a handler the program installed after dlopen() must survive */
+      struct sigaction cur;
+      if (sigaction(mali_trace_sigs[i], NULL, &cur) == 0 && cur.sa_sigaction != mali_trace_fatal) {
+         mali_trace_have_prev[i] = false;
+         continue;
+      }
       sigaction(mali_trace_sigs[i], &mali_trace_prev[i], NULL);
       mali_trace_have_prev[i] = false;
    }

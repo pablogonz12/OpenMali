@@ -113,6 +113,10 @@ child(const char *so, const char *path, int mode, int *termsig)
          install(SIGBUS, SA_SIGINFO | SA_NODEFER, (void *)jump_bus);
       } else if (mode == M_IGNORE) {
          install(SIGBUS, 0, (void *)SIG_IGN);
+      } else if (mode == M_NONE) {
+         /* with MALI_SAN=1 the sanitizer preloads its own SIGSEGV handler: reset it, so this case really exercises the
+          * default action instead of chaining into ASan (which exits normally with abort_on_error=0) */
+         install(SIGSEGV, 0, (void *)SIG_DFL);
       }
       void *lib = dlopen(so, RTLD_NOW | RTLD_LOCAL);
       if (!lib)
