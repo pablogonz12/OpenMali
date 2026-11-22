@@ -1094,16 +1094,18 @@ main(int argc, char **argv)
       /* advertising the extension is not enough: both EXT features have to be answered true, and
        * customBorderColorWithoutFormat decides whether the custom colour may be used with a format-less
        * request (we pass a real format, so it is not needed, but asking for it ungated would be invalid) */
-      PFN_vkGetPhysicalDeviceFeatures2KHR gpf2 =
-         (PFN_vkGetPhysicalDeviceFeatures2KHR)gipa(inst, "vkGetPhysicalDeviceFeatures2KHR");
+      /* the core 1.1 command: this instance requests 1.1 and enables no instance extension, so the KHR alias of
+       * VK_KHR_get_physical_device_properties2 may legitimately resolve to NULL on the loader path */
+      PFN_vkGetPhysicalDeviceFeatures2 gpf2 =
+         (PFN_vkGetPhysicalDeviceFeatures2)gipa(inst, "vkGetPhysicalDeviceFeatures2");
       if (gpf2 && (has_clip || has_cb)) {
          VkPhysicalDeviceCustomBorderColorFeaturesEXT cbq = {
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT};
          VkPhysicalDeviceDepthClipEnableFeaturesEXT dcq = {
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT};
          cbq.pNext = &dcq;
-         VkPhysicalDeviceFeatures2KHR f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2_KHR,
-                                            .pNext = &cbq};
+         VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+                                         .pNext = &cbq};
          gpf2(pd, &f2);
          has_cb &= cbq.customBorderColors;
          has_clip &= dcq.depthClipEnable;
