@@ -951,6 +951,7 @@ mali_cmd_pre_dispatch(struct mali_cmd_buffer *cmd, const struct mali_dispatch *d
    f->pre[f->npre].d = *d;
    f->pre[f->npre].wave = (uint8_t)wave;
    f->pre[f->npre].sync_cs = sync_cs;
+   f->pre[f->npre].gs = NULL;
    f->npre++;
    return 0;
 }
@@ -967,7 +968,7 @@ snapshot_dispatch(struct mali_cmd_buffer *cmd, struct mali_dispatch *d, uint32_t
    memcpy(d->set_va, cmd->set_va, sizeof d->set_va);
    memcpy(d->set_bytes, cmd->set_bytes, sizeof d->set_bytes);
    d->ndyn = cmd->ndyn;
-   memcpy(d->dyn_desc, cmd->dyn_desc, sizeof d->dyn_desc);
+   memcpy(d->dyn_desc, cmd->dyn_desc, sizeof cmd->dyn_desc);
    d->groups[0] = x;
    d->groups[1] = y;
    d->groups[2] = z;

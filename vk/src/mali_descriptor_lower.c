@@ -330,6 +330,11 @@ lower_poly_sysvals(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    case nir_intrinsic_load_tess_param_buffer_poly:   off = 0;  break;
    case nir_intrinsic_load_vertex_param_buffer_poly: off = 8;  break;
    case nir_intrinsic_load_vs_outputs_poly:          off = 16; break;
+   /* GS lane 2 (gs-step2): the geometry param block lives in the header's fourth word. KosmicKrisp lowers
+    * load_geometry_param_buffer_poly the same way (kk_nir_lower_descriptors.c:814-822). Taken from the tess lane's
+    * lower_poly_sysvals (commit 60a35878 of origin/lane/tess-t2-kernels) + this one case, so the tess lane keeps
+    * ownership of the helper and only adds the word. */
+   case nir_intrinsic_load_geometry_param_buffer_poly: off = 24; break;
    default:
       return false;
    }

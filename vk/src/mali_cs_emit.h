@@ -27,6 +27,7 @@ extern "C" {
 #define MALI_MAX_ATTR 16
 #define MALI_CMD_SETS 8
 #define MALI_MAX_DYN 16        /* dynamic UBO/SSBO descriptors per draw (graphics) */
+#define MALI_DYN_ARR 32        /* table-9 entries a draw/dispatch can carry: the user's MALI_MAX_DYN plus the driver header at index 31 (MALI_TESS_PARAM_IDX) */
 #define MALI_PUSH_MAX 256      /* == MALI_MAX_PUSH_BYTES (VkPhysicalDeviceLimits::maxPushConstantsSize) */
 
 /* Per-queue resources the CS refers to (created by the backend once per device). */
@@ -92,6 +93,10 @@ struct mali_gfx_state {
    unsigned depth_func;                   /* VkCompareOp == kb_func order (NEVER..ALWAYS) */
    unsigned prim;                         /* Mali draw mode: 1 points, 2 lines, 4 line strip, 8 triangles (default 0 = 8), 10 strip, 12 fan */
    bool prim_restart;
+   /* GS lane 2 step (iii): the pipeline has a real geometry shader. `vs`/`vs_va` above are poly's rast program (a vertex program
+    * that re-runs the GS per output vertex and pulls its inputs from the arena); the application VS and the GS body are these
+    * two compute programs (compiled with the pipeline layout, binaries in the pipeline's code BO). */
+   struct { bool on; const struct mali_compiled *vs_cs, *main; uint64_t vs_cs_va, main_va; uint32_t max_indices; uint64_t vs_outputs; } gs;
    unsigned poly_mode;                    /* fillModeNonSolid: 0 fill, 1 line, 2 point. LINE: prim is 2 and the draw is rewritten to an indexed line list at frame build (mali_poly_lines); POINT: prim is 1 and the draw is likewise rewritten to an indexed point list */
    unsigned poly_prim;                    /* LINE/POINT: the triangle topology (8 list, 10 strip, 12 fan) the pipeline was created with */
    unsigned push_base[2];                 /* byte offset of the push block in the VS / FS FAU (defaults 32 / 0) */
@@ -152,7 +157,7 @@ struct mali_draw {
    uint64_t set_va[MALI_CMD_SETS];
    uint32_t set_bytes[MALI_CMD_SETS];
    unsigned ndyn;                         /* dynamic buffer descriptors (offset applied), written to driver-set entries MALI_DYN_BUF_START + i of VS and FS */
-   uint32_t dyn_desc[MALI_MAX_DYN][8];
+   uint32_t dyn_desc[MALI_DYN_ARR][8];
    bool indexed;                          /* vkCmdDrawIndexed: index_va/index_size/first_index/vertex_offset used (count = indexCount) */
    uint64_t index_va;                     /* bound index buffer VA with offset applied */
    const uint8_t *index_cpu;              /* CPU view of index_va (NULL without a mapping); read at frame build for polygonMode LINE */
@@ -177,6 +182,20 @@ struct mali_bbind { uint64_t vb_va[MALI_MAX_VB]; uint32_t vb_size[MALI_MAX_VB]; 
                     uint32_t set_bytes[MALI_CMD_SETS]; unsigned ndyn; };                                         /* BIND */
 struct mali_bpush { uint8_t push[2][MALI_PUSH_MAX]; };                                                           /* PUSH */
 struct mali_bdyn { uint32_t n; uint32_t d[][8]; };                                                               /* BIND|DYNBUF: n entries */
+
+/* GS lane 2 step (iii): one geometry-shader draw. Recorded by mali_cmd.c with every CPU-known number; the GPU addresses of
+ * its arena are only known when the frame is built (mali_frame_build allocates the arena, writes poly's two parameter
+ * blocks and the pull table, and fills hdr_desc/index_va before any record is emitted). Owned by the frame's pool. */
+struct mali_gsdraw {
+   uint32_t nverts, ninst, nprims;        /* input vertices per instance, instances, input primitives per instance */
+   uint32_t index_count, instance_count;  /* the rasterisation draw (poly_geometry_params_set_draw) */
+   uint32_t max_indices, shape, count_words;
+   uint64_t vs_outputs;                   /* the application VS's outputs_written */
+   uint32_t first_vertex, first_instance, nattr;
+   struct { uint64_t va; uint32_t stride, inst; } attr[MALI_MAX_ATTR];   /* pulled vertex attributes (binding base + offset) */
+   uint64_t index_va, hdr_va;             /* filled at build */
+   uint32_t hdr_desc[8];                  /* the table-9 index-31 descriptor of the header block, filled at build */
+};
 
 struct mali_rec {
    uint32_t dirty;
@@ -210,7 +229,7 @@ struct mali_dispatch {
    uint64_t set_va[MALI_CMD_SETS];
    uint32_t set_bytes[MALI_CMD_SETS];
    unsigned ndyn;                         /* dynamic buffer descriptors (offset applied), table MALI_DYN_TABLE like the draw path */
-   uint32_t dyn_desc[MALI_MAX_DYN][8];
+   uint32_t dyn_desc[MALI_DYN_ARR][8];
    uint32_t groups[3];                    /* workgroup counts (direct) */
    uint64_t indirect_va;                  /* != 0: 3 x u32 workgroup counts are loaded from here by the CS */
 };
@@ -262,7 +281,7 @@ struct mali_frame {
    /* The pre block (compute-in-pass.md; mali_cmd_pre_dispatch): kernels that run at the head of this frame, before draw 0, in
     * ascending `wave` order (one wait per non-empty wave). `sync_cs`: a later wave loads a job size this kernel writes, so a flush +
     * WAIT LS follows its wave. Owned by the frame (mali_frame_finish frees it). */
-   struct mali_pre { struct mali_dispatch d; uint8_t wave; bool sync_cs; } *pre;
+   struct mali_pre { struct mali_dispatch d; uint8_t wave; bool sync_cs; struct mali_gsdraw *gs; } *pre;
    unsigned npre, cappre;
    struct mali_op *ops;                   /* M13: an ops frame (events/timestamps/availability, mali_event.h): malloc'd, owned by the frame */
    unsigned nops;
