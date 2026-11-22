@@ -30,6 +30,7 @@ struct kb_fb_rt {
 	uint32_t row_stride, surface_stride;
 	unsigned internal, wb, swizzle;
 	unsigned internal_offset;     /* bytes into the tile colour buffer, multiple of 16 */
+	unsigned no_store;            /* 1: this target is not written back (storeOp DONT_CARE/NONE) */
 	uint32_t clear[4];
 };
 

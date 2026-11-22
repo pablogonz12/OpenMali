@@ -608,6 +608,10 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
                unsupported(cmd, "blend equation (fixed function)");
          }
       }
+      /* a blend shader (logic op, dual-source) writes RT0 only in our encoder: refuse it for a multi-target frame
+       * whatever enables it, not only when the dynamic logicOp happens to be on */
+      if (fr->ncolour > 1 && bp->gfx.blend_va)
+         unsupported(cmd, "blend shader with several colour attachments");
       /* vk_graphics_state keeps the previous pass' logic_op_enable when a pipeline without colour blending is bound:
        * a depth-only pass must ignore it, not fail the command buffer on retained state */
       if (dyn->cb.logic_op_enable && cmd->cur.has_colour) {
@@ -1094,9 +1098,13 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       unsupported(cmd, "colour attachment view");
       return;
    }
-   /* M15: the colour target is GPU-written in this frame */
-   if (!no_col && g_res.image_view_mem)
+   /* M15: every colour target of this frame is GPU-written, not just RT0 */
+   if (!no_col && g_res.image_view_mem) {
       mali_cmd_mark_written(cmd, g_res.image_view_mem(ca->imageView));
+      for (uint32_t i = 1; i < ri->colorAttachmentCount; i++)
+         if (ri->pColorAttachments[i].imageView)
+            mali_cmd_mark_written(cmd, g_res.image_view_mem(ri->pColorAttachments[i].imageView));
+   }
    if (!no_col)
       load = is_load_op(ca->loadOp);
    if (load) {

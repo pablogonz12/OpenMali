@@ -231,6 +231,7 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
          x->va = a->va;
          x->row_stride = a->row_stride ? a->row_stride : f->width * 4;
          x->internal_offset = off;
+         x->no_store = !a->store && !a->resolve_va;
          if (a->rt) {
             x->internal = a->rt->internal;
             x->wb = a->rt->wb;

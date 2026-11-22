@@ -77,7 +77,7 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 	put(f, 11, 14, 1, !p->provoking_last);                 /* First provoking vertex (PanVK sets it unless VK_PROVOKING_VERTEX_MODE_LAST; also in the tiler context) */
 	put(f, 11, 15, 1, 0);                                    /* Point sprite coord origin max Y: PanVK 0 */
 	put(f, 11, 19, 4, p->rt_extra_count);                    /* Render Target Count - 1 */
-	put(f, 11, 24, 8, p->rt_internal && p->rt_alloc ? p->rt_alloc : 4);                                    /* Color Buffer Allocation >> 10: 4 B * 1024 px = 4096 */
+	put(f, 11, 24, 8, p->rt_alloc ? p->rt_alloc : 4);                                    /* Color Buffer Allocation >> 10: 4 B * 1024 px = 4096 */
 	put(f, 12, 29, 1, 1);                                    /* Empty Tile Write Enable (PanVK sets bits 31:28 of word 12) */
 	/* Z Internal Format (v11.xml 12:16): D16 0, D24 1, D32 2; D24 when no ZS target attached, as pan_fb.c */
 	put(f, 12, 16, 2, !zs ? 1 : p->zs_format == KB_ZS_D32F ? 2 : p->zs_format == KB_ZS_D24X8 ? 1 : 0);
@@ -127,12 +127,12 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 		put(q, 0, 0, 4, 0);                                  /* Writeback Mode: compat */
 		put(q, 0, 4, 12, ibo >> 4);                          /* Internal Buffer Offset >> 4 */
 		put(q, 0, 26, 6, in ? in : 1);                       /* Internal Format: R8G8B8A8 */
-		put(q, 1, 0, 1, !p->rt_none && !p->rt_no_store);     /* Write Enable (off for a colour-less frame or storeOp NONE) */
+		put(q, 1, 0, 1, !p->rt_none && !(n ? p->rt_extra[n - 1].no_store : p->rt_no_store));   /* Write Enable, per target */
 		put(q, 1, 3, 5, in ? wb : 19);                       /* Writeback colour format R8G8B8A8 */
 		put(q, 1, 8, 4, p->block_format ? 1 : 2);            /* Block format: 2 linear, 1 tiled u-interleaved */
 		put(q, 1, 12, 2, p->rt_msaa);                        /* MSAA: 0 single, 1 average (resolve), 3 layered */
 		put(q, 1, 16, 12, in ? sw : (0 | 1 << 3 | 2 << 6 | 3 << 9));   /* Swizzle RGBA identity */
-		put(q, 1, 31, 1, !p->no_clean_tile_write);           /* Clean Tile Write Enable (default on) */
+		put(q, 1, 31, 1, !p->no_clean_tile_write && !(n ? p->rt_extra[n - 1].no_store : 0));   /* Clean Tile Write Enable */
 		put(q, 8, 0, 32, (uint32_t)va);                      /* RT Buffer base */
 		put(q, 9, 0, 32, (uint32_t)(va >> 32));
 		put(q, 10, 0, 32, rs);                               /* Row stride */

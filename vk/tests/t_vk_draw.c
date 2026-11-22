@@ -1926,6 +1926,11 @@ test_mrt(const char *name, int nrt)
    MRT_CHECK(r == VK_SUCCESS, "submit = %d", r);
    r = WaitForFences(dev, 1, &fence, VK_TRUE, 20000000000ull);
    MRT_CHECK(r == VK_SUCCESS, "wait = %d", r);
+   if (!g_fake)   /* the allocations are HOST_VISIBLE, not necessarily HOST_COHERENT: invalidate before reading */
+      for (int i = 0; i < nrt; i++) {
+         VkMappedMemoryRange mmr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = mem[i], .offset = 0, .size = VK_WHOLE_SIZE};
+         InvalidateMappedMemoryRanges(dev, 1, &mmr);
+      }
    ok = 1;
    if (!g_fake && !map) {   /* every target: pixel (W/4, y) = its draw colour, pixel (3W/4, y) = its clear colour, at several rows */
       for (int i = 0; i < nrt; i++)
@@ -2094,6 +2099,7 @@ test_mrt_mixed(const char *name)
    MIX_CHECK(BeginCommandBuffer(cb, &bi) == VK_SUCCESS, "begin");
    VkClearValue cv[4];
    memset(cv, 0, sizeof cv);
+   cv[3].color.float32[2] = 1.0f; cv[3].color.float32[3] = 1.0f;   /* RT3: a nonzero clear, so its survival proves the store */
    cv[1].color.float32[0] = 0.25f; cv[1].color.float32[3] = 1.0f;   /* RGBA16F clear: R = 0.25 */
    cv[2].color.uint32[0] = 7u;                                      /* R32_UINT clear: 7 */
    VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = rp, .framebuffer = fb,
@@ -2135,7 +2141,7 @@ test_mrt_mixed(const char *name)
             /* RT1 RGBA16F: R = clear 0.25 + draw 0.5 (ADD ONE/ONE) on the drawn half; half bits 0x3a00 */
             const uint16_t *h = (const uint16_t *)(px[1] + (size_t)y * pitch[1] + (size_t)x * bpp[1]);
             const unsigned want1 = side ? 0x3400u : 0x3a00u;
-            if ((unsigned)(h[0] & 0x7fffu) != want1) {
+            if (h[0] != (uint16_t)want1) {
                if (bad < 4)
                   printf("{\"detail\":\"rt1 y%d %s got %04x want %04x\"}\n", y, side ? "clear" : "draw", h[0], want1);
                bad++;
@@ -2147,10 +2153,10 @@ test_mrt_mixed(const char *name)
                   printf("{\"detail\":\"rt2 y%d %s got %u\"}\n", y, side ? "clear" : "draw", u);
                bad++;
             }
-            /* RT3 RGBA8 with colorWriteMask 0: the clear colour survives on both halves */
+            /* RT3 RGBA8 with colorWriteMask 0: its CLEAR (0, 0, 1, 1) survives on both halves */
             const uint8_t *q = px[3] + (size_t)y * pitch[3] + (size_t)x * bpp[3];
             for (int c = 0; c < 4; c++)
-               if (q[c]) {
+               if (q[c] != (c >= 2 ? 255 : 0)) {
                   if (bad < 4)
                      printf("{\"detail\":\"rt3 y%d %s got %02x%02x%02x%02x (masked out)\"}\n", y, side ? "clear" : "draw", q[0], q[1], q[2], q[3]);
                   bad++;
