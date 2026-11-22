@@ -93,6 +93,7 @@ struct mali_compiled {
    uint32_t cull_varying;         /* VS: driver_location of the merged clip+cull varying (handed to the FS compile); FS: the one it read */
    uint32_t cull_varying_first;   /* the varying carrying cull distance 0 / the last one: the pipeline refuses a VS/FS disagreement */
    uint32_t cull_varying_last;
+   uint32_t fs_cull_discard;      /* FS: the compile injected the cull-flag discard (lower_cull_fs): depth/stencil tests and updates must run late, or a culled primitive still writes Z/S and counts for occlusion */
    uint32_t noperspective_mask;   /* VS: FS's noperspective bitfield inlined into the code; FS: the bitfield its inputs use */
    uint32_t generic_size_B;       /* VS: size of the generic varying section per vertex */
    uint32_t nvarying;

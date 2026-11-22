@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only cull|firstinst|provoking|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|tf_reject|tf_write|tf_default|tf_inactive|tf_reset|tf_multi|tf_overflow|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|quadsize|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|samplerate|dparams|gather|gatherlim|fsstore|memmodel|robust2|imgmax] [--robust2]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only spill|cull|cull2|cull_unwritten|cull_dynpoly|firstinst|provoking|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|tf_reject|tf_write|tf_default|tf_inactive|tf_reset|tf_multi|tf_overflow|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|quadsize|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|samplerate|dparams|gather|gatherlim|fsstore|memmodel|robust2|imgmax] [--robust2]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -51,11 +51,15 @@ static VkPrimitiveTopology g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 static float g_lw = 1.0f;
 static VkBool32 g_sample_shading;   /* make_pipe: sampleShadingEnable (minSampleShading 1.0) */
 static const void *g_rs_next;   /* pNext of the rasterization state (line-state struct) for make_pipe */
+static int g_dynpoly;           /* make_pipe: polygonMode is dynamic (VK_EXT_extended_dynamic_state3, only when enabled on the device) */
+static int g_eds3_poly;         /* the device has extendedDynamicState3PolygonMode enabled */
+static PFN_vkCmdSetPolygonModeEXT CmdSetPolygonModeEXT;
 static VkPolygonMode g_poly;    /* make_pipe polygonMode (0 = VK_POLYGON_MODE_FILL) */
 static int g_expect_xfb_fail;   /* make_pipe: a transform-feedback shader must be refused, with a message naming TF */
 static VkBool32 g_lr_rect, g_lr_bres, g_lr_smooth, g_lr_stip_rect, g_lr_stip_bres, g_lr_stip_smooth;   /* VK_EXT_line_rasterization features */
 
-#define CASE_ON(n) (!g_only || !strcmp(g_only, n))
+static int g_matched;   /* --only names that matched a case: zero means the selector is unknown (a typo must not pass) */
+#define CASE_ON(n) (!g_only || (!strcmp(g_only, n) && ++g_matched))
 #define CHECK(c, ...)                                                                              \
    do {                                                                                            \
       if (!(c)) {                                                                                  \
@@ -275,8 +279,8 @@ make_pipe(struct tgt *t, const char *vs, const char *fs, VkDescriptorSetLayout d
    VkPipelineColorBlendAttachmentState cba = {.colorWriteMask = 0xf};
    VkPipelineColorBlendStateCreateInfo cbs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
                                               .attachmentCount = 1, .pAttachments = &cba};
-   VkDynamicState dyn[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
-   VkPipelineDynamicStateCreateInfo dys = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = 2, .pDynamicStates = dyn};
+   VkDynamicState dyn[3] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_POLYGON_MODE_EXT};
+   VkPipelineDynamicStateCreateInfo dys = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = g_dynpoly ? 3 : 2, .pDynamicStates = dyn};
    VkGraphicsPipelineCreateInfo gp = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = 2, .pStages = st,
                                       .pVertexInputState = &vis, .pInputAssemblyState = &ias, .pViewportState = &vps,
                                       .pRasterizationState = &rs, .pMultisampleState = &ms, .pColorBlendState = &cbs,
@@ -3183,6 +3187,151 @@ test_cull(void)
    return 1;
 }
 
+/* shaderCullDistance declared but not fully written (cull_unw.vert: gl_CullDistance[2], only [0] stored, +1): nothing may be culled.
+ * Hardware: the whole target is solid red. (rot.vert, glslang's default gl_PerVertex, is the declared-and-never-written case: t_vk_draw.) */
+static int
+test_cull_unwritten(void)
+{
+   if (!g_feat.shaderCullDistance) {
+      CHECK(0, "shaderCullDistance is not advertised");
+      return 0;
+   }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   if (!make_pipe(&t, "cull_unw.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe)) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   begin_pass(cb, &t, pipe);
+   CmdDraw(cb, 6, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      int bad = 0, n = 0;
+      for (int y = 2; y < H - 2; y++)
+         for (int x = 2; x < W - 2; x++) {
+            if (abs(x - y * W / H) <= 3) continue;   /* the quad's diagonal */
+            n++;
+            bad += !near(pix(&t, x, y), 255, 0, 0, 255, 2);
+         }
+      CHECK(bad == 0, "%d of %d pixels not solid red (a declared-but-unwritten cull distance culled them)", bad, n);
+      printf("{\"test\":\"cull_unwritten\",\"pixels\":%d,\"bad\":%d,\"ok\":true}\n", n, bad);
+   } else printf("{\"test\":\"cull_unwritten\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   return 1;
+}
+
+/* shaderCullDistance + a dynamic polygon mode: the pipeline is FILL, the application switches to POINT/LINE with
+ * vkCmdSetPolygonModeEXT. The rewrite to points/lines would leave per-vertex flags (wrong picture), so the draw must be refused
+ * (the command buffer ends with an error) exactly as the static case is refused at pipeline creation. FILL must still work. */
+static int
+test_cull_dynpoly(void)
+{
+   if (!g_feat.shaderCullDistance || !g_eds3_poly || !CmdSetPolygonModeEXT) {
+      printf("{\"test\":\"cull_dynpoly\",\"skipped\":\"extendedDynamicState3PolygonMode or shaderCullDistance not advertised\",\"ok\":true}\n");
+      return 1;
+   }
+   static const VkPolygonMode modes[3] = {VK_POLYGON_MODE_FILL, VK_POLYGON_MODE_POINT, VK_POLYGON_MODE_LINE};
+   for (int k = 0; k < 3; k++) {
+      struct tgt t;
+      if (!tgt_create(&t)) return 0;
+      VkPipelineLayout lay;
+      VkPipeline pipe;
+      g_dynpoly = 1;
+      int mp = make_pipe(&t, "cull.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe);
+      g_dynpoly = 0;
+      if (!mp) return 0;
+      VkCommandBuffer cb = cb_begin(&t);
+      CHECK(cb, "cmdbuf");
+      begin_pass(cb, &t, pipe);
+      CmdSetPolygonModeEXT(cb, modes[k]);
+      CmdDraw(cb, 18, 1, 0, 0);
+      CmdEndRenderPass(cb);
+      VkResult r = EndCommandBuffer(cb);
+      CHECK(k == 0 ? r == VK_SUCCESS : r != VK_SUCCESS, "polygonMode %d + cull distances: EndCommandBuffer = %d (FILL must succeed, POINT/LINE must be refused)", (int)modes[k], (int)r);
+      DestroyPipeline(dev, pipe, NULL);
+      DestroyPipelineLayout(dev, lay, NULL);
+      tgt_destroy(&t);
+   }
+   printf("{\"test\":\"cull_dynpoly\",\"ok\":true}\n");
+   return 1;
+}
+
+/* shaderCullDistance, second flag slot: cull2.vert has 3 clip + 5 cull distances and only cull[4] varies. Column A (all three
+ * vertices negative) must vanish, B (one negative vertex) and C stay whole. A cull lowering that gets the slot wrong makes the
+ * VS and FS varyings disagree (pipeline refused: make_pipe fails, so this case fails on the fake backend too). */
+static int
+test_cull2(void)
+{
+   if (!g_feat.shaderCullDistance) {
+      CHECK(0, "shaderCullDistance is not advertised");
+      return 0;
+   }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   if (!make_pipe(&t, "cull2.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe)) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   begin_pass(cb, &t, pipe);
+   CmdDraw(cb, 18, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      int bad = 0, n = 0;
+      for (int y = 2; y < H - 2; y++)
+         for (int x = 2; x < W - 2; x++) {
+            if (abs(x - W / 3) <= 3 || abs(x - 2 * W / 3) <= 3) continue;
+            const uint8_t *p = pix(&t, x, y);
+            n++;
+            bad += x < W / 3 ? p[3] != 0 : !near(p, 255, 0, 0, 255, 2);
+         }
+      CHECK(bad == 0, "%d of %d pixels wrong (A %u B %u C %u alpha)", bad, n, pix(&t, W / 6, H / 2)[3], pix(&t, W / 2, H / 2)[3], pix(&t, 5 * W / 6, H / 2)[3]);
+      printf("{\"test\":\"cull2\",\"pixels\":%d,\"bad\":%d,\"ok\":true}\n", n, bad);
+   } else printf("{\"test\":\"cull2\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   return 1;
+}
+
+/* Graphics thread-local storage: spill.vert keeps an 18-entry const array that indexed access spills to scratch (tls_size > 0).
+ * Before the draw TSD carried TLS, a spilling VS/FS faulted (VK_ERROR_DEVICE_LOST on a G610). Same shader pattern as cull.vert. */
+static int
+test_spill(void)
+{
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   if (!make_pipe(&t, "spill.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe)) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   begin_pass(cb, &t, pipe);
+   CmdDraw(cb, 18, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      int bad = 0, n = 0;
+      for (int y = 2; y < H - 2; y++)
+         for (int x = 2; x < W - 2; x++) {
+            if (abs(x - W / 3) <= 3 || abs(x - 2 * W / 3) <= 3) continue;
+            n++;
+            bad += !near(pix(&t, x, y), 255, 0, 0, 255, 2);
+         }
+      CHECK(bad == 0, "%d of %d pixels not solid red", bad, n);
+      printf("{\"test\":\"spill\",\"pixels\":%d,\"bad\":%d,\"ok\":true}\n", n, bad);
+   } else printf("{\"test\":\"spill\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   return 1;
+}
+
 /* shaderDrawParameters: see dparams.vert. Triangles A0..A2 (columns 0..2, indirect multi-draw), B (column 3), C (column 0, row 1). */
 static int g_dparams;
 static int
@@ -4186,7 +4335,17 @@ main(int argc, char **argv)
       ftf.geometryStreams = q.geometryStreams;
    }
    if (g_tf) { ftf.pNext = e2.pNext; e2.pNext = &ftf; }
-   const char *dexts[8]; uint32_t ndx = 0;
+   VkPhysicalDeviceExtendedDynamicState3FeaturesEXT feds3 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT};
+   {
+      VkPhysicalDeviceExtendedDynamicState3FeaturesEXT q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT};
+      VkPhysicalDeviceFeatures2 q2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &q};
+      GetPhysicalDeviceFeatures2(pd, &q2);
+      g_eds3_poly = q.extendedDynamicState3PolygonMode;
+      feds3.extendedDynamicState3PolygonMode = q.extendedDynamicState3PolygonMode;
+   }
+   if (g_eds3_poly) { feds3.pNext = e2.pNext; e2.pNext = &feds3; }
+   const char *dexts[10]; uint32_t ndx = 0;
+   if (g_eds3_poly) dexts[ndx++] = "VK_EXT_extended_dynamic_state3";
    if (g_pv_last) dexts[ndx++] = "VK_EXT_provoking_vertex";
    if (g_div || g_div0) dexts[ndx++] = "VK_EXT_vertex_attribute_divisor";
    if (g_lr_rect) dexts[ndx++] = "VK_EXT_line_rasterization";
@@ -4202,6 +4361,7 @@ main(int argc, char **argv)
 #define LOAD(n) n = (PFN_vk##n)GetDeviceProcAddr(dev, "vk" #n); if (!n) { printf("{\"fail\":\"missing vk" #n "\"}\n"); return 1; }
    DEV_FNS(LOAD)
    /* the three TF commands exist only when VK_EXT_transform_feedback is enabled on the device: optional loads */
+   CmdSetPolygonModeEXT = g_eds3_poly ? (PFN_vkCmdSetPolygonModeEXT)GetDeviceProcAddr(dev, "vkCmdSetPolygonModeEXT") : NULL;
    CmdBindTransformFeedbackBuffersEXT = (PFN_vkCmdBindTransformFeedbackBuffersEXT)GetDeviceProcAddr(dev, "vkCmdBindTransformFeedbackBuffersEXT");
    CmdBeginTransformFeedbackEXT = (PFN_vkCmdBeginTransformFeedbackEXT)GetDeviceProcAddr(dev, "vkCmdBeginTransformFeedbackEXT");
    CmdEndTransformFeedbackEXT = (PFN_vkCmdEndTransformFeedbackEXT)GetDeviceProcAddr(dev, "vkCmdEndTransformFeedbackEXT");
@@ -4275,6 +4435,10 @@ main(int argc, char **argv)
    if (ok && CASE_ON("samplecnt")) ok &= test_samplecnt();
    if (ok && CASE_ON("clip8")) ok &= test_clip8();
    if (ok && CASE_ON("cull")) ok &= test_cull();
+   if (ok && CASE_ON("cull2")) ok &= test_cull2();
+   if (ok && CASE_ON("cull_unwritten")) ok &= test_cull_unwritten();
+   if (ok && CASE_ON("cull_dynpoly")) ok &= test_cull_dynpoly();
+   if (ok && CASE_ON("spill")) ok &= test_spill();
    if (ok && CASE_ON("dparams")) ok &= test_dparams();
    if (ok && CASE_ON("gather")) ok &= test_gather();
    if (ok && CASE_ON("gatherlim")) ok &= test_gatherlim();
@@ -4283,6 +4447,10 @@ main(int argc, char **argv)
    if (ok && CASE_ON("imgmax")) ok &= test_imgmax();
    if (ok && CASE_ON("privdata")) ok &= test_privdata();
 
+   if (g_only && !g_matched) {
+      printf("{\"fail\":\"unknown --only case\",\"only\":\"%s\"}\n", g_only);
+      g_fail++;
+   }
    DeviceWaitIdle(dev);
    DestroyDevice(dev, NULL);
    DestroyInstance(inst, NULL);

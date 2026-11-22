@@ -708,26 +708,43 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       NIR_PASS(_, nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out, type_size,
                nir_lower_io_use_interpolated_input_intrinsics);
       if (stage == MESA_SHADER_VERTEX && cull_distances) {
-         /* after nir_lower_io: the cull distances are store_output intrinsics inside the merged array now */
-         unsigned range[3] = { 0, cull_distances, cull_varying };
-         if (getenv("MALI_CULL_DBG")) {
-            nir_foreach_block(blk, nir_shader_get_entrypoint(nir))
-               nir_foreach_instr(ins, blk) {
-                  if (ins->type != nir_instr_type_intrinsic) continue;
-                  nir_intrinsic_instr *i2 = nir_instr_as_intrinsic(ins);
-                  if (i2->intrinsic != nir_intrinsic_store_output) continue;
-                  nir_io_semantics s2 = nir_intrinsic_io_semantics(i2);
-                  fprintf(stderr, "mali_cull: store loc %d slots %u base %d off %u comp %u mask %x ncomp %u\n",
-                          s2.location, s2.num_slots, nir_intrinsic_base(i2),
-                          (unsigned)(nir_src_is_const(i2->src[1]) ? nir_src_as_uint(i2->src[1]) : 999u),
-                          nir_intrinsic_component(i2), nir_intrinsic_write_mask(i2), (unsigned)nir_src_num_components(i2->src[0]));
-               }
-         }
-         bool wrote = false;
-         NIR_PASS(wrote, nir, nir_shader_intrinsics_pass, lower_cull_write, nir_metadata_control_flow, range);
+         /* after nir_lower_io: the cull distances are store_output intrinsics inside the merged array now.
+          * A shader that DECLARES gl_CullDistance (glslang's default gl_PerVertex block does, e.g. rot.vert) but never writes
+          * it has nothing to cull: without this the FS got a discard on a flag nobody stores and read garbage. A component
+          * the shader leaves unwritten (cull[1] when only cull[0] is stored) is "not culled": its flag starts at 1. */
+         unsigned written = 0;
+         nir_foreach_block(blk, nir_shader_get_entrypoint(nir))
+            nir_foreach_instr(ins, blk) {
+               if (ins->type != nir_instr_type_intrinsic) continue;
+               nir_intrinsic_instr *i2 = nir_instr_as_intrinsic(ins);
+               if (i2->intrinsic != nir_intrinsic_store_output) continue;
+               nir_io_semantics s2 = nir_intrinsic_io_semantics(i2);
+               if (s2.location != VARYING_SLOT_CULL_DIST0 && s2.location != VARYING_SLOT_CULL_DIST1) continue;
+               const unsigned first = (s2.location - VARYING_SLOT_CULL_DIST0) * 4 + nir_src_as_uint(i2->src[1]) * 4 + nir_intrinsic_component(i2);
+               for (unsigned k = 0; k < nir_src_num_components(i2->src[0]); k++)
+                  if (first + k < cull_distances) written |= 1u << (first + k);
+            }
          if (getenv("MALI_CULL_DBG"))
-            fprintf(stderr, "mali_cull: vs clip %u cull %u (components %u..%u) rewritten to 0/1: %d\n",
-                    clip_distances, cull_distances, range[0], range[1], (int)wrote);
+            fprintf(stderr, "mali_cull: vs clip %u cull %u written mask %x\n", clip_distances, cull_distances, written);
+         if (!written) {
+            cull_distances = 0;
+            cull_varying = cull_varying_first = cull_varying_last = 0;
+         } else {
+            unsigned range[3] = { 0, cull_distances, cull_varying };
+            nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+            nir_builder ib = nir_builder_at(nir_before_impl(impl));
+            for (unsigned slot = 0; slot * 4 < cull_distances; slot++) {
+               const unsigned wm = ((1u << MIN2(4, cull_distances - slot * 4)) - 1) & ~((written >> (slot * 4)) & 0xf);
+               if (!wm) continue;
+               nir_store_output(&ib, nir_imm_vec4(&ib, 1.0, 1.0, 1.0, 1.0), nir_imm_int(&ib, 0), .component = 0, .write_mask = wm,
+                                .io_semantics.location = VARYING_SLOT_VAR0 + cull_varying + slot, .io_semantics.num_slots = 1,
+                                .base = cull_varying + slot);
+            }
+            bool wrote = false;
+            NIR_PASS(wrote, nir, nir_shader_intrinsics_pass, lower_cull_write, nir_metadata_control_flow, range);
+            if (getenv("MALI_CULL_DBG"))
+               fprintf(stderr, "mali_cull: vs clip %u cull %u (components 0..%u) rewritten to 0/1: %d\n", clip_distances, cull_distances, cull_distances, (int)wrote);
+         }
       }
       NIR_PASS(_, nir, nir_opt_constant_folding);
       if (stage == MESA_SHADER_VERTEX && !o->xfb && nir->info.has_transform_feedback_varyings) {
@@ -924,6 +941,7 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    out->writes_global = info.writes_global;
    if (stage == MESA_SHADER_FRAGMENT) {
       out->fs_can_discard = info.fs.can_discard;
+      out->fs_cull_discard = o->cull_distances != 0;
       out->fs_writes_depth = info.fs.writes_depth;
       out->fs_writes_stencil = info.fs.writes_stencil;
       out->fs_writes_colour = (info.outputs_written >> 4 /* FRAG_RESULT_DATA0 */) & 0xff ? 1 : 0;

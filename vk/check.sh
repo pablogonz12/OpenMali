@@ -267,7 +267,12 @@ for g in v11 v13; do
    # flags at the varying the VS reports; a load that counts the slot twice, or takes the base from the FS's
    # num_inputs, makes the two stages disagree and mali_pipeline refuses the pipeline (this case fails, no pixels needed).
    run "vk_feat cull2 $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only cull2
+   run "vk_feat cull_unwritten $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only cull_unwritten
+   run "vk_feat cull_dynpoly $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only cull_dynpoly
 done
+
+# an unknown --only selector must fail (a typo or a missing case used to pass without running anything)
+run "vk_feat unknown case" 1 MALI_BACKEND=fake MALI_FAKE_GPU=v11 "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only no_such_case
 
 # M11: compute through the ICD (fake backend: compile, CS build and submit; results only on hardware).
 for g in v11 v13; do

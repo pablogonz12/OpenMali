@@ -640,6 +640,13 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
       dop.zs_update = 3;
       dop.allow_fpk = 0;
    }
+   if (g->fs && g->fs->fs_cull_discard) {
+      /* shaderCullDistance is a fragment discard here: a primitive it removes must not touch depth, stencil or the occlusion count, so the
+       * tests and updates run after the shader (also against an application shader that declares EarlyFragmentTests) */
+      dop.pixel_kill = 3;
+      dop.zs_update = 3;
+      dop.allow_fpk = 0;
+   }
    /* stencil-only pass (no colour attachment): the stencil update is the draw's only visible effect; forward pixel kill would drop the fragment on a depth fail before the stencil dfail op runs */
    if (!f->has_colour && f->has_st && d->fx.set && d->fx.st_test)
       dop.allow_fpk = 0;
