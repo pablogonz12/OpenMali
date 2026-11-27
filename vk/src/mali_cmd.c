@@ -1463,6 +1463,22 @@ mali_resolve_region(const struct mali_frame *f, VkImageResolve2 *r)
    r->extent = (VkExtent3D){ar[2] ? (uint32_t)ar[2] : f->width, ar[3] ? (uint32_t)ar[3] : f->height, 1};
 }
 
+bool
+mali_resolve_1x_clamp(VkImageResolve2 *r, const int32_t area[4],
+                      uint32_t sw, uint32_t sh, uint32_t dw, uint32_t dh)
+{
+   int64_t x = MAX2(area[0], 0), y = MAX2(area[1], 0);
+   int64_t ex = MIN2((int64_t)area[0] + MAX2(area[2], 0), MIN2(sw, dw));
+   int64_t ey = MIN2((int64_t)area[1] + MAX2(area[3], 0), MIN2(sh, dh));
+   if (ex <= x || ey <= y)
+      return false;
+   r->srcOffset.x = r->dstOffset.x = (int32_t)x;
+   r->srcOffset.y = r->dstOffset.y = (int32_t)y;
+   r->extent.width = (uint32_t)(ex - x);
+   r->extent.height = (uint32_t)(ey - y);
+   return true;
+}
+
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdEndRendering(VkCommandBuffer h)
 {
@@ -1489,14 +1505,7 @@ mali_CmdEndRendering(VkCommandBuffer h)
       uint32_t sh = u_minify(src->vk.extent.height, rr.srcSubresource.mipLevel);
       uint32_t dw = u_minify(dst->vk.extent.width, rr.dstSubresource.mipLevel);
       uint32_t dh = u_minify(dst->vk.extent.height, rr.dstSubresource.mipLevel);
-      int64_t x = MAX2(area[0], 0), y = MAX2(area[1], 0);
-      int64_t ex = MIN2((int64_t)area[0] + MAX2(area[2], 0), MIN2(sw, dw));
-      int64_t ey = MIN2((int64_t)area[1] + MAX2(area[3], 0), MIN2(sh, dh));
-      if (ex > x && ey > y) {
-         rr.srcOffset.x = rr.dstOffset.x = (int32_t)x;
-         rr.srcOffset.y = rr.dstOffset.y = (int32_t)y;
-         rr.extent.width = (uint32_t)(ex - x);
-         rr.extent.height = (uint32_t)(ey - y);
+      if (mali_resolve_1x_clamp(&rr, area, sw, sh, dw, dh)) {
          if (src->vk.format == dst->vk.format) {
             VkImageCopy2 r = {.sType = VK_STRUCTURE_TYPE_IMAGE_COPY_2,
                .srcSubresource = rr.srcSubresource, .srcOffset = rr.srcOffset,

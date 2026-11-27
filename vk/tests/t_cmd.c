@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 #include "mali_cmd.h"
+#include "mali_image.h"
 #include "mali_meta.h"
 #include "mali_meta_vk.h"
 #include "mali_query_core.h"
@@ -80,6 +81,12 @@ test_resolve_region(void)
    mali_resolve_region(&f, &r);
    CHECK(r.extent.width == 64 && r.extent.height == 48 && r.srcOffset.x == 0 && r.srcOffset.y == 0 && r.dstOffset.x == 0,
          "no render area: %ux%u at %d,%d, expected the whole 64x48 attachment", r.extent.width, r.extent.height, r.srcOffset.x, r.srcOffset.y);
+   int32_t area[] = {8, 4, 80, 40};
+   CHECK(mali_resolve_1x_clamp(&r, area, 64, 48, 32, 20), "clipped resolve disappeared");
+   CHECK(r.srcOffset.x == 8 && r.dstOffset.y == 4 && r.extent.width == 24 && r.extent.height == 16,
+         "clipped resolve %d,%d %ux%u", r.srcOffset.x, r.srcOffset.y, r.extent.width, r.extent.height);
+   area[0] = 40;
+   CHECK(!mali_resolve_1x_clamp(&r, area, 64, 48, 32, 20), "out-of-bounds resolve was not skipped");
 }
 
 static const float k_pos[12] = {-0.5f, -0.5f, 0, 1, 0.5f, -0.5f, 0, 1, 0, 0.5f, 0, 1};
@@ -150,11 +157,12 @@ static int res_pipeline(VkPipeline p, struct mali_gfx_state *o)
    o->depth_func = KB_FUNC_ALWAYS;
    return 0;
 }
+static VkImageView g_resolve_test_view;
 static int res_view(VkImageView v, struct mali_cmd_target *o)
 {
    /* --loadstore attachment handles: 1 = RGBA8 colour, 2 = D32F depth, 3 = D32F + S8 (depth and stencil, separate plane VAs),
     * 4 = D24X8 (LOAD is unsupported but NONE is not). Handle 2 is also the D32 depth-only view of --extra logicOp-retained. */
-   if ((uintptr_t)v == 1) {
+   if ((uintptr_t)v == 1 || (g_resolve_test_view && v == g_resolve_test_view)) {
       *o = (struct mali_cmd_target){.va = F.rt.gpu_va, .row_stride = W * 4, .width = W, .height = H, .rt = NULL};
       return 0;
    }
@@ -208,6 +216,39 @@ static struct vk_command_buffer *new_cmd(VkCommandPool pool, VkCommandBuffer *h)
    struct vk_command_buffer *vc = vk_command_buffer_from_handle(*h);
    vc->dynamic_graphics_state.rs.depth_clip_enable = VK_MESA_DEPTH_CLIP_ENABLE_NOT_CLAMP;   /* Vulkan default (no pipeline here to set it) */
    return vc;
+}
+
+static void
+test_resolve_mismatched_view(VkCommandPool pool)
+{
+   struct mali_image src = {0}, dst = {0};
+   src.vk.format = VK_FORMAT_R8G8B8A8_UNORM;
+   src.vk.mip_levels = 1;
+   dst.vk.format = VK_FORMAT_R8_UNORM;
+   dst.vk.mip_levels = 1;
+   struct mali_image_view sv = {0}, dv = {0};
+   sv.vk.base.type = dv.vk.base.type = VK_OBJECT_TYPE_IMAGE_VIEW;
+   sv.vk.image = &src.vk;
+   sv.vk.view_format = VK_FORMAT_R8G8B8A8_UNORM;
+   dv.vk.image = &dst.vk;
+   dv.vk.view_format = VK_FORMAT_R8G8B8A8_UNORM;
+   g_resolve_test_view = mali_image_view_to_handle(&sv);
+   VkCommandBuffer cb;
+   struct vk_command_buffer *vc = new_cmd(pool, &cb);
+   struct mali_cmd_buffer *m = mali_cmd_buffer_from_vk(vc);
+   VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+      .imageView = g_resolve_test_view, .resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT,
+      .resolveImageView = mali_image_view_to_handle(&dv),
+      .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+   VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+      .renderArea = {{0, 0}, {W, H}}, .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &ca};
+   mali_CmdBeginRendering(cb, &ri);
+   CHECK(!m->cur.resolve_1x && !m->cur.resolve_dst, "mismatched resolve was recorded");
+   mali_CmdEndRendering(cb);
+   DFN(EndCommandBuffer);
+   CHECK(EndCommandBuffer(cb) == VK_SUCCESS && m->nframes == 1,
+         "mismatched resolve must skip without recording a copy");
+   g_resolve_test_view = VK_NULL_HANDLE;
 }
 
 static VkRenderingInfo rendering_info(VkRenderingAttachmentInfo *ca, bool clear)
@@ -751,6 +792,8 @@ int main(int argc, char **argv)
    VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
    VkCommandPool pool;
    CHECK(CreateCommandPool(dev, &pci, NULL, &pool) == VK_SUCCESS, "CreateCommandPool");
+   if (extra)
+      test_resolve_mismatched_view(pool);
    if (extra) {
       /* Exercise real refusal sites with debugging disabled, including a
        * different reason and an identical refusal in a second buffer. */
