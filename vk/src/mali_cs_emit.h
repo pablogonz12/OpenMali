@@ -263,6 +263,7 @@ struct mali_frame {
    bool provoking_last;                   /* VK_EXT_provoking_vertex LAST_VERTEX for this render pass: clears 'First provoking vertex' in the FBD (word 11 bit 14) and tiler ctx (word 2 bit 18) */
    unsigned samples;                      /* 0/1 = single sampled, 4 = 4x MSAA (MALI_EXPERIMENTAL_MSAA) */
    uint64_t resolve_src, resolve_dst;     /* MSAA storeOp STORE + resolve: images for the separate resolve pass (0 = none) */
+   bool resolve_1x;
    unsigned resolve_level, resolve_layer;         /* source: the attachment view's mip level / base array layer */
    unsigned resolve_dst_level, resolve_dst_layer; /* destination: the RESOLVE view's own mip level / base array layer */
    struct mali_att colour, zs, st;
