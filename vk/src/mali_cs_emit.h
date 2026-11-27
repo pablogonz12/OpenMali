@@ -261,6 +261,8 @@ struct mali_frame {
     * every record of the frame again: any_ind = some record is an indirect draw; poly_cpu = some record's effective
     * pipeline is polygonMode LINE/POINT and it is indexed (the CPU then reads the index buffer at build). */
    bool any_ind, poly_cpu;
+   unsigned colour_slot;   /* which of the render pass's colour attachment slots this frame renders (a null-slot pass may start
+                            * at 1); CmdClearAttachments only clears that one */
    const struct mali_bpipe *cur_pipe;     /* the effective pipe of the last record (records are deltas) */
 };
 
