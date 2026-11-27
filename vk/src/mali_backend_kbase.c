@@ -18,6 +18,7 @@
 #include "kbase.h"
 #include "kbase_cs.h"
 #include "kbase_uapi.h"
+#include "mali_wait_debug.h"
 
 extern uint64_t kb_bo_extra_flags; /* libkbase bo.c: OR'd into plain GPU allocations */
 
@@ -125,6 +126,13 @@ kbase_device_create(const struct mali_gpu_info *gpu, struct mali_kdev **out)
    if (r != 0) {
       free(k);
       return r < 0 ? r : -ENODEV;
+   }
+   if (getenv("MALI_WSI_DEBUG") || mali_wait_debug()) {
+      unsigned major, minor;
+      kb_uapi_version(k->ctx, &major, &minor);
+      if (getenv("MALI_WSI_DEBUG"))
+         fprintf(stderr, "mali_vk: negotiated kbase uAPI %u.%u\n", major, minor);
+      mali_wait_event("negotiated kbase uAPI %u.%u", major, minor);
    }
 
    const char *dbg = getenv("MALI_SUBMIT_DBG");
