@@ -45,6 +45,10 @@ struct mali_kdev {
    struct kb_tiler_heap *heap;  /* the live tiler heap (kbase_log_fault): its state decides "no free chunk" faults */
    uint64_t last_cs[256];       /* MALI_SUBMIT_DBG=0x80: the last piece handed to the ring, dumped if a fault follows */
    unsigned last_n;
+   /* The last freed BOs (oldest first): a CS fault at an address no live BO covers is either a bogus VA or a BO the
+    * GPU was still given after it was freed. 64 entries cover far more than one frame. */
+   struct kbase_freed_bo { uint64_t va; size_t size; uint32_t flags; int dmabuf; } freed[64];
+   unsigned nfreed;
 
    /* M9: every BO handed out by bo_alloc (MEM_SYNC list for COHERENT_LOCAL on arch 13) */
    pthread_mutex_t bo_lock;
@@ -66,6 +70,12 @@ struct mali_kdev {
    void *pool_release_ctx;
 };
 
+/* Every live kbase context in the process. A CS fault resolves its address against ALL of them: a VA that exists only
+ * in another context (an import we handed over without remapping, a stale descriptor) is the difference between a
+ * garbage pointer and a cross-context one. */
+static struct mali_kdev *g_kdevs[16];
+static pthread_mutex_t g_kdevs_lock = PTHREAD_MUTEX_INITIALIZER;
+
 /* MALI_SUBMIT_DBG bits (hardware diagnosis, default 0). */
 #define DBG_PAD128  0x20u /* 128-byte submissions (ring accounting with another size) */
 #define DBG_VERBOSE 0x80u /* on a failed submit print queue state and the ring around CS_EXTRACT */
@@ -82,6 +92,54 @@ kbase_dbg(const char *fmt, ...)
    va_end(ap);
    fprintf(stderr, "mali_vk: %s\n", line);
    mali_wait_event("%s", line);
+}
+
+/* Which allocation carried the faulting address: a live BO (descriptor field pointing into one), a BO freed since
+ * (the GPU was handed a dead VA), or nothing at all (a garbage VA in a descriptor). */
+static void
+kbase_scan_fault_addr(struct mali_kdev *k, uint64_t a)
+{
+   unsigned hits = 0;
+   for (unsigned i = 0; i < k->nbos && hits < 8; i++) {
+      const struct kb_bo *b = k->bos[i];
+      if (!b->cpu || b->size < sizeof a)
+         continue;
+      const unsigned char *p = b->cpu, *end = p + b->size;
+      while (p + sizeof a <= end && hits < 8) {
+         const unsigned char *h = memmem(p, (size_t)(end - p), &a, sizeof a);
+         if (!h)
+            break;
+         mali_wait_event("kbase fault addr in live bo va=0x%llx size=%zu off=0x%zx flags=0x%x imported=%d dmabuf=%d",
+                         (unsigned long long)b->gpu_va, b->size, (size_t)(h - p), b->flags,
+                         (int)b->imported, b->dmabuf_fd);
+         p = h + sizeof a;
+         hits++;
+      }
+   }
+   unsigned nf = k->nfreed < 64 ? k->nfreed : 64;
+   for (unsigned i = 0; i < nf; i++) {
+      const struct kbase_freed_bo *f = &k->freed[(k->nfreed - nf + i) % 64];
+      if (f->size && f->va <= a && a - f->va < f->size)
+         mali_wait_event("kbase fault addr was a FREED bo va=0x%llx size=%zu off=0x%llx flags=0x%x dmabuf=%d (%u frees ago)",
+                         (unsigned long long)f->va, f->size, (unsigned long long)(a - f->va), f->flags,
+                         f->dmabuf, k->nfreed - i);
+   }
+   if (!hits)
+      mali_wait_event("kbase fault addr not in any live bo");
+   pthread_mutex_lock(&g_kdevs_lock);
+   for (unsigned d = 0; d < 16; d++) {
+      struct mali_kdev *o = g_kdevs[d];
+      if (!o || o == k)
+         continue;
+      for (unsigned i = 0; i < o->nbos; i++) {
+         const struct kb_bo *b = o->bos[i];
+         if (b->size && b->gpu_va <= a && a - b->gpu_va < b->size)
+            mali_wait_event("kbase fault addr is a bo of ANOTHER context ctx=%p va=0x%llx size=%zu off=0x%llx flags=0x%x imported=%d dmabuf=%d",
+                            (void *)o->ctx, (unsigned long long)b->gpu_va, b->size,
+                            (unsigned long long)(a - b->gpu_va), b->flags, (int)b->imported, b->dmabuf_fd);
+      }
+   }
+   pthread_mutex_unlock(&g_kdevs_lock);
 }
 
 /* MALI_WAIT_DBG: after a failed step, everything the ring, the group, the tiler heap and the CS notifications say
@@ -135,6 +193,10 @@ kbase_log_fault(struct mali_kdev *k, const char *step, int r)
                 (unsigned)*k->queue.cs_active, (unsigned long long)k->queue.kicks,
                 (unsigned long long)k->queue.doorbells,
                 (unsigned long long)*(volatile uint64_t *)k->cqs.cpu, (unsigned long long)k->target);
+      for (unsigned i = 0; i < k->nbos && i < 96; i++)
+         kbase_dbg("bo[%u] va=0x%llx size=%zu flags=0x%x imported=%d dmabuf=%d hot=%d",
+                   i, (unsigned long long)k->bos[i]->gpu_va, k->bos[i]->size, k->bos[i]->flags,
+                   (int)k->bos[i]->imported, k->bos[i]->dmabuf_fd, (int)k->bos[i]->hot);
       for (uint64_t o = ext >= 64 ? (ext & ~63ull) - 64 : 0; o < (ext & ~63ull) + 192 && o < k->queue.insert; o += 8)
          kbase_dbg("ring[%4llu]%s %016llx", (unsigned long long)o, o == ext ? "*" : " ",
                    (unsigned long long)ring[(o & (k->queue.ring_size - 1)) / 8]);
@@ -257,6 +319,10 @@ kbase_device_create(const struct mali_gpu_info *gpu, struct mali_kdev **out)
    }
    k->cqs_live = true;
    *(volatile uint64_t *)k->cqs.cpu = 0;
+   pthread_mutex_lock(&g_kdevs_lock);
+   for (unsigned i = 0; i < 16; i++)
+      if (!g_kdevs[i]) { g_kdevs[i] = k; break; }
+   pthread_mutex_unlock(&g_kdevs_lock);
    *out = k;
    return 0;
 }
@@ -266,6 +332,11 @@ kbase_device_destroy(struct mali_kdev *k)
 {
    if (!k)
       return;
+   pthread_mutex_lock(&g_kdevs_lock);
+   for (unsigned i = 0; i < 16; i++)
+      if (g_kdevs[i] == k)
+         g_kdevs[i] = NULL;
+   pthread_mutex_unlock(&g_kdevs_lock);
    for (unsigned i = 0; i < k->npool; i++) {   /* no other thread uses the device any more */
       size_t sz = k->pool[i].bo->size;
       kb_bo_free(k->pool[i].bo);
@@ -542,6 +613,14 @@ kbase_bo_free(struct mali_kdev *k, struct mali_bo *bo)
 {
    if (!bo->priv)
       return;
+   struct kb_bo *kb = bo->priv;
+   if (kb->size) {   /* what a later CS fault can still name as "freed here" */
+      k->freed[k->nfreed % 64].va = kb->gpu_va;
+      k->freed[k->nfreed % 64].size = kb->size;
+      k->freed[k->nfreed % 64].flags = kb->flags;
+      k->freed[k->nfreed % 64].dmabuf = kb->dmabuf_fd;
+      k->nfreed++;
+   }
    (void)track_bo(k, bo->priv, false);
    /* A pooled CPU-cached BO keeps its mapping and is handed out again without the zero+flush of a fresh one: write back any CPU-dirty lines now, or they could
     * be evicted later over the next owner's GPU results. A BO never touched by the CPU (host_lazy still set) has no dirty lines. */
