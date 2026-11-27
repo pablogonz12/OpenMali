@@ -160,6 +160,9 @@ meta_upload_shader(void *u, const uint8_t *bin, uint32_t size, uint64_t *va)
    return 0;
 }
 
+static uint64_t g_alloc_bytes;   /* test statistic: bytes asked of hw_alloc (MALI_ALLOC_STATS=<file> writes the running total at each submit) */
+static uint64_t g_zero_bytes;    /* test statistic: bytes of those that hw_alloc memset to zero (the second number in that file) */
+
 #define ARENA_BYTES (32u << 20)   /* per-frame descriptor arena: ~4.5 KB per draw (two 2 KiB driver sets); 1 MiB capped a frame at ~230 draws */
 #define HEAP_CHUNK (2u << 20)
 
@@ -200,14 +203,16 @@ hw_alloc_ovf(struct mali_hwctx *h, size_t n, size_t al, uint64_t *va, bool zero)
       o = 0;
    }
    h->ovf_off = o + n;
-   if (zero)
+   if (zero) {
       memset((char *)cur->cpu + o, 0, n);
+      g_zero_bytes += n;
+   }
    if (va)
       *va = cur->gpu_va + o;
    return (char *)cur->cpu + o;
 }
 
-static uint64_t g_alloc_bytes;   /* test statistic: bytes asked of hw_alloc (MALI_ALLOC_STATS=<file> writes the running total at each submit) */
+
 
 static void *
 hw_alloc_x(void *u, size_t n, size_t al, uint64_t *va, bool zero)
@@ -229,8 +234,10 @@ hw_alloc_x(void *u, size_t n, size_t al, uint64_t *va, bool zero)
    }
    if (!p)
       return hw_alloc_ovf(h, n, al, va, zero);
-   if (zero)
+   if (zero) {
       memset(p, 0, n);
+      g_zero_bytes += n;
+   }
    return p;
 }
 
@@ -381,7 +388,7 @@ hw_submit_multi(void *u, const uint64_t *cs, unsigned n, unsigned nframes)
       const char *sf = getenv("MALI_ALLOC_STATS");
       FILE *fp = sf ? fopen(sf, "w") : NULL;
       if (fp) {
-         fprintf(fp, "%llu\n", (unsigned long long)g_alloc_bytes);
+         fprintf(fp, "%llu %llu\n", (unsigned long long)g_alloc_bytes, (unsigned long long)g_zero_bytes);
          fclose(fp);
       }
    }
