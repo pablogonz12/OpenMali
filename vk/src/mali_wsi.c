@@ -1762,7 +1762,11 @@ mali_wsi_shared_stats(struct mali_device *dev, struct wsi_swapchain *chain, uint
          (void)be->fence_wait(dev->kdev, ffd, 1000);
       close(ffd);
    }
+   /* Under the live-BO guard: the swapchain image's memory must not be freed while it is sampled. */
+   if (!mali_memory_guard(mi->mem))
+      return;
    mali_sstats_note(&dev->sstats, be, dev->kdev, &mi->mem->bo, MALI_SSTATS_PRESENT, mali_sstats_next(&dev->sstats));
+   mali_memory_unguard();
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL

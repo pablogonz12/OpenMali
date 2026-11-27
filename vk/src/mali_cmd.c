@@ -217,6 +217,11 @@ reset_state(struct mali_cmd_buffer *cmd)
    cmd->ndef = cmd->capdef = 0;
    cmd->nwrote = 0;
    cmd->wrote_full = false;
+   /* The read marks are recording state too, and a buffer is normally reset and re-recorded every frame: without
+    * this a reset buffer hands the submit the imported dma-bufs of the FRAME BEFORE, whose VkDeviceMemory the app
+    * may already have freed (X8 Xwayland SIGSEGV, smoke x8-1127-233142: kbase_bo_host_touch on a freed BO). */
+   cmd->nread = 0;
+   cmd->read_full = false;
    mali_meta_cmd_forget(cmd);
 }
 
@@ -1920,9 +1925,19 @@ mali_cmd_submit(struct vk_command_buffer *vk)
    /* M15: hand the GPU-write marks to the backend before the submission that performs them, so the fence wait
     * for it CSYNCs exactly these BOs. An unplaced write (wrote_full) asks for one full sweep. */
    if (g_hw.bo_wrote) {
-      for (unsigned i = 0; i < cmd->nwrote; i++)
+      bool swept = cmd->wrote_full;
+      for (unsigned i = 0; i < cmd->nwrote; i++) {
+         /* A mark can name memory the app freed after recording (illegal, and still must not crash): guard holds
+          * the live registry lock, so the BO cannot go away under bo_wrote. A dead mark falls back to the full
+          * sweep, which is what an unlisted write does. */
+         if (!mali_memory_guard(cmd->wrote[i])) {
+            swept = true;
+            continue;
+         }
          g_hw.bo_wrote(g_hw.user, &cmd->wrote[i]->bo);
-      if (cmd->wrote_full)
+         mali_memory_unguard();
+      }
+      if (swept)
          g_hw.bo_wrote(g_hw.user, NULL);
    }
    for (unsigned i = 0; i < cmd->nframes; i++) {

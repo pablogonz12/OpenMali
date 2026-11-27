@@ -51,7 +51,18 @@ struct mali_memory {
    struct mali_bo bo;
    bool mapped;
    uint8_t isync;   /* MALI_ISYNC_BO_* (mali_isync.h): exported/imported dma-buf, or a swapchain image */
+   struct mali_memory *live_next;   /* mali_memory.c live registry (mali_memory_live) */
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(mali_memory, vk.base, VkDeviceMemory, VK_OBJECT_TYPE_DEVICE_MEMORY)
+
+/* The live VkDeviceMemory objects of this process (mali_memory.c). A command buffer keeps raw struct mali_memory *
+ * from RECORD time in its wrote[]/read[] marks, and the app may vkFreeMemory before it submits: a mark can point at
+ * freed memory. The implicit-sync submit and MALI_SHARED_STATS read those marks, so they ask here first, and
+ * mali_memory_guard() also stops vkFreeMemory from releasing the memory under the read (it takes the same lock).
+ * guard: true = the pointer was live and the registry lock is HELD, call mali_memory_unguard() after the access;
+ * false = gone, the lock is released. Not re-entrant. */
+bool mali_memory_live(const struct mali_memory *m);
+bool mali_memory_guard(struct mali_memory *m);
+void mali_memory_unguard(void);
 
 #endif

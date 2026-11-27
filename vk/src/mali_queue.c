@@ -672,30 +672,41 @@ submit_shared_collect(struct vk_queue_submit *submit, struct mali_isync_submit *
          out->unlisted = true;
       for (unsigned j = 0; j < cmd->nwrote; j++) {
          struct mali_memory *m = cmd->wrote[j];
-         if (!m || m->bo.dmabuf_fd < 0)
+         /* A mark is a record-time pointer: the app may have freed the memory before this submit. Only fds are
+          * passed on, so the guard is released before the sync ioctls. */
+         if (!mali_memory_guard(m))
             continue;
-         if (m->isync != MALI_ISYNC_BO_EXPORTED && m->isync != MALI_ISYNC_BO_IMPORTED)
+         if (m->bo.dmabuf_fd < 0 || (m->isync != MALI_ISYNC_BO_EXPORTED && m->isync != MALI_ISYNC_BO_IMPORTED)) {
+            mali_memory_unguard();
             continue;
+         }
+         const int fd = m->bo.dmabuf_fd;
+         const bool imported = m->isync == MALI_ISYNC_BO_IMPORTED;
          bool dup = false, idup = false;
          for (unsigned q = 0; q < out->n; q++)
-            dup |= out->fd[q] == m->bo.dmabuf_fd;
+            dup |= out->fd[q] == fd;
          if (dup) {
             for (unsigned q = 0; q < out->nimp; q++)
-               idup |= out->imp[q] == m->bo.dmabuf_fd;
+               idup |= out->imp[q] == fd;
          } else if (out->n < MALI_ISYNC_MAX_BOS) {
-            out->fd[out->n++] = m->bo.dmabuf_fd;
+            out->fd[out->n++] = fd;
          } else {
             out->unlisted = true;
          }
-         if (m->isync == MALI_ISYNC_BO_IMPORTED && !idup)
-            submit_shared_add_imp(out, m->bo.dmabuf_fd);
+         mali_memory_unguard();
+         if (imported && !idup)
+            submit_shared_add_imp(out, fd);
       }
       /* The consumer side proper: imported dma-bufs this command buffer only reads (descriptors, attachments,
        * copy/blit sources). Without this a reader that never waits would still race the producer's frame. */
       for (unsigned j = 0; j < cmd->nread; j++) {
          struct mali_memory *m = cmd->read[j];
-         if (m && m->bo.dmabuf_fd >= 0)
-            submit_shared_add_imp(out, m->bo.dmabuf_fd);
+         if (!mali_memory_guard(m))
+            continue;
+         const int fd = m->bo.dmabuf_fd;
+         mali_memory_unguard();
+         if (fd >= 0)
+            submit_shared_add_imp(out, fd);
       }
    }
 }
@@ -719,6 +730,17 @@ submit_stats_add(struct mali_memory **list, unsigned *n, struct mali_memory *m)
       list[(*n)++] = m;
 }
 
+/* Sample one mark's BO: only under the live registry guard, so a memory freed between record and submit is skipped
+ * instead of reaching bo_host_touch (the X8 Xwayland SIGSEGV, smoke x8-1127-233142). */
+static void
+stats_note_mem(struct mali_device *dev, struct mali_memory *m, enum mali_sstats_kind kind, uint64_t seq)
+{
+   if (!mali_memory_guard(m))
+      return;
+   mali_sstats_note(&dev->sstats, mali_device_pdev(dev)->backend, dev->kdev, &m->bo, kind, seq);
+   mali_memory_unguard();
+}
+
 /* Only called when MALI_SHARED_STATS is on: it walks every command buffer's marks. */
 static void
 submit_stats_collect(struct vk_queue_submit *submit, struct mali_stats_submit *out)
@@ -728,12 +750,21 @@ submit_stats_collect(struct vk_queue_submit *submit, struct mali_stats_submit *o
       struct mali_cmd_buffer *cmd = mali_cmd_buffer_from_vk(submit->command_buffers[i]);
       for (unsigned j = 0; j < cmd->nwrote; j++) {
          struct mali_memory *m = cmd->wrote[j];
-         if (m && m->bo.dmabuf_fd >= 0 && (m->isync == MALI_ISYNC_BO_EXPORTED || m->isync == MALI_ISYNC_BO_IMPORTED))
+         if (!mali_memory_guard(m))
+            continue;
+         const bool shared = m->bo.dmabuf_fd >= 0 &&
+                             (m->isync == MALI_ISYNC_BO_EXPORTED || m->isync == MALI_ISYNC_BO_IMPORTED);
+         mali_memory_unguard();
+         if (shared)
             submit_stats_add(out->wrote, &out->nwrote, m);
       }
       for (unsigned j = 0; j < cmd->nread; j++) {
          struct mali_memory *m = cmd->read[j];
-         if (m && m->bo.dmabuf_fd >= 0)
+         if (!mali_memory_guard(m))
+            continue;
+         const bool shared = m->bo.dmabuf_fd >= 0;
+         mali_memory_unguard();
+         if (shared)
             submit_stats_add(out->read, &out->nread, m);
       }
    }
@@ -743,9 +774,8 @@ submit_stats_collect(struct vk_queue_submit *submit, struct mali_stats_submit *o
 static void
 submit_stats_consumer(struct mali_device *dev, const struct mali_stats_submit *st, uint64_t seq)
 {
-   const struct mali_backend_ops *be = mali_device_pdev(dev)->backend;
    for (unsigned i = 0; i < st->nread; i++)
-      mali_sstats_note(&dev->sstats, be, dev->kdev, &st->read[i]->bo, MALI_SSTATS_READ, seq);
+      stats_note_mem(dev, st->read[i], MALI_SSTATS_READ, seq);
 }
 
 /* Producer side: this process's output. The sample may only be taken once the submit has retired (fence_wait) and
@@ -759,7 +789,7 @@ submit_stats_producer(struct mali_device *dev, const struct mali_stats_submit *s
    if (fence_fd >= 0 && be->fence_wait)
       (void)be->fence_wait(dev->kdev, fence_fd, -1);
    for (unsigned i = 0; i < st->nwrote; i++)
-      mali_sstats_note(&dev->sstats, be, dev->kdev, &st->wrote[i]->bo, MALI_SSTATS_WRITE, seq);
+      stats_note_mem(dev, st->wrote[i], MALI_SSTATS_WRITE, seq);
 }
 
 static VkResult mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint32_t *imported);

@@ -186,6 +186,18 @@ run "queue teardown v13"  0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 MALI_FAKE_SLOW_U
 run "queue all v13 slow" 0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 MALI_FAKE_SLOW_US=200 $TQ --submits 1000
 # present ordering (queue-order): the commit never precedes the frame; with a fence it may (MALI_PRESENT_FENCE forces the kernel capability)
 for m in 0 1; do run "present order fence=$m" 0 MALI_BACKEND=fake MALI_FAKE_SLOW_US=100000 MALI_PRESENT_FENCE=$m $TQ --only order; done
+# Stale memory marks (mali_cmd.h wrote[]/read[]): a buffer recorded against an imported dma-buf and re-recorded or
+# freed before the submit must not hand a dangling struct mali_memory to the backend. MALI_SHARED_STATS=1 is the arm
+# that crashed Xwayland on the X8 (smoke x8-1127-233142, kbase_bo_host_touch via mali_sstats_note), so it runs here
+# with the sink on: no shared_ line may name a BO whose memory is gone.
+rm -f "$OUT"/sstats-stale-*.log
+run "stale memory marks" 0 MALI_BACKEND=fake MALI_FAKE_DMABUF_SYNC=1 MALI_SHARED_STATS=1 MALI_WAIT_DBG=$OUT/sstats-stale $TQ --only stale
+if grep -q '^shared_' "$OUT"/sstats-stale-*.log 2>/dev/null; then
+   echo "FAIL  MALI_SHARED_STATS sampled a freed BO"; grep -h '^shared_' "$OUT"/sstats-stale-*.log | head -3 | sed 's/^/        /'; fail=1
+else
+   echo "ok    MALI_SHARED_STATS: no line for a BO whose memory was freed before the submit"
+fi
+rm -f "$OUT"/sstats-stale-*.log
 # Implicit sync (mali_isync.c): a submit that only SAMPLES an imported dma-buf waits its producer's fence before it
 # runs (the Xwayland-glamor read path); MALI_IMPLICIT_SYNC=0 is the A/B arm. Both compare against a control submit.
 run "implicit sync: sampled imported BO waits" 0 MALI_BACKEND=fake MALI_FAKE_DMABUF_SYNC=1 MALI_FAKE_SLOW_US=150000 $TQ --only isync
