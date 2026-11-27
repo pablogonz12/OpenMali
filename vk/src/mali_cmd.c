@@ -218,6 +218,10 @@ reset_state(struct mali_cmd_buffer *cmd)
    cmd->ndef = cmd->capdef = 0;
    cmd->nwrote = 0;
    cmd->wrote_full = false;
+   /* implicit sync: the read marks are per recording too. A reset buffer that kept them could wait (or, worse, name)
+    * an imported dma-buf that its owner has freed since. */
+   cmd->nread = 0;
+   cmd->read_full = false;
    mali_meta_cmd_forget(cmd);
 }
 
