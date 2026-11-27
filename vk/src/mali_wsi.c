@@ -428,8 +428,10 @@ mali_wsi_get_present_modes(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface
    struct mali_physical_device *pdev = container_of(vk_pdev, struct mali_physical_device, vk);
    struct wsi_interface *iface = pdev->wsi.wsi[((VkIcdSurfaceBase *)(uintptr_t)surface)->platform];
 
-   if (!iface)
+   if (!iface) {
+      mali_wait_event("SurfacePresentModes result=%d", VK_ERROR_SURFACE_LOST_KHR);
       return VK_ERROR_SURFACE_LOST_KHR;
+   }
    /* before the list is built: IMMEDIATE goes with the software path */
    const bool sw_now = mali_wsi_x11_maybe_sw_surface(pdev, surface);
    const struct mali_wsi_mode saved = mali_wsi_sw_enter(pdev, (VkIcdSurfaceBase *)(uintptr_t)surface, sw_now);
@@ -438,6 +440,7 @@ mali_wsi_get_present_modes(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface
       mali_wsi_sw_leave(pdev, saved);
       if (r == VK_SUCCESS && pdev->wsi.sw && *count < UINT32_MAX)
          (*count)++;   /* upper bound: the enumeration below decides whether IMMEDIATE is really missing */
+      mali_wait_event("SurfacePresentModes result=%d count=%u", r, *count);
       return r;
    }
    /* Enumerate, then return the list unchanged except for IMMEDIATE appended on the software path. */
@@ -445,8 +448,10 @@ mali_wsi_get_present_modes(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface
    uint32_t n = 8;
    VkResult r = iface->get_present_modes((VkIcdSurfaceBase *)(uintptr_t)surface, pdev->vk.wsi_device, &n, all);
    mali_wsi_sw_leave(pdev, saved);
-   if (r != VK_SUCCESS && r != VK_INCOMPLETE)
+   if (r != VK_SUCCESS && r != VK_INCOMPLETE) {
+      mali_wait_event("SurfacePresentModes result=%d", r);
       return r;
+   }
    const bool x11 = ((VkIcdSurfaceBase *)(uintptr_t)surface)->platform == VK_ICD_WSI_PLATFORM_XCB ||
                     ((VkIcdSurfaceBase *)(uintptr_t)surface)->platform == VK_ICD_WSI_PLATFORM_XLIB;
    if (pdev->wsi.sw && x11) {   /* X11 only: Wayland's driver (wsi_common_wayland) has its own list */
@@ -459,7 +464,11 @@ mali_wsi_get_present_modes(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface
    const uint32_t out = MIN2(*count, n);
    memcpy(modes, all, out * sizeof(*modes));
    *count = out;
-   return out < n ? VK_INCOMPLETE : VK_SUCCESS;
+   r = out < n ? VK_INCOMPLETE : VK_SUCCESS;
+   mali_wait_event("SurfacePresentModes result=%d count=%u", r, out);
+   for (uint32_t i = 0; i < out; i++)
+      mali_wait_event("SurfacePresentModes[%u] mode=%d", i, modes[i]);
+   return r;
 }
 
 /* Mesa's wsi_device->sw is device-wide, but the no-DRI3 fallback is an X11 decision (see the long note in
@@ -696,7 +705,45 @@ mali_wsi_get_surface_support(VkPhysicalDevice physicalDevice, uint32_t queueFami
    const struct mali_wsi_mode saved = mali_wsi_sw_enter(pdev, (VkIcdSurfaceBase *)(uintptr_t)surface, sw_now);
    VkResult r = wsi_GetPhysicalDeviceSurfaceSupportKHR(physicalDevice, queueFamilyIndex, surface, supported);
    mali_wsi_sw_leave(pdev, saved);
+   mali_wait_event("SurfaceSupport queue=%u result=%d supported=%u", queueFamilyIndex, r,
+                   r == VK_SUCCESS ? *supported : 0);
    return r;
+}
+
+static void
+mali_wsi_log_caps(const char *name, VkResult r, const VkSurfaceCapabilitiesKHR *caps)
+{
+   if (r == VK_SUCCESS)
+      mali_wait_event("%s result=%d minImageCount=%u maxImageCount=%u currentExtent=%ux%u "
+                      "supportedCompositeAlpha=0x%x supportedUsageFlags=0x%x", name, r,
+                      caps->minImageCount, caps->maxImageCount, caps->currentExtent.width,
+                      caps->currentExtent.height, caps->supportedCompositeAlpha, caps->supportedUsageFlags);
+   else
+      mali_wait_event("%s result=%d", name, r);
+}
+
+static void
+mali_wsi_log_xcb_window(VkSurfaceKHR handle)
+{
+#if defined(VK_USE_PLATFORM_XCB_KHR)
+   if (!mali_wait_debug())
+      return;
+   VkIcdSurfaceBase *base = (VkIcdSurfaceBase *)(uintptr_t)handle;
+   if (base->platform != VK_ICD_WSI_PLATFORM_XCB)
+      return;
+   VkIcdSurfaceXcb *surface = (VkIcdSurfaceXcb *)base;
+   xcb_get_window_attributes_cookie_t ac = xcb_get_window_attributes(surface->connection, surface->window);
+   xcb_get_geometry_cookie_t gc = xcb_get_geometry(surface->connection, surface->window);
+   xcb_get_window_attributes_reply_t *a = xcb_get_window_attributes_reply(surface->connection, ac, NULL);
+   xcb_get_geometry_reply_t *g = xcb_get_geometry_reply(surface->connection, gc, NULL);
+   mali_wait_event("SurfaceCapabilities window=0x%x visual=0x%x depth=%u attributes=%s geometry=%s",
+                   surface->window, a ? a->visual : 0, g ? g->depth : 0,
+                   a ? "ok" : "error", g ? "ok" : "error");
+   free(a);
+   free(g);
+#else
+   (void)handle;
+#endif
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -709,6 +756,8 @@ mali_wsi_get_surface_capabilities(VkPhysicalDevice physicalDevice, VkSurfaceKHR 
    const struct mali_wsi_mode saved = mali_wsi_sw_enter(pdev, (VkIcdSurfaceBase *)(uintptr_t)surface, sw_now);
    VkResult r = wsi_GetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, caps);
    mali_wsi_sw_leave(pdev, saved);
+   mali_wsi_log_caps("SurfaceCapabilities", r, caps);
+   mali_wsi_log_xcb_window(surface);
    return r;
 }
 
@@ -722,6 +771,10 @@ mali_wsi_get_surface_formats(VkPhysicalDevice physicalDevice, VkSurfaceKHR surfa
    const struct mali_wsi_mode saved = mali_wsi_sw_enter(pdev, (VkIcdSurfaceBase *)(uintptr_t)surface, sw_now);
    VkResult r = wsi_GetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, count, formats);
    mali_wsi_sw_leave(pdev, saved);
+   mali_wait_event("SurfaceFormats result=%d count=%u", r, *count);
+   if (formats && (r == VK_SUCCESS || r == VK_INCOMPLETE))
+      for (uint32_t i = 0; i < *count; i++)
+         mali_wait_event("SurfaceFormats[%u] format=%d colorspace=%d", i, formats[i].format, formats[i].colorSpace);
    return r;
 }
 /* The *2 forms answer from wsi_device directly and were unwrapped: wsi_common.c:1149/1244 take
@@ -742,6 +795,8 @@ mali_wsi_get_surface_capabilities2(VkPhysicalDevice physicalDevice,
    const struct mali_wsi_mode saved = mali_wsi_sw_enter(pdev, surface, sw_now);
    VkResult r = wsi_GetPhysicalDeviceSurfaceCapabilities2KHR(physicalDevice, pSurfaceInfo, pSurfaceCapabilities);
    mali_wsi_sw_leave(pdev, saved);
+   mali_wsi_log_caps("SurfaceCapabilities2", r, &pSurfaceCapabilities->surfaceCapabilities);
+   mali_wsi_log_xcb_window(pSurfaceInfo->surface);
    return r;
 }
 
@@ -755,8 +810,13 @@ mali_wsi_get_surface_formats2(VkPhysicalDevice physicalDevice, const VkPhysicalD
    const bool sw_now = mali_wsi_x11_maybe_sw_surface(pdev, pSurfaceInfo->surface);
    const struct mali_wsi_mode saved = mali_wsi_sw_enter(pdev, surface, sw_now);
    VkResult r = wsi_GetPhysicalDeviceSurfaceFormats2KHR(physicalDevice, pSurfaceInfo, pSurfaceFormatCount,
-                                                        pSurfaceFormats);
+                                                         pSurfaceFormats);
    mali_wsi_sw_leave(pdev, saved);
+   mali_wait_event("SurfaceFormats2 result=%d count=%u", r, *pSurfaceFormatCount);
+   if (pSurfaceFormats && (r == VK_SUCCESS || r == VK_INCOMPLETE))
+      for (uint32_t i = 0; i < *pSurfaceFormatCount; i++)
+         mali_wait_event("SurfaceFormats2[%u] format=%d colorspace=%d", i,
+                         pSurfaceFormats[i].surfaceFormat.format, pSurfaceFormats[i].surfaceFormat.colorSpace);
    return r;
 }
 
@@ -782,6 +842,7 @@ mali_wsi_xcb_presentation_support(VkPhysicalDevice physicalDevice, uint32_t queu
                                         pdev->wsi.GetMemoryFdKHR == NULL);
    VkBool32 r = wsi_GetPhysicalDeviceXcbPresentationSupportKHR(physicalDevice, queueFamilyIndex, connection, visual_id);
    mali_wsi_sw_leave(pdev, saved);
+   mali_wait_event("XcbPresentationSupport visual=0x%x result=%u", visual_id, r);
    return r;
 }
 #endif
@@ -821,6 +882,7 @@ mali_wsi_xlib_presentation_support(VkPhysicalDevice physicalDevice, uint32_t que
                                         pdev->wsi.GetMemoryFdKHR == NULL);
    VkBool32 r = wsi_GetPhysicalDeviceXlibPresentationSupportKHR(physicalDevice, queueFamilyIndex, dpy, visual_id);
    mali_wsi_sw_leave(pdev, saved);
+   mali_wait_event("XlibPresentationSupport visual=0x%lx result=%u", (unsigned long)visual_id, r);
    return r;
 }
 #endif
@@ -2001,6 +2063,9 @@ mali_wsi_create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *ci,
       r = VK_ERROR_INITIALIZATION_FAILED;
    }
 
+   mali_wait_event("CreateSwapchain format=%d colorspace=%d compositeAlpha=0x%x presentMode=%d extent=%ux%u result=%d",
+                   ci->imageFormat, ci->imageColorSpace, ci->compositeAlpha, ci->presentMode,
+                   ci->imageExtent.width, ci->imageExtent.height, r);
    if (mali_wsi_debug() || r != VK_SUCCESS) {
       /* Every platform, Wayland included: the product path (gamescope's WSI layer hands a Wayland dma-buf) is the
        * one these diagnostics exist for. comm and pid say which process the swapchain belongs to, surface which
