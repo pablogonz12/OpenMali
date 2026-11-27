@@ -43,6 +43,8 @@ struct mali_kdev {
    bool lost;
    unsigned dbg;                /* MALI_SUBMIT_DBG bit mask (DBG_*) */
    struct kb_tiler_heap *heap;  /* the live tiler heap (kbase_log_fault): its state decides "no free chunk" faults */
+   uint64_t last_cs[256];       /* MALI_SUBMIT_DBG=0x80: the last piece handed to the ring, dumped if a fault follows */
+   unsigned last_n;
 
    /* M9: every BO handed out by bo_alloc (MEM_SYNC list for COHERENT_LOCAL on arch 13) */
    pthread_mutex_t bo_lock;
@@ -108,6 +110,35 @@ kbase_log_fault(struct mali_kdev *k, const char *step, int r)
                       (unsigned long long)f->sideband, (int)f->fatal, f->text);
    else
       mali_wait_event("kbase last fatal event none");
+   /* A fault address only becomes a cause with the BO map next to it: which allocation (if any) owned it. */
+   if (f) {
+      uint64_t a = f->sideband;
+      struct kb_bo *owner = NULL;
+      for (unsigned i = 0; i < k->nbos && a; i++) {
+         struct kb_bo *b = k->bos[i];
+         if (b->gpu_va <= a && a - b->gpu_va < b->size) { owner = b; break; }
+      }
+      if (a)
+         mali_wait_event("kbase fault addr=0x%llx live_region=%d owner_bo=%s va=0x%llx size=%zu off=0x%llx flags=0x%x imported=%d dmabuf=%d",
+                         (unsigned long long)a, (int)kb_bo_gpu_va_live(k->ctx, a & ~0xfffull), owner ? "yes" : "no",
+                         owner ? (unsigned long long)owner->gpu_va : 0ull, owner ? owner->size : (size_t)0,
+                         owner ? (unsigned long long)(a - owner->gpu_va) : 0ull,
+                         owner ? owner->flags : 0u, owner ? (int)owner->imported : 0,
+                         owner ? owner->dmabuf_fd : -1);
+   }
+   if (k->dbg & DBG_VERBOSE) {
+      uint64_t ext = kb_queue_extract(&k->queue);
+      for (unsigned i = 0; i < k->last_n; i++)
+         kbase_dbg("cs[%3u] %016llx", i, (unsigned long long)k->last_cs[i]);
+      const uint64_t *ring = k->queue.ring.cpu;
+      kbase_dbg("dbg=0x%x active=%u kicks=%llu doorbells=%llu cqs=%llu target=%llu", k->dbg,
+                (unsigned)*k->queue.cs_active, (unsigned long long)k->queue.kicks,
+                (unsigned long long)k->queue.doorbells,
+                (unsigned long long)*(volatile uint64_t *)k->cqs.cpu, (unsigned long long)k->target);
+      for (uint64_t o = ext >= 64 ? (ext & ~63ull) - 64 : 0; o < (ext & ~63ull) + 192 && o < k->queue.insert; o += 8)
+         kbase_dbg("ring[%4llu]%s %016llx", (unsigned long long)o, o == ext ? "*" : " ",
+                   (unsigned long long)ring[(o & (k->queue.ring_size - 1)) / 8]);
+   }
 }
 
 static bool k_int_nocoh_default;   /* arch 11: driver-internal BOs without COHERENT_LOCAL/MEM_SYNC */
@@ -651,17 +682,6 @@ out:
       kbase_dbg("submit #%llu failed: %d (extract=%llu insert=%llu faulted=%d)",
                 (unsigned long long)k->submits + 1, r, (unsigned long long)kb_queue_extract(&k->queue),
                 (unsigned long long)k->queue.insert, (int)kb_queue_faulted(&k->queue));
-      if (k->dbg & DBG_VERBOSE) {
-         uint64_t ext = kb_queue_extract(&k->queue);
-         const uint64_t *ring = k->queue.ring.cpu;
-         kbase_dbg("dbg=0x%x active=%u kicks=%llu doorbells=%llu cqs=%llu target=%llu", k->dbg,
-                   (unsigned)*k->queue.cs_active, (unsigned long long)k->queue.kicks,
-                   (unsigned long long)k->queue.doorbells,
-                   (unsigned long long)*(volatile uint64_t *)k->cqs.cpu, (unsigned long long)k->target);
-         for (uint64_t o = ext >= 64 ? (ext & ~63ull) - 64 : 0; o < (ext & ~63ull) + 128 && o < k->queue.insert; o += 8)
-            kbase_dbg("ring[%4llu]%s %016llx", (unsigned long long)o, o == ext ? "*" : " ",
-                      (unsigned long long)ring[(o & (k->queue.ring_size - 1)) / 8]);
-      }
       k->lost = true;
    }
    pthread_mutex_unlock(&k->submit_lock);
@@ -836,12 +856,18 @@ kbase_submit_cs(struct mali_kdev *k, const uint64_t *cs, unsigned n)
          kbase_log_fault(k, "ring_space", r);
          break;
       }
-      if ((r = kb_queue_submit(&k->queue, cs + i, m, KB_KICK_IOCTL)))
+      if ((r = kb_queue_submit(&k->queue, cs + i, m, KB_KICK_IOCTL))) {
          kbase_log_fault(k, "kick_ioctl", r);
+      } else if (k->dbg & DBG_VERBOSE) {
+         /* The fault usually surfaces on a LATER submit (the ring is asynchronous): keep this piece until then. */
+         k->last_n = m < 256 ? m : 256;
+         memcpy(k->last_cs, cs + i, (size_t)k->last_n * sizeof *cs);
+      }
    }
    if (r) {
       kbase_dbg("CS submit failed: %d (extract=%llu insert=%llu)", r,
                 (unsigned long long)kb_queue_extract(&k->queue), (unsigned long long)k->queue.insert);
+      /* MALI_SUBMIT_DBG=0x80: the piece that faulted, word by word, so the faulting VA can be found in it. */
       k->lost = true;
    }
 out:
