@@ -7,6 +7,23 @@ DEPLOY=${DEPLOY:-${MALI_DEPLOY_DIR:-$HOME/.local/share/mali-deploy}}     # one d
 LANES=${LANES:-${MALI_LANES_DIR:-$HOME/.local/share/mali-lanes}}    # lane worktrees live on disk, never on the /tmp tmpfs
 CACHE=${CACHE:-$HOME/.cache/mali-orchestrator}            # screenshots, smoke runs, logs
 die() { echo "ERROR: $1" >&2; exit "${2:-2}"; }
+phone_lock() {
+  local n=$1 f owner cmd
+  [[ "$n" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo "REFUSED: invalid phone name" >&2; return 4; }
+  mkdir -p "$M/locks" || return 4
+  f="$M/locks/$n.lock"
+  exec {MALI_LOCK_FD}>>"$f" || return 4
+  if ! flock -n "$MALI_LOCK_FD"; then
+    owner=$(cat "$f" 2>/dev/null)
+    PHONE_LOCK_REASON="PHONE_LOCKED by ${owner:-unknown}"
+    echo "REFUSED: $PHONE_LOCK_REASON" >&2
+    return 4
+  fi
+  cmd=$(tr '\0' ' ' < "/proc/$$/cmdline" 2>/dev/null)
+  printf '%s %s since %s\n' "$$" "$cmd" "$(date -Is)" > "$f"
+  MALI_LOCK_HELD=$n
+  export MALI_LOCK_HELD
+}
 phones() { grep -v -e '^#' -e '^$' "$M/phones.conf" | cut -d'|' -f1 | tr '\n' ' '; }
 # farm_state -> "desktop=inactive laptop=inactive". The farm unit exists on every host that shares ~/.config (Syncthing);
 # the laptop's ran unnoticed 2026-11-19..21 and panicked the CMF. FARM_HOSTS: ssh aliases of the other hosts.

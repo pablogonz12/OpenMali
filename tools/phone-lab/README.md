@@ -37,6 +37,16 @@ explicitly if other machines can run the farm. `M` overrides the lab root.
 - Respect battery and thermal refusals. Deploy only a stashed build using
   `bin/deploy <alias> <sha>` for the plan and `--apply` to execute; verify the
   expected commit with a clean smoke run.
+- `bundle` and `import` are unverified on hardware. For `bundle`, create
+  `$M/android-cache/<alias>.json` with `tar` (path to the cached Android
+  half), `gpu` (alphanumeric identifier), and `sha256` (a map from each
+  bundled Android filename to its independently verified SHA-256). Import
+  records a next-session guest SHA-256 check; perform it before
+  trusting the imported library. `IMPORT_HUNG` sends BACK once and requires
+  manual inspection of the captured image; it never retries.
+- `smoke`, `soak`, `bundle`, `import`, and direct session-changing `ddc`
+  commands use `flock` per phone. Older already-running scripts do not hold
+  these locks; do not use the lock as proof no legacy lane is active.
 - Interpret `LIVE` as a changing live game, `SHELF_OK` as a live painted menu,
   and `REFUSED` as no change. `BLACK`, `STATIC`, `START_FAILED`, `WRONG_BUILD`
   and `INTERRUPTED` are not successful product-path results. Inspect captured

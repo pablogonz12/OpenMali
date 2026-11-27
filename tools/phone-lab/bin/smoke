@@ -160,6 +160,13 @@ while [ $# -gt 0 ]; do
     *) usage;;
   esac
 done
+if ! phone_lock "$name"; then
+  python3 - "$name" "${PHONE_LOCK_REASON:-PHONE_LOCKED}" <<'PY'
+import json, sys
+print(json.dumps({"phone":sys.argv[1], "verdict":"REFUSED", "reason":sys.argv[2], "restored":True}))
+PY
+  exit 5
+fi
 phone "$name" || exit $?
 out="$CACHE/smoke/$P_NAME-$(date +%m%d-%H%M%S)"; mkdir -p "$out"
 # "newer than the session start", for the engine log. -newermt is parsed in the GUEST's timezone, so take 10 min off:

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# bundle <phone> <libvulkan_mali.so> [--tag x]
+# Build a unique DroidDeck pair ZIP; verifies the cached Android half.
+# Reads the phone's bundle registry under its phone lock; does not import.
+set -u
+. "$(dirname "$0")/lib.sh"
+export M CACHE
+case ${1:-} in ""|--help|-h) sed -n '2,4p' "$0"; exit 0;; esac
+[ "$#" -ge 2 ] || { echo "bundle: missing library" >&2; exit 2; }
+phone_lock "$1" || exit 4
+exec python3 "$(dirname "$0")/bundle-build.py" "$@"
