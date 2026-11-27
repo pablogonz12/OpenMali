@@ -183,6 +183,7 @@ kbase_log_fault(struct mali_kdev *k, const char *step, int r)
                          owner ? (unsigned long long)(a - owner->gpu_va) : 0ull,
                          owner ? owner->flags : 0u, owner ? (int)owner->imported : 0,
                          owner ? owner->dmabuf_fd : -1);
+      kbase_scan_fault_addr(k, a);
    }
    if (k->dbg & DBG_VERBOSE) {
       uint64_t ext = kb_queue_extract(&k->queue);
