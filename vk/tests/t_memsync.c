@@ -207,6 +207,10 @@ int main(void)
       /* ---- MALI_SYNC_READ: a device->CPU MEM_SYNC only for a BO the CPU can read now (mapped), which is what the CMF's
        * Xwayland needed: it swept 1314 unmapped imports (2.9 GB) on every fence wait, 105 times a second ---- */
       {
+         /* The policy is read at every sync, so an inherited MALI_SYNC_READ=0 would turn the default-policy assertions
+          * below into old-behaviour assertions. Save it, run the default, restore it at the end of the block. */
+         char *env_read = getenv("MALI_SYNC_READ") ? strdup(getenv("MALI_SYNC_READ")) : NULL;
+         unsetenv("MALI_SYNC_READ");
          struct mali_bo rd[2];   /* [0] mapped by the app, [1] never mapped */
          if (b->bo_alloc(k, 65536, MALI_BO_HOSTLAZY, &rd[0]) || b->bo_alloc(k, 65536, MALI_BO_HOSTLAZY, &rd[1])) {
             printf("FAIL  bo_alloc sync-read\n");
@@ -258,6 +262,33 @@ int main(void)
          b->wait_counter(k, &c3, 1, 100);
          EXPECT(kb_fake_memsync_count(rd[1].gpu_va) == after_unmap + 1, "MALI_SYNC_READ=0: the unmapped BO is swept again (old behaviour, %u)", kb_fake_memsync_count(rd[1].gpu_va) - after_unmap);
          unsetenv("MALI_SYNC_READ");
+         if (env_read) { setenv("MALI_SYNC_READ", env_read, 1); free(env_read); }
+
+         /* a write the front end could not place (bo_wrote(NULL)) is a device-wide fallback: it covers the BOs the
+          * per-BO rule skips, and mapping one BO must not consume it */
+         {
+            unsigned u0 = kb_fake_memsync_count(rd[1].gpu_va);
+            struct mali_bo imp2, impsrc;
+            if (b->bo_alloc(k, 65536, MALI_BO_EXPORT, &impsrc)) { printf("FAIL  bo_alloc import source\n"); return 1; }
+            int ifd = b->bo_export(k, &impsrc);
+            if (ifd < 0 || b->bo_import(k, ifd, 65536, 0, &imp2)) { printf("FAIL  import for the fallback case\n"); return 1; }
+            unsigned i0 = kb_fake_memsync_count(imp2.gpu_va);
+            b->bo_wrote(k, NULL);
+            b->wait_counter(k, &c3, 1, 100);
+            EXPECT(kb_fake_memsync_count(rd[1].gpu_va) == u0 + 1, "fallback: an unplaceable write sweeps even an unmapped BO (%u)", kb_fake_memsync_count(rd[1].gpu_va) - u0);
+            EXPECT(kb_fake_memsync_count(imp2.gpu_va) == i0 + 1, "... and an import that is not mapped (%u)", kb_fake_memsync_count(imp2.gpu_va) - i0);
+
+            b->bo_wrote(k, NULL);                      /* a second unplaceable write */
+            b->bo_host_touch(k, &rd[0]);               /* map one BO: its own sync must not consume the fallback */
+            unsigned after_map = kb_fake_memsync_count(rd[1].gpu_va);
+            b->wait_counter(k, &c3, 1, 100);
+            EXPECT(kb_fake_memsync_count(rd[1].gpu_va) == after_map + 1, "fallback: mapping one BO does not clear the device-wide sweep (%u)", kb_fake_memsync_count(rd[1].gpu_va) - after_map);
+
+            /* an import carries no marks: mapping it always refreshes it once */
+            unsigned m0 = kb_fake_memsync_count(imp2.gpu_va);
+            b->bo_host_touch(k, &imp2);
+            EXPECT(kb_fake_memsync_count(imp2.gpu_va) == m0 + 1, "import: a map refreshes it even without a write mark (%u)", kb_fake_memsync_count(imp2.gpu_va) - m0);
+         }
 
          /* the buffer path calls bo_host_touch with no kdev (mali_buffer.c: a rebind before any submit). The map-time
           * sync must not dereference it: that NULL deref (0x1c8, the offset of a kdev member) segfaulted Xwayland at

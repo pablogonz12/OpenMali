@@ -248,8 +248,8 @@ wait_init(void)
    const char *env = getenv("MALI_WAIT_DBG");
    if (!env)
       return;
-   char comm[16] = "?";
-   prctl(PR_GET_NAME, comm, 0, 0, 0);
+   char comm[32];
+   debug_comm(comm, sizeof(comm));   /* the process name, sanitized: a thread name with a '/' made open() fail */
    if (!strcmp(env, "1")) {
       wait_file = stderr;
    } else

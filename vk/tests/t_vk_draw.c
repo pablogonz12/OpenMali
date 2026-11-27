@@ -1186,7 +1186,9 @@ test_degrade(const char *name)
          if (AllocateMemory(dev, &ai, NULL, &rmem) != VK_SUCCESS || BindImageMemory(dev, res, rmem, 0) != VK_SUCCESS) { g_fail = 1; break; }
           VkImageViewCreateInfo rvi = vi;
           rvi.image = res;
-          rvi.format = exact ? VK_FORMAT_R8G8B8A8_UNORM : ri2.format;
+          /* The clamped case is about the render area, not about views: its resolve view must match the image, or a
+           * format mismatch (a different code path) decides the result too. Only the reinterpret case is mismatched. */
+          rvi.format = (exact && !clamped) ? VK_FORMAT_R8G8B8A8_UNORM : ri2.format;
          if (CreateImageView(dev, &rvi, NULL, &rv) != VK_SUCCESS) { g_fail = 1; break; }
       }
       VkRenderingAttachmentInfo att[2];

@@ -463,7 +463,10 @@ kbase_bo_host_touch(struct mali_kdev *k, struct mali_bo *b)
       const char *rd = getenv("MALI_SYNC_READ");
       bool lazy = !rd || rd[0] != '0';
       uint64_t wrote = __atomic_load_n(&bo->gpu_writes, __ATOMIC_RELAXED);
-      bool pending = wrote != bo->synced_writes ||
+      /* An import carries no write marks (the front end cannot see whose writes it holds), so it is always refreshed
+       * on a map; a native BO only when the GPU wrote it since the last sync. A pending full sweep means an unknown
+       * write happened, which may be this BO's. */
+      bool pending = bo->imported || wrote != bo->synced_writes ||
                      __atomic_load_n(&k->sync_all_pending, __ATOMIC_RELAXED);
       if (lazy && pending)
          mem_sync_one_locked(k, bo, 2);
@@ -772,12 +775,12 @@ mem_sync_one_locked(struct mali_kdev *k, struct kb_bo *b, unsigned op)
       uint8_t type, pad[7];
    } ms = {b->gpu_va, (uint64_t)(uintptr_t)b->cpu, b->size, (uint8_t)op, {0}};
    uint64_t start = mali_prof_enabled() ? mali_wait_now() : 0;
-   int sr = kb_ioctl_fd(kb_fd(k->ctx), _IOW(KBASE_IOCTL_TYPE, 15, ms), &ms);
+   /* The generation this ioctl covers is the one before it runs: a write marked while it is in flight stays pending and
+    * is synced again by the next wait (kbase_bo_wrote takes bo_lock, so it cannot land between the two). */
    uint64_t wrote = __atomic_load_n(&b->gpu_writes, __ATOMIC_RELAXED);
-   if (sr >= 0) {
+   int sr = kb_ioctl_fd(kb_fd(k->ctx), _IOW(KBASE_IOCTL_TYPE, 15, ms), &ms);
+   if (sr >= 0)
       b->synced_writes = wrote;
-      __atomic_store_n(&k->sync_all_pending, false, __ATOMIC_RELAXED);
-   }
    if (start) {
       mali_prof_add(MALI_PROF_D2C_COUNT, 1);
       mali_prof_add(MALI_PROF_D2C_BOS, 1);
@@ -842,7 +845,7 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
        * 1314 unmapped imports (2.9 GB) on every fence wait, 105 times a second, all of it invisible to the process. The
        * driver's own BOs (arena, heap, geo, sync, TLS, CS) keep the old sweep: how they are read is not knowable here.
        * MALI_SYNC_READ=0 restores the old behaviour for an A/B. */
-      if (dev2cpu && (b->imported || b->user_mem)) {
+      if (dev2cpu && (b->imported || b->user_mem) && !sweep_all) {
          const char *rd = getenv("MALI_SYNC_READ");
          if ((!rd || rd[0] != '0') && !b->cpu_mapped)
             continue;
