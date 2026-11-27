@@ -116,6 +116,31 @@ kbase_scan_fault_addr(struct mali_kdev *k, uint64_t a)
          hits++;
       }
    }
+   /* A 64-bit pointer can also sit in a descriptor as a 32-bit field (MOVE32 pairs carry the FAU count in the top
+    * byte), so search the low half too and print the word it is in. */
+   if (hits == 0 && (uint32_t)a == a) {
+      const uint32_t lo = (uint32_t)a;
+      unsigned lh = 0;
+      for (unsigned i = 0; i < k->nbos && lh < 6; i++) {
+         const struct kb_bo *b = k->bos[i];
+         if (!b->cpu || b->size < 4)
+            continue;
+         const unsigned char *p = b->cpu, *end = p + b->size;
+         while (p + 4 <= end && lh < 6) {
+            const unsigned char *h = memmem(p, (size_t)(end - p), &lo, 4);
+            if (!h)
+               break;
+            uint64_t w = 0;
+            size_t off = (size_t)(h - (const unsigned char *)b->cpu);
+            if (off + 8 <= b->size)
+               memcpy(&w, b->cpu + off, 8);
+            mali_wait_event("kbase fault addr low32 in live bo va=0x%llx off=0x%zx word=0x%016llx",
+                            (unsigned long long)b->gpu_va, off, (unsigned long long)w);
+            p = h + 4;
+            lh++;
+         }
+      }
+   }
    unsigned nf = k->nfreed < 64 ? k->nfreed : 64;
    for (unsigned i = 0; i < nf; i++) {
       const struct kbase_freed_bo *f = &k->freed[(k->nfreed - nf + i) % 64];
