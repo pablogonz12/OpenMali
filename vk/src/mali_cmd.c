@@ -6,6 +6,7 @@
  *   - vkCmdClearAttachments that does not cover the whole render area before the first draw; vkCmdClear*Image except RGBA8 colour
  *   - dynamic descriptor offsets, non-triangle-list topologies (M6 resolver decides) */
 #include <errno.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -53,6 +54,39 @@ unsupported(struct mali_cmd_buffer *cmd, const char *what)
    if (getenv("MALI_PIPE_DBG"))
       fprintf(stderr, "mali_cmd: unsupported %s\n", what);
    vk_command_buffer_set_error(&cmd->vk, VK_ERROR_FEATURE_NOT_PRESENT);
+}
+
+/* Legal-but-unimplemented state: render the closest legal thing, log ONE line, do not poison the command buffer.
+ * PanVK's only vk_command_buffer_set_error is OOM (panvk_vX_cmd_desc_state.c:82); illegal state is UNREACHABLE and
+ * unimplemented-but-legal state is emitted best-effort or the draw is skipped. One refused call used to make
+ * vkEndCommandBuffer return VK_ERROR_FEATURE_NOT_PRESENT, which zink turns into GL_CONTEXT_LOST: Chromium then
+ * reports "Disabling GPU acceleration: Disabled/RuntimeDetect" and Steam's CEF compositor loses the GPU for the
+ * whole session (cef-gpu-cmf.md). Three classes (audit-refusals.md "Sticky-error policy"):
+ *   - corrupting (wrong shader/pipeline, no index buffer, a clear we cannot express): unsupported(), sticky;
+ *   - degradable (extra colour attachments, a clear of an attachment we do not render, MSAA->1x, exotic blend):
+ *     degrade(), log once, continue with the closest legal behaviour;
+ *   - app bugs (draw outside a pass, End inside one): unsupported(), sticky - the layers report them anyway. */
+static void
+degrade(struct mali_cmd_buffer *cmd, const char *what)
+{
+   /* Recording may run on several threads (separate command pools), so the lookup-and-insert is under one lock; the log line
+    * is printed outside it (stderr is slow) but only by the thread that inserted the entry */
+   static const char *seen[16];
+   static unsigned nseen;
+   static pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
+   bool first = false;
+   pthread_mutex_lock(&m);
+   {
+      bool found = false;
+      for (unsigned i = 0; i < nseen; i++)
+         if (seen[i] == what || (seen[i] && !strcmp(seen[i], what)))
+            found = true;
+      if (!found && nseen < sizeof seen / sizeof seen[0]) { seen[nseen++] = what; first = true; }
+   }
+   pthread_mutex_unlock(&m);
+   if (first && getenv("MALI_PIPE_DBG"))
+      fprintf(stderr, "mali_cmd: degraded: %s (the frame continues)\n", what);
+   (void)cmd;
 }
 
 /* M15: record a GPU write against this command buffer so the platform layer only CSYNCs BOs that changed
@@ -110,6 +144,9 @@ reset_state(struct mali_cmd_buffer *cmd)
    memset(cmd->vb_size, 0, sizeof cmd->vb_size);
    memset(cmd->vb_stride, 0, sizeof cmd->vb_stride);
    memset(cmd->push, 0, sizeof cmd->push);
+   /* the TF range is recording state like the bindings above: a reset buffer that kept the old handles would patch a
+    * freed buffer's address into the next draw (mali_cmd.c: the XFB patch below), so it goes with the push block. */
+   memset(&cmd->tf, 0, sizeof cmd->tf);
    cmd->nsets = 0;
    cmd->ndyn = 0;
    cmd->occ_va = 0;
@@ -236,6 +273,8 @@ mali_cmd_bind_shaders(struct vk_command_buffer *vk, uint32_t stage_count, const 
       if (stages[i] == MESA_SHADER_VERTEX) {
          cmd->gfx.vs = c;
          cmd->gfx.vs_va = va;
+         cmd->gfx.vs_plain = NULL;   /* a dynamically bound shader has no compiled non-XFB variant */
+         cmd->gfx.vs_plain_va = 0;
       } else if (stages[i] == MESA_SHADER_FRAGMENT) {
          cmd->gfx.fs = c;
          cmd->gfx.fs_va = va;
@@ -454,11 +493,40 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
       bb->ndyn = cmd->ndyn;
       d->bind = bb;
    }
+   /* VK_EXT_transform_feedback: the pipeline reserves 32 B after the app's push constants for the four XFB buffer
+    * addresses; they change per draw (the buffers can be rebound between draws), so patch them into this draw's
+    * push block. */
+   const bool xfb = cmd->have_gfx && cmd->gfx.xfb;
+   const unsigned xfb_pc = xfb ? cmd->gfx.xfb_pc : 0;
+   /* No range open: run the pipeline's second, non-XFB vertex program instead of lowering the stores with zero bases.
+    * The push block is still republished, so a draw that reuses the previous record cannot inherit a live range's
+    * addresses (the block itself is zero there: mali_CmdPushConstants cannot reach past the application's range). */
+   const bool xfb_off = xfb && !cmd->tf.active && cmd->gfx.vs_plain;
+   if (xfb && !xfb_off && xfb_pc + 32 > MALI_PUSH_MAX)
+      return false;
+   /* Both the push block and the pipeline block are republished for every XFB draw: which of the two vertex programs
+    * runs changes with the range, so inheriting the previous draw's blocks would run the wrong one. */
+   if (xfb)
+      m |= MALI_D_PIPE | MALI_D_PUSH;
    if (m & MALI_D_PUSH) {
       struct mali_bpush *bu = mali_frame_blk(fr, sizeof *bu);
       if (!bu)
          return false;
       memcpy(bu->push, cmd->push, sizeof bu->push);
+      if (xfb && cmd->tf.active)
+         for (unsigned k = 0; k < 4; k++) {
+            const uint64_t va = k < cmd->tf.nbufs && cmd->tf.buf[k]
+                                   ? vk_buffer_address(vk_buffer_from_handle(cmd->tf.buf[k]), cmd->tf.off[k]) : 0;
+            memcpy(bu->push[0] + xfb_pc + k * 8, &va, sizeof va);
+         }
+      /* MALI_TF_DBG=1 (off by default): the device-side half of a transform-feedback diagnosis, next to the
+       * compile-side line in mali_compile.c - what the draw believes the four buffer bases are. */
+      if (getenv("MALI_TF_DBG") && xfb && cmd->tf.active) {
+         uint64_t q[4];
+         memcpy(q, bu->push[0] + xfb_pc, sizeof q);
+         fprintf(stderr, "mali_tf: draw xfb_pc %u bases %llx %llx %llx %llx\n", xfb_pc,
+                 (unsigned long long)q[0], (unsigned long long)q[1], (unsigned long long)q[2], (unsigned long long)q[3]);
+      }
       d->push = bu;
    }
    if (m & (MALI_D_PIPE | MALI_D_FX | MALI_D_VP | MALI_D_SC)) {
@@ -467,6 +535,12 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
          return false;
       d->pipe = bp;
       bp->gfx = cmd->gfx;
+      if (xfb_off) {   /* no range open: the non-XFB program (mali_pipeline.c), so nothing is stored */
+         bp->gfx.vs = bp->gfx.vs_plain;
+         bp->gfx.vs_va = bp->gfx.vs_plain_va;
+      }
+      if (xfb && getenv("MALI_TF_DBG"))
+         fprintf(stderr, "mali_tf: draw uses the %s vertex program at 0x%" PRIx64 "\n", xfb_off ? "plain" : "XFB", bp->gfx.vs_va);
       if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_VP_VIEWPORTS) && dyn->vp.viewport_count) {
          const VkViewport *v = &dyn->vp.viewports[0];
          bp->vp[0] = v->x; bp->vp[1] = v->y; bp->vp[2] = v->width; bp->vp[3] = v->height; bp->vp[4] = v->minDepth; bp->vp[5] = v->maxDepth;
@@ -537,11 +611,13 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
          default: unsupported(cmd, "polygon mode");
          }
       }
-      /* colour attachment 0 blend */
-      const struct vk_color_blend_attachment_state *cb = &dyn->cb.attachments[0];
+      /* the colour attachment this frame renders: index 0 unless the pass's leading slots are null (then slot 1, ...), so
+       * the blend and colour-write state must be read for that slot, not for slot 0 the view may not exist for */
+      const unsigned cs = cmd->cur.has_colour ? (cmd->cur.colour_slot & 7u) : 0u;
+      const struct vk_color_blend_attachment_state *cb = &dyn->cb.attachments[cs];
       x->blend_en = BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_BLEND_ENABLES) && cb->blend_enable;
       x->wmask = BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_WRITE_MASKS) ? cb->write_mask : 0xf;
-      if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_COLOR_WRITE_ENABLES) && !(dyn->cb.color_write_enables & 1))
+      if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_COLOR_WRITE_ENABLES) && !(dyn->cb.color_write_enables & (1u << cs)))
          x->wmask = 0;
       x->src_c = cb->src_color_blend_factor; x->dst_c = cb->dst_color_blend_factor;
       x->src_a = cb->src_alpha_blend_factor; x->dst_a = cb->dst_alpha_blend_factor;
@@ -583,12 +659,20 @@ mali_CmdDraw(VkCommandBuffer h, uint32_t vcount, uint32_t icount, uint32_t first
       return;
    if (!vcount || !icount)
       return;
+   /* VK_EXT_transform_feedback: the lowered stores index with instance_id * num_vertices + vertex_id, and
+    * num_vertices is not supplied to the shader yet (mali_compile.c replaces it with 0), so instanced XFB would
+    * write every instance's vertices to the same slots. Refuse rather than write overlapping data silently. */
+   if (cmd->tf.active && icount > 1) {
+      unsupported(cmd, "transform feedback with instance_count > 1 (num_vertices is not wired; single-instance only)");
+      return;
+   }
    struct mali_rec *sl = mali_frame_draw_slot(&cmd->cur);   /* snapshot in place */
    if (!sl || !snapshot_draw(cmd, sl, vcount, icount, first, first_inst)) {
       vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
       return;
    }
    cmd->cur.ndraws++;
+   mali_frame_note_rec(&cmd->cur, sl);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -603,6 +687,12 @@ mali_CmdDrawIndexed(VkCommandBuffer h, uint32_t icount, uint32_t inst, uint32_t 
       return;
    if (!icount || !inst)
       return;
+   /* Same restriction as mali_CmdDraw: num_vertices is not wired (mali_compile.c replaces it with 0), so instanced
+    * XFB would write every instance to the same slots (CodeRabbit on #313, vk/src/mali_cmd.c:633). */
+   if (cmd->tf.active && inst > 1) {
+      unsupported(cmd, "transform feedback with instance_count > 1 (num_vertices is not wired; single-instance only)");
+      return;
+   }
    struct mali_rec *sl = mali_frame_draw_slot(&cmd->cur);
    if (!sl || !snapshot_draw(cmd, sl, icount, inst, (uint32_t)voff, first_inst)) {
       vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -615,6 +705,7 @@ mali_CmdDrawIndexed(VkCommandBuffer h, uint32_t icount, uint32_t inst, uint32_t 
    sl->index_size = cmd->ib_size;
    sl->first_index = first;
    cmd->cur.ndraws++;
+   mali_frame_note_rec(&cmd->cur, sl);
 }
 
 /* Indirect draws: the command array is read through the CPU mapping when the frame is submitted (frames are serialised, so every
@@ -818,6 +909,89 @@ mali_CmdDispatchIndirect(VkCommandBuffer h, VkBuffer b, VkDeviceSize off)
    record_dispatch(cmd, 0, 0, 0, vk_buffer_address(buf, off));
 }
 
+/* ---- VK_EXT_transform_feedback (stage 2: recording) ----
+ * The streamout job does not exist yet: libkbase has RUN_IDVS/FINISH_TILING only (kbase_cs.h:111-154), so the
+ * gallium route is nir_io_add_intrinsic_xfb_info + nir_lower_xfb_to_stores (pan_shader.c:124-136) with the base
+ * addresses supplied as nir_load_xfb_address (nir_lower_xfb_to_stores.c:53), which our NIR backend does not lower
+ * yet. Until it does, these commands record and validate the state (so a draw can report the real blocker) and
+ * mark the XFB buffers as GPU-written, which they will be. */
+
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdBindTransformFeedbackBuffersEXT(VkCommandBuffer h, uint32_t first, uint32_t count, const VkBuffer *buffers,
+                                        const VkDeviceSize *offsets, const VkDeviceSize *sizes)
+{
+   CMD(h);
+   /* The command is valid in both scopes (in and out of a render pass; VUID-vkCmdBindTransformFeedbackBuffersEXT-
+    * renderpass does not exist), and only a rebind while capture is active is refused (CodeRabbit, #313). */
+   if (cmd->tf.active) {
+      unsupported(cmd, "vkCmdBindTransformFeedbackBuffersEXT while transform feedback is active");
+      return;
+   }
+   if (!buffers || first + count > 4) {
+      unsupported(cmd, "VK_EXT_transform_feedback: more than 4 XFB buffers");
+      return;
+   }
+   for (uint32_t i = 0; i < count; i++) {
+      const unsigned b = first + i;
+      struct vk_buffer *vb = vk_buffer_from_handle(buffers[i]);
+      if (!vb) {
+         unsupported(cmd, "VK_EXT_transform_feedback: null XFB buffer");
+         return;
+      }
+      cmd->tf.buf[b] = buffers[i];
+      cmd->tf.off[b] = offsets ? offsets[i] : 0;
+      cmd->tf.size[b] = sizes ? sizes[i] : 0;
+      if (b + 1 > cmd->tf.nbufs)
+         cmd->tf.nbufs = b + 1;
+      /* the vertex stage stores the transformed vertices here: the fence wait for this submission must MEM_SYNC
+       * it device->CPU (the dump/readback path in mali_cmd_submit already sweeps these marks). */
+      mali_cmd_mark_buffer_written(cmd, buffers[i]);
+   }
+}
+
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdBeginTransformFeedbackEXT(VkCommandBuffer h, uint32_t first_counter_buffer, uint32_t counter_buffer_count,
+                                  const VkBuffer *counter_buffers, const VkDeviceSize *counter_buffer_offsets)
+{
+   CMD(h);
+   if (cmd->in_render) {
+      unsupported(cmd, "vkCmdBeginTransformFeedbackEXT inside a render pass");
+      return;
+   }
+   if (cmd->tf.active) {
+      unsupported(cmd, "vkCmdBeginTransformFeedbackEXT while transform feedback is active");
+      return;
+   }
+   if (counter_buffers && first_counter_buffer + counter_buffer_count > 4) {
+      unsupported(cmd, "VK_EXT_transform_feedback: more than 4 counter buffers");
+      return;
+   }
+   if (counter_buffers && counter_buffer_count) {
+      /* The captured byte position is not saved (mali_compile.c has no counter write), so a counter would stay
+       * stale and a pause/resume would overwrite records. Refuse loudly instead of marking it written
+       * (CodeRabbit on #313, vk/src/mali_cmd.c:915/:941). */
+      unsupported(cmd, "VK_EXT_transform_feedback: counter buffers are not implemented");
+      return;
+   }
+   cmd->tf.active = true;
+}
+
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdEndTransformFeedbackEXT(VkCommandBuffer h, uint32_t first_counter_buffer, uint32_t counter_buffer_count,
+                                const VkBuffer *counter_buffers, const VkDeviceSize *counter_buffer_offsets)
+{
+   CMD(h);
+   if (!cmd->tf.active) {
+      unsupported(cmd, "vkCmdEndTransformFeedbackEXT without a matching Begin");
+      return;
+   }
+   if (counter_buffers && counter_buffer_count) {
+      unsupported(cmd, "VK_EXT_transform_feedback: counter buffers are not implemented");
+      return;
+   }
+   cmd->tf.active = false;
+}
+
 /* ---- rendering ---- */
 void
 mali_cmd_push_frame(struct mali_cmd_buffer *cmd, const struct mali_frame *f)
@@ -903,15 +1077,23 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    f->area[1] = ri->renderArea.offset.y;
    f->area[2] = (int32_t)ri->renderArea.extent.width;
    f->area[3] = (int32_t)ri->renderArea.extent.height;
-   /* no colour attachment (depth/stencil only, or nothing at all): the frame gets a write-disabled dummy render target (as panvk's null RT) */
+   /* Count the non-null colour views only: a legal frame may name N slots and leave views null (zink always emits N),
+    * and must not lose the whole command buffer for it. We render the first non-null one and drop any others with one
+    * log line (real MRT is #358), never a sticky error. */
    bool no_col = true;
-   for (uint32_t i = 0; i < ri->colorAttachmentCount; i++)
-      if (ri->pColorAttachments[i].imageView) no_col = false;
-   if (!no_col && (ri->colorAttachmentCount != 1 || !ri->pColorAttachments[0].imageView)) {
-      unsupported(cmd, "need exactly one colour attachment");
-      return;
+   uint32_t c0 = 0, ncol = 0;
+   for (uint32_t i = 0; i < ri->colorAttachmentCount; i++) {
+      if (!ri->pColorAttachments[i].imageView)
+         continue;
+      if (no_col)
+         c0 = i;
+      no_col = false;
+      ncol++;
    }
-   const VkRenderingAttachmentInfo *ca = no_col ? NULL : &ri->pColorAttachments[0];
+   if (ncol > 1 || (ncol == 1 && c0 != 0))
+      degrade(cmd, "several colour attachment slots (rendering the first non-null one)");
+   f->colour_slot = no_col ? 0u : c0;   /* CmdClearAttachments must target this slot, and only this one */
+   const VkRenderingAttachmentInfo *ca = no_col ? NULL : &ri->pColorAttachments[c0];
    bool load = false;
    struct mali_preload_src psrc;
    memset(&psrc, 0, sizeof psrc);
@@ -981,7 +1163,12 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    f->has_colour = true;
    psrc.va[0] = t.va;
    psrc.row[0] = t.row_stride;
-   psrc.bytes[0] = t.row_stride * t.height;
+   /* The preload reads its source as a storage buffer (pack_buffer(set, va, bytes), mali_meta.c:664) and the pipeline
+    * has robustBufferAccess, so any read past `bytes` is clamped to zero. A 4x image is `samples` consecutive sample
+    * planes (surface_stride each): the range must cover all of them, or planes 1..3 read as transparent black and the
+    * resolve averages 1 of 4 samples (alpha 63 for every covered pixel). That was the LOAD histogram: alpha flattened
+    * to a1_63 and 64 edge pixels at 0. */
+   psrc.bytes[0] = t.row_stride * t.height * (t.samples > 1 ? t.samples : 1);
    f->colour.va = t.va;
    f->samples = t.samples > 1 ? t.samples : 1;
    f->colour.surface_stride = t.surface_stride;
@@ -992,7 +1179,12 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    if (f->colour.clear)
       memcpy(f->colour.clear_color, ca->clearValue.color.float32, sizeof f->colour.clear_color);
    if (f->samples == 4) {
-      /* MSAA: resolve with the hardware "Average" writeback into the single-sample image; no resolve = store all samples (Layered) */
+      /* MSAA resolve. Two designs, because the hardware writes the average OR the samples, never both:
+       *  - storeOp DONT_CARE: the "Average" writeback resolves straight into the single-sample image, one pass,
+       *    no sample data ever reaches memory (f->colour.resolve_va, mali_render.c:238-243);
+       *  - storeOp STORE: the samples are written back (Layered, surface_stride) and the resolve runs as a
+       *    separate pass after this frame (f->resolve_src/dst, mali_CmdEndRendering -> mali_CmdResolveImage2),
+       *    which is what Vulkan requires: the attachment keeps its samples AND the resolve image is written. */
       if (ca->resolveMode != VK_RESOLVE_MODE_NONE) {
          struct mali_cmd_target rt;
          if (ca->resolveMode != VK_RESOLVE_MODE_AVERAGE_BIT || !ca->resolveImageView || g_res.image_view(ca->resolveImageView, &rt) ||
@@ -1000,16 +1192,29 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
             unsupported(cmd, "MSAA colour resolve (AVERAGE into a matching single-sample view only)");
             return;
          }
-         f->colour.resolve_va = rt.va;
-         f->colour.resolve_row_stride = rt.row_stride;
+         if (f->colour.store) {
+            struct mali_image_view *cv = mali_image_view_from_handle(ca->imageView);
+            struct mali_image_view *rv = mali_image_view_from_handle(ca->resolveImageView);
+            if (!cv || !rv || !cv->vk.image || !rv->vk.image) {
+               unsupported(cmd, "MSAA colour resolve (no image for the attachment or the resolve target)");
+               return;
+            }
+            f->resolve_src = (uint64_t)(uintptr_t)cv->vk.image;
+            f->resolve_dst = (uint64_t)(uintptr_t)rv->vk.image;
+            f->resolve_level = cv->vk.base_mip_level;
+            f->resolve_layer = cv->vk.base_array_layer;
+            f->resolve_dst_level = rv->vk.base_mip_level;   /* the resolve image is its own view: mip/layer may differ */
+            f->resolve_dst_layer = rv->vk.base_array_layer;
+         } else {
+            f->colour.resolve_va = rt.va;
+            f->colour.resolve_row_stride = rt.row_stride;
+         }
       }
       if (load) {
-         unsupported(cmd, "MSAA colour loadOp LOAD");
-         return;
-      }
-      if (f->colour.resolve_va && f->colour.store) {
-         unsupported(cmd, "MSAA colour storeOp STORE together with a resolve (hardware writes the average or the samples, not both)");
-         return;
+         /* per-sample preload: the fragment shader runs once per sample (gl_SampleID) and reads that sample's
+          * plane of the 4x image, so the tile gets the exact old sample data (mali_meta_preload MSAA kind). */
+         psrc.samples = 4;
+         psrc.sample_stride = t.surface_stride;
       }
    } else if (ca->resolveMode != VK_RESOLVE_MODE_NONE) {
       unsupported(cmd, "resolve of a single-sampled attachment");
@@ -1029,10 +1234,10 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          return;
       }
       if (is_load_op(da->loadOp)) {
-         if ((t.zs_format != 1 && t.zs_format != 2 && t.zs_format != 3) || t.samples > 1) {
+         if (t.zs_format != 1 && t.zs_format != 2 && t.zs_format != 3) {
             char why[160];
             snprintf(why, sizeof why, "depth loadOp LOAD of %s (%u samples), supported: D32_SFLOAT, D24_UNORM_S8_UINT, "
-                     "D16_UNORM, single-sampled only",
+                     "D16_UNORM",
                      t.zs_format == 1 ? "D32_SFLOAT" : t.zs_format == 2 ? "D24_UNORM_S8_UINT" :
                      t.zs_format == 3 ? "D16_UNORM" : "an unknown depth format", t.samples);
             unsupported(cmd, why);
@@ -1041,8 +1246,12 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          zload = true;
          zsrc.va[0] = t.va;
          zsrc.row[0] = t.row_stride;
-         zsrc.bytes[0] = t.row_stride * t.height;
+         /* every sample plane, not just sample 0: the per-sample variant reads gl_SampleID * surface_stride on */
+         zsrc.bytes[0] = t.row_stride * t.height * (t.samples > 1 ? t.samples : 1);
          zsrc.arg = t.zs_format == 3 ? 1 : t.zs_format == 2 ? 2 : 0;   /* preload_zs.frag: 0 D32F, 1 D16, 2 D24 */
+         /* multisampled: the per-sample variant reads sample gl_SampleID's plane (surface_stride bytes further on) */
+         zsrc.samples = t.samples > 1 ? t.samples : 0;
+         zsrc.sample_stride = t.samples > 1 ? t.surface_stride : 0;
       }
       f->has_zs = true;
       if (no_col) {
@@ -1074,14 +1283,14 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          return;
       }
       if (is_load_op(sa->loadOp)) {
-         if (t.samples > 1) {
-            unsupported(cmd, "stencil loadOp LOAD (single-sampled only)");
-            return;
-         }
          sload = true;
          zsrc.va[1] = t.s_va;
          zsrc.row[1] = t.s_row_stride;
-         zsrc.bytes[1] = t.s_row_stride * t.height;
+         zsrc.bytes[1] = t.s_row_stride * t.height * (t.samples > 1 ? t.samples : 1);   /* all sample planes (see bytes[0]) */
+         /* multisampled (the zink/CEF shape): each sample reads its own S8 plane before the pass' draws stencil-test
+          * against it. Preloaded per sample like the multisampled colour LOAD; nothing here is sample-0 only. */
+         zsrc.samples = t.samples > 1 ? t.samples : 0;
+         zsrc.sample_stride = t.samples > 1 ? t.surface_stride : 0;
       }
       f->has_st = true;
       if (no_col) {
@@ -1122,6 +1331,25 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    cmd->in_render = true;
 }
 
+/* Region of the deferred MSAA resolve (mali_CmdEndRendering). Both sides keep their own subresource: the source is the
+ * attachment view (level/layer recorded from it), the destination the resolve view, which may be mip 1 / layer 1 of a
+ * larger image. Vulkan resolves the render area only, so the rect is that area — a whole-attachment rect would overwrite
+ * the pixels outside it, which the app expects to keep. area[] zero (no render area recorded) = the whole attachment,
+ * as elsewhere (mali_soft.c, mali_render.c). */
+void
+mali_resolve_region(const struct mali_frame *f, VkImageResolve2 *r)
+{
+   const int32_t *ar = f->area;
+   const uint32_t x = ar[2] ? (uint32_t)ar[0] : 0, y = ar[3] ? (uint32_t)ar[1] : 0;
+   memset(r, 0, sizeof *r);
+   r->sType = VK_STRUCTURE_TYPE_IMAGE_RESOLVE_2;
+   r->srcSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, f->resolve_level, f->resolve_layer, 1};
+   r->dstSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, f->resolve_dst_level, f->resolve_dst_layer, 1};
+   r->srcOffset = (VkOffset3D){(int32_t)x, (int32_t)y, 0};
+   r->dstOffset = r->srcOffset;
+   r->extent = (VkExtent3D){ar[2] ? (uint32_t)ar[2] : f->width, ar[3] ? (uint32_t)ar[3] : f->height, 1};
+}
+
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdEndRendering(VkCommandBuffer h)
 {
@@ -1132,9 +1360,24 @@ mali_CmdEndRendering(VkCommandBuffer h)
       memset(&cmd->cur, 0, sizeof cmd->cur);
       return;
    }
+   const uint64_t resolve_src = cmd->cur.resolve_src, resolve_dst = cmd->cur.resolve_dst;
    push_frame(cmd, &cmd->cur);
    memset(&cmd->cur, 0, sizeof cmd->cur);   /* the draw list now belongs to the finished frame */
    cmd->in_render = false;
+   if (resolve_src && resolve_dst) {
+      /* MSAA storeOp STORE with a resolve: the samples are in memory now, resolve them in their own pass (the
+       * hardware cannot write the average and the samples in one go). mali_CmdResolveImage2 plans a compute job
+       * that is appended after the pass frame, which is "after the pass" on the in-order CS ring. */
+      VkImageResolve2 rr;
+      mali_resolve_region(&cmd->cur, &rr);
+      VkResolveImageInfo2 ri = {.sType = VK_STRUCTURE_TYPE_RESOLVE_IMAGE_INFO_2,
+                                .srcImage = (VkImage)(uintptr_t)resolve_src,
+                                .srcImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                .dstImage = (VkImage)(uintptr_t)resolve_dst,
+                                .dstImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                .regionCount = 1, .pRegions = &rr};
+      mali_CmdResolveImage2(h, &ri);
+   }
    if (cmd->ndef) {                         /* M13: ops recorded inside the pass retire after it */
       struct mali_frame o;
       memset(&o, 0, sizeof o);
@@ -1220,9 +1463,18 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
          if (!a)
             continue;
          bool zc = a & VK_IMAGE_ASPECT_DEPTH_BIT, sc = a & VK_IMAGE_ASPECT_STENCIL_BIT;
-         if ((zc && !f->has_zs) || (sc && !f->has_st) || f->samples != 1) {
-            unsupported(cmd, "CmdClearAttachments depth/stencil quad: no single-sampled attachment of that aspect");
-            return;
+         if ((zc && !f->has_zs) || (sc && !f->has_st)) {
+            /* only the aspect without a backing view has no effect: drop it and clear the other one */
+            degrade(cmd, "CmdClearAttachments of a depth/stencil aspect this pass does not have");
+            zc = zc && f->has_zs;
+            sc = sc && f->has_st;
+            if (!zc && !sc)
+               continue;
+         }
+         if (f->samples != 1) {
+            /* the depth/stencil quad writes one sample per fragment; at 4x that is not the clear Vulkan asks for */
+            degrade(cmd, "CmdClearAttachments depth/stencil inside a multisampled pass");
+            continue;
          }
          for (uint32_t r = 0; r < nr; r++) {
             if (rects[r].baseArrayLayer != 0 || rects[r].layerCount != 1) {
@@ -1268,16 +1520,24 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
          cmd->dirty = MALI_D_ALL;
          return;
       }
-      if (!f->has_colour || f->samples != 1) {
-         unsupported(cmd, "CmdClearAttachments quad: no single-sampled colour attachment");
+      if (!f->has_colour) {
+         degrade(cmd, "CmdClearAttachments colour quad without a colour attachment");
+         /* the depth/stencil quads above were appended to the frame: the register state they were built from is no longer
+          * valid for whatever draws follow, so forget it */
+         cmd->dirty = MALI_D_ALL;
          return;
       }
+      /* Multisampled passes included: the constant-colour quad is an ordinary draw into the tile, so every sample of
+       * the covered pixels gets the clear colour, which is the clear (PanVK clears through its meta shaders the same
+       * way: panvk_vX_meta_clear draws the rect, it does not special-case samples). */
       for (uint32_t i = 0; i < na; i++) {
          if (!(att[i].aspectMask & VK_IMAGE_ASPECT_COLOR_BIT))
             continue;
-         if (att[i].colorAttachment != 0) {
-            unsupported(cmd, "colour attachment index");
-            return;
+         if (att[i].colorAttachment != f->colour_slot) {
+            /* a clear names an attachment index, not "the one we render": a null slot has no view (no effect) and another
+             * bound slot is not rendered by this pass - clearing the rendered RT for either would write the wrong image */
+            degrade(cmd, "CmdClearAttachments of a colour attachment this pass does not render");
+            continue;
          }
          for (uint32_t r = 0; r < nr; r++) {
             if (rects[r].baseArrayLayer != 0 || rects[r].layerCount != 1) {
@@ -1287,6 +1547,9 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
             struct mali_preload_src ps;
             memset(&ps, 0, sizeof ps);
             ps.arg = 19 | (f->colour.rt && f->colour.rt->int_bits ? (f->colour.rt->is_signed ? 2u : 1u) << 16 : 0);   /* the clear words are the raw shader output: integer-typed for integer formats */
+            /* the quad must be evaluated once per sample, or the clear only lands on sample 0: a constant colour needs no
+             * per-sample plane, so the stride stays 0 (arg 19 reads the clear words, not memory) */
+            ps.samples = f->samples > 1 ? f->samples : 0;
             memcpy(ps.clear, att[i].clearValue.color.uint32, sizeof ps.clear);
             struct mali_draw d;
             if (mali_meta_vk_preload(cmd, MALI_PRELOAD_COLOUR, &ps, &d)) {
@@ -1309,8 +1572,8 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
    for (uint32_t i = 0; i < na; i++) {
       if (att[i].aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) {
          if (att[i].colorAttachment != 0) {
-            unsupported(cmd, "colour attachment index");
-            return;
+            degrade(cmd, "CmdClearAttachments of colour attachment > 0 (only RT0 is rendered)");
+            continue;
          }
          f->colour.clear = true;   /* a loadOp CLEAR patch of the FBD */
          memcpy(f->colour.clear_color, att[i].clearValue.color.float32, sizeof f->colour.clear_color);
@@ -1394,15 +1657,8 @@ mali_cmd_submit(struct vk_command_buffer *vk)
    }
    for (unsigned i = 0; i < cmd->nframes; i++) {
       struct mali_frame fr = cmd->frames[i];
-      bool ind = false, poly_cpu = false;
-      const struct mali_bpipe *cur = NULL;   /* records are deltas: the pipe is set when MALI_D_PIPE/FX/VP/SC is dirty (mali_draw_expand) */
-      for (unsigned k = 0; k < fr.ndraws; k++) {
-         const struct mali_rec *rk = &fr.draws[k];
-         ind |= rk->ind != NULL;
-         if (rk->dirty & (MALI_D_PIPE | MALI_D_FX | MALI_D_VP | MALI_D_SC))
-            cur = rk->pipe;
-         poly_cpu |= cur && cur->gfx.poly_mode && rk->indexed;   /* poly_lines reads the index buffer on the CPU at frame build */
-      }
+      /* any_ind / poly_cpu are accumulated at record time (mali_frame_note_rec): no second pass over the frame's records */
+      bool ind = fr.any_ind, poly_cpu = fr.poly_cpu;
       if ((ind || poly_cpu) && g_hw.drain) {
          /* indirect args and polygon-mode index contents are read by the CPU: every earlier frame (also those of this command buffer) must have retired */
          if (nall) {

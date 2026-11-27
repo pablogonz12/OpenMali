@@ -70,9 +70,9 @@ SRCS="$V/src/mali_instance.c $V/src/mali_physical_device.c $V/src/mali_device.c
       $V/src/mali_backend_fake.c $V/src/mali_backend_kbase.c
       $V/src/mali_format.c $V/src/mali_image.c $V/src/mali_buffer.c $V/src/mali_sampler.c
       $V/src/mali_descriptor.c $V/src/mali_descriptor_lower.c $V/src/mali_pipeline_layout.c
-      $V/src/mali_compile.c $V/src/mali_resources.c
+      $V/src/mali_compile.c $V/src/mali_gs.c $V/src/mali_resources.c
       $V/src/mali_wsi.c $V/src/mali_meta.c $V/src/mali_bc.c $V/src/mali_meta_vk.c $V/src/mali_query.c $V/src/mali_query_core.c
-      $V/src/mali_event.c $V/src/mali_event_vk.c $V/src/mali_cmd.c $V/src/mali_render.c $V/src/mali_cs_emit.c $V/src/mali_pipeline.c $V/src/mali_maint5.c $V/src/mali_vb3.c $V/src/mali_soft.c $V/src/mali_dmabuf.c $GEN/mali_entrypoints.c"
+      $V/src/mali_event.c $V/src/mali_event_vk.c $V/src/mali_cmd.c $V/src/mali_render.c $V/src/mali_cs_emit.c $V/src/mali_blend.c $V/src/mali_pipeline.c $V/src/mali_maint5.c $V/src/mali_vb3.c $V/src/mali_soft.c $V/src/mali_dmabuf.c $GEN/mali_entrypoints.c"
 # libkbase (own, MIT, libc only) is compiled in with the same flags as the rest, warnings not fatal.
 KB=$D/libkbase
 KBSRCS="$KB/src/ctx.c $KB/src/bo.c $KB/src/queue.c $KB/src/sync.c $KB/src/heap.c
@@ -90,8 +90,11 @@ for s in $KBSRCS; do
    OBJS="$OBJS $o"
 done
 # Unmistakable driver identity: short git sha (+dirty) reported in driverInfo; "unknown" outside a git checkout.
+# -dirty means THE DRIVER TREE (vk/ + libkbase/) has tracked modifications, the same basis
+# tools/build-artefact.sh records in .provenance: a doc/skill/tool edit does not change the .so, and a
+# repo-wide check made driverInfo and provenance disagree about the same build.
 if MALI_SHA=$(git -C "$V" rev-parse --short=10 HEAD 2>/dev/null) && [ -n "$MALI_SHA" ]; then
-   rc=0; git -C "$V" diff --quiet HEAD -- 2>/dev/null || rc=$?
+   rc=0; git -C "$D" diff --quiet HEAD -- vk libkbase 2>/dev/null || rc=$?
    case $rc in
       0) ;;
       1) MALI_SHA="$MALI_SHA-dirty" ;;
@@ -171,6 +174,7 @@ ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -
 # reference image. Plain Vulkan, no driver internals, so it also builds for the aarch64 targets.
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_ref" "$V/tests/t_vk_ref.c" -ldl -lm
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_feat" "$V/tests/t_vk_feat.c" -ldl -lm -pthread
+${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_interp" "$V/tests/t_interp.c" -ldl -lm
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_compute" "$V/tests/t_vk_compute.c" -ldl -lm -pthread
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_meta" "$V/tests/t_vk_meta.c" -ldl -lm -pthread
 # Uncapped benchmark pair (loader clients, offscreen targets: no presentation path to cap them).
@@ -188,15 +192,48 @@ ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_dxvk_caps" "$V/tests/t_dxvk_caps.c" -ldl
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_dxvk_api" "$V/tests/t_dxvk_api.c" -I"$V/tests" -ldl
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_steam_caps" "$V/tests/t_steam_caps.c" -ldl
+${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_ext_handles" "$V/tests/t_ext_handles.c" -ldl
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_drm" "$V/tests/t_vk_drm.c" -ldl
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_headless" "$V/tests/t_vk_headless.c" -ldl
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_trace" "$V/tests/t_vk_trace.c" -ldl
+# MALI_TRACE must not change behaviour: its fatal handler chains to the handler the program installed (FEX fixes up SIGBUS/SIGSEGV)
+${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_trace_chain" "$V/tests/t_trace_chain.c" -ldl
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -I"$V/tests" -o "$OUT/t_angle_seq" "$V/tests/t_angle_seq.c" -ldl
+# Two threads on one device: a vkAcquireNextImageKHR that waits must not stall the other thread (CR #323 N4).
+rm -f "$OUT/t_vk_threads"
+${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_threads" "$V/tests/t_vk_threads.c" -ldl -lxcb -lpthread 2>"$OBJ/t_vk_threads.err" \
+   || { if grep -qE "xcb/xcb.h: No such file|xcb/xcb.h. file not found|cannot find -lxcb|unable to find library -lxcb" "$OBJ/t_vk_threads.err"; then
+           echo "note: t_vk_threads not built (no xcb headers/libs for this target)"; else cat "$OBJ/t_vk_threads.err"; exit 1; fi; }
 # X11 WSI test: needs libxcb headers and libs (absent for bionic: then there is simply no t_vk_xcb and the X11 cases skip)
+# --wl-after-x11 also needs libwayland-client; without it that mode reports "skipped" and the case is skipped (HAVE_WAYLAND_CLIENT).
 rm -f "$OUT/t_vk_xcb"
-${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_xcb" "$V/tests/t_vk_xcb.c" -ldl -lxcb 2>"$OBJ/t_vk_xcb.err" \
+WL_CFLAGS=; WL_LIBS=
+pkg-config --exists wayland-client 2>/dev/null && { WL_CFLAGS=$(pkg-config --cflags wayland-client); WL_LIBS=$(pkg-config --libs wayland-client); }
+[ -n "$WL_LIBS" ] && case "${CC%% *}" in *bionic*|*android*) WL_CFLAGS=; WL_LIBS= ;; esac
+${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" $WL_CFLAGS -o "$OUT/t_vk_xcb" "$V/tests/t_vk_xcb.c" -ldl -lxcb $WL_LIBS ${WL_LIBS:+-DHAVE_WAYLAND_CLIENT=1} 2>"$OBJ/t_vk_xcb.err" \
    || { if grep -qE "xcb/xcb.h: No such file|xcb/xcb.h. file not found|cannot find -lxcb|unable to find library -lxcb" "$OBJ/t_vk_xcb.err"; then
            echo "note: t_vk_xcb not built (no xcb headers/libs for this target)"; else cat "$OBJ/t_vk_xcb.err"; exit 1; fi; }
+# WSI contract: VK_EXT_swapchain_maintenance1 (present modes/scaling at create, per-present switch, release) + DRM modifiers.
+rm -f "$OUT/t_wsi_maint"
+${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_wsi_maint" "$V/tests/t_wsi_maint.c" -ldl -lxcb 2>"$OBJ/t_wsi_maint.err" \
+   || { if grep -qE "xcb/xcb.h: No such file|xcb/xcb.h. file not found|cannot find -lxcb|unable to find library -lxcb" "$OBJ/t_wsi_maint.err"; then
+           echo "note: t_wsi_maint not built (no xcb headers/libs for this target)"; else cat "$OBJ/t_wsi_maint.err"; exit 1; fi; }
+
+# Wayland present test (#174/#179 device proof): the xdg-shell protocol code is compiled in, so the binary
+# needs no side shim; it loads cube.vert.spv/cube.frag.spv from --spv-dir (default "shader"), like the
+# other tests. The protocol sources come from present/build.sh (host wayland-scanner); without them the
+# test is skipped with a note rather than failing the build.
+rm -f "$OUT/t_vk_present"
+G=$D/present/gen
+if [ -f "$G/xdg-shell-protocol.c" ]; then
+   ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter \
+      -I"$MESA/include" -I"$G" -DVK_USE_PLATFORM_WAYLAND_KHR \
+      -o "$OUT/t_vk_present" "$V/tests/t_vk_present.c" "$G/xdg-shell-protocol.c" -ldl -lm -lwayland-client 2>"$OBJ/t_vk_present.err" \
+   || { if grep -qE "wayland-client\.h: No such file|wayland-client\.h. file not found|cannot find -lwayland-client|unable to find library -lwayland-client" "$OBJ/t_vk_present.err"; then
+           echo "note: t_vk_present not built (no wayland-client headers/libs for this target)"; else cat "$OBJ/t_vk_present.err"; exit 1; fi; }
+else
+   echo "note: t_vk_present not built (no $G/xdg-shell-protocol.c: run present/build.sh)"
+fi
 
 [ "$OUT/libvulkan_mali.so" -nt "$V/src/mali_cs_emit.c" ] || { echo "FAILED: libvulkan_mali.so older than sources"; exit 1; }
 echo "built $OUT/libvulkan_mali.so ($(stat -c %s "$OUT/libvulkan_mali.so") B) mali_icd.json t_icd"

@@ -80,6 +80,11 @@ struct mali_gfx_state {
    bool logic_inert;                      /* static logicOp enabled but it cannot change the output (no colour output 0 / attachment 0 unwritable): no blend shader needed */
    uint64_t blend_va;                     /* dualSrcBlend: blend shader VA (0 = fixed-function blend); colour attachment 0 */
    uint64_t vs_va, fs_va;                 /* GPU VA of the binaries; VS secondary shader at vs_va + vs->vs_secondary_offset (v11) */
+   /* VK_EXT_transform_feedback: a pipeline whose vertex shader declares XFB has a second vertex binary compiled WITHOUT
+    * the XFB lowering. A draw that is not inside a Begin/End range runs that one (mali_cmd.c), so the stores exist only
+    * while capture is active - the reason the extension can be on by default. NULL for every other pipeline. */
+   const struct mali_compiled *vs_plain;
+   uint64_t vs_plain_va;
    unsigned nattr;
    struct mali_attr attr[MALI_MAX_ATTR];
    bool depth_test, depth_write;
@@ -89,6 +94,8 @@ struct mali_gfx_state {
    unsigned poly_mode;                    /* fillModeNonSolid: 0 fill, 1 line, 2 point. LINE: prim is 2 and the draw is rewritten to an indexed line list at frame build (mali_poly_lines); POINT: prim is 1 and the draw is likewise rewritten to an indexed point list */
    unsigned poly_prim;                    /* LINE/POINT: the triangle topology (8 list, 10 strip, 12 fan) the pipeline was created with */
    unsigned push_base[2];                 /* byte offset of the push block in the VS / FS FAU (defaults 32 / 0) */
+   unsigned xfb_pc;                       /* VK_EXT_transform_feedback: push offset of the 4 u64 XFB buffer addresses */
+   bool xfb;                              /* the pipeline reserves that area (xfb_pc may legitimately be 0) */
 };
 
 /* R4: fixed-function state of one draw (rasteriser, depth bias, colour attachment 0 blend). All zero = "not set": defaults apply
@@ -237,6 +244,9 @@ struct mali_frame {
    bool has_colour, has_zs, has_st;       /* has_st: S8 plane attached (st.va/row_stride/clear/clear_stencil/store); independent of has_zs */
    bool provoking_last;                   /* VK_EXT_provoking_vertex LAST_VERTEX for this render pass: clears 'First provoking vertex' in the FBD (word 11 bit 14) and tiler ctx (word 2 bit 18) */
    unsigned samples;                      /* 0/1 = single sampled, 4 = 4x MSAA (MALI_EXPERIMENTAL_MSAA) */
+   uint64_t resolve_src, resolve_dst;     /* MSAA storeOp STORE + resolve: images for the separate resolve pass (0 = none) */
+   unsigned resolve_level, resolve_layer;         /* source: the attachment view's mip level / base array layer */
+   unsigned resolve_dst_level, resolve_dst_layer; /* destination: the RESOLVE view's own mip level / base array layer */
    struct mali_att colour, zs, st;
    unsigned ncolour;                      /* software rasteriser only: colour attachments (0 = has_colour ? 1 : 0); RT0 is `colour`, RT1.. are colour_x[0..] */
    struct mali_att colour_x[3];           /* RT1..RT3: own va/row_stride/rt format and load/store flags. The hardware path rejects ncolour > 1 */
@@ -247,9 +257,19 @@ struct mali_frame {
    struct mali_rec *draws;
    unsigned ndraws, cap;
    struct mali_pool *pool;                /* state blocks of the recorded draws (freed with the frame) */
+   /* Submit-time facts accumulated as the records come in (mali_frame_note_rec), so mali_cmd_submit does not have to walk
+    * every record of the frame again: any_ind = some record is an indirect draw; poly_cpu = some record's effective
+    * pipeline is polygonMode LINE/POINT and it is indexed (the CPU then reads the index buffer at build). */
+   bool any_ind, poly_cpu;
+   unsigned colour_slot;   /* which of the render pass's colour attachment slots this frame renders (a null-slot pass may start
+                            * at 1); CmdClearAttachments only clears that one */
+   const struct mali_bpipe *cur_pipe;     /* the effective pipe of the last record (records are deltas) */
 };
 
 struct mali_rec *mali_frame_draw_slot(struct mali_frame *f);   /* next draw slot (uninitialised), NULL on ENOMEM; commit with f->ndraws++ */
+/* Call once per committed record: keeps f->any_ind / f->poly_cpu / f->cur_pipe up to date (mali_cmd_submit's per-frame
+ * flags). A no-op for the build itself; skipping it only makes submit's bookkeeping wrong. */
+void mali_frame_note_rec(struct mali_frame *f, const struct mali_rec *r);
 int mali_frame_add_draw(struct mali_frame *f, const struct mali_draw *d);   /* full draw (preload): new blocks, dirty ALL. 0 or -ENOMEM */
 int mali_frame_add_rec(struct mali_frame *f, const struct mali_rec *r);     /* 0 or -ENOMEM */
 unsigned mali_frame_pool_cached(void);                                      /* test hook: recycled pool chunks parked */

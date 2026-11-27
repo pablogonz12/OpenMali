@@ -411,6 +411,23 @@ hw_submit_multi(void *u, const uint64_t *cs, unsigned n, unsigned nframes)
          h->ovf[i].tag = h->expected;
    h->ovf_last = 0;   /* the next frame's overflow sequence starts small again (and finds its BOs in the pool) */
    if (!getenv("MALI_SYNC_SUBMIT")) {
+      /* The list is bounded (MALI_MAX_INFLIGHT) and hw_job_begin only guarantees nfl <= MAX-1 when it runs, which is not
+       * enough: ONE command buffer can submit several times (an indirect or CPU-polygon frame flushes the frames
+       * accumulated before it, mali_cmd_submit), and a drain whose wait fails leaves the entries in place, so the next
+       * append wrote h->fl[h->nfl] one past the array -- over h->nfl/h->cur_start themselves (mali_queue.c, audit-sync
+       * #1). Retire before appending, and wait for the oldest frame if retiring did not free a slot: an entry is the
+       * arena range a submission still reads, so it is never dropped. A wait that cannot reach the oldest frame is a
+       * lost device and is reported, not skipped. */
+      if (h->nfl >= MALI_MAX_INFLIGHT) {
+         hw_retire(h, MALI_MAX_INFLIGHT - 1);
+         if (h->nfl >= MALI_MAX_INFLIGHT && hw_wait(h, h->fl[0].expected))
+            return -EIO;
+         if (h->nfl >= MALI_MAX_INFLIGHT)
+            hw_retire(h, MALI_MAX_INFLIGHT - 1);
+         if (h->nfl >= MALI_MAX_INFLIGHT)
+            return -EIO;   /* the counter never reached the oldest frame: device lost */
+      }
+      if (getenv("MALI_FL_DBG")) fprintf(stderr, "mali_queue: fl append nfl=%u cap=%u expected=%llu\n", h->nfl, MALI_MAX_INFLIGHT, (unsigned long long)h->expected);
       h->fl[h->nfl].expected = h->expected;
       h->fl[h->nfl].start = h->cur_start;
       h->nfl++;

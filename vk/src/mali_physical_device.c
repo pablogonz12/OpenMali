@@ -1,8 +1,10 @@
 /* SPDX-License-Identifier: MIT */
 #include "mali_private.h"
+#include "mali_tf.h"
 #include "mali_queue.h"
 #include "mali_format.h"
 #include "mali_msaa.h"
+#include "mali_gs.h"
 #include "mali_compile.h"
 
 #include <dirent.h>
@@ -23,12 +25,25 @@
 #include <time.h>
 
 /* M1 policy: every limit is the Vulkan 1.0 required minimum (spec table "Required Limits").
- * The milestone that implements a feature raises its limits to what the hardware does. */
+ * The milestone that implements a feature raises its limits to what the hardware does.
+ * Exception, the UBO counts: 12/72 (the 1.0 minimum) are one short of what st needs to see
+ * ARB_uniform_buffer_object, and the hardware is bounded by the 24-bit SRT descriptor index, not
+ * by 12. They are 128 because that is this driver's own maxPerStageResources. They follow the transform-feedback switch
+ * (mali_tf.h, on by default): without transform feedback Mesa keeps the context at GL 2.1 / GLSL 1.20
+ * (version.c: EXT_transform_feedback is required for ver_3_0) and still advertises ARB_uniform_buffer_object from
+ * can_ubo alone (st_extensions.c:464), so the extension's own shaders are uncompilable: host probe, zink on this ICD,
+ * opt-out -> "GL_VERSION=2.1 ... GL_ARB_uniform_buffer_object=yes" and `#version 140` fails with "GLSL 1.40 is not
+ * supported". Steam's CEF then never creates its UI window (webhelper restarts every 10 s). Thus 128 with TF, the 1.0
+ * minimums with MALI_EXPERIMENTAL_TF=0, i.e. the same GL capability set a pre-UBO build had. Once the opt-out is deleted
+ * (next release) both numbers become unconditional. */
 static void
 mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
 {
    /* 4x is advertised only with MALI_EXPERIMENTAL_MSAA=1: without it 4x pipelines are rejected (mali_pipeline.c), so advertising it would lie. */
    const VkSampleCountFlags samples_1_4 = VK_SAMPLE_COUNT_1_BIT | (mali_experimental_msaa() ? VK_SAMPLE_COUNT_4_BIT : 0);
+   /* UBO counts: 128 with transform feedback (the default), 12/72 otherwise (see the header comment above) */
+   const uint32_t ubo_count = mali_experimental_tf() ? 128 : 12;
+   const uint32_t ubo_set_count = mali_experimental_tf() ? 128 : 72;
 
    *p = (struct vk_properties){
       .apiVersion = MALI_DEVICE_API_VERSION,
@@ -38,11 +53,15 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .deviceType = VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU,
       /* pipelineCacheUUID: zero until the shader cache exists (M6, from the build-id). */
 
-      .maxImageDimension1D = 4096,
-      .maxImageDimension2D = 4096,
-      .maxImageDimension3D = 256,
-      .maxImageDimensionCube = 4096,
-      .maxImageArrayLayers = 256,
+      /* Image limits: MALI_MAX_DIM_* in mali_format.h (the image layout and imageFormatProperties path), raise both together.
+       * 16384 is what GL 4.1 needs and what the device test t_vk_feat imgmax creates, clears and samples on the X8 (Mali-G925);
+       * PanVK claims 2^16 (panvk_vX_physical_device.c:864-868) but a 65536^2 R8 image is 4 GiB, over our 1 GiB
+       * maxMemoryAllocationSize, so we advertise what is proven. 3D 2048 (GL 4.1 minimum) instead of 256; array layers 2048. */
+      .maxImageDimension1D = MALI_MAX_DIM_1D,
+      .maxImageDimension2D = MALI_MAX_DIM_2D,
+      .maxImageDimension3D = MALI_MAX_DIM_3D,
+      .maxImageDimensionCube = MALI_MAX_DIM_2D,
+      .maxImageArrayLayers = MALI_MAX_LAYERS,
       .maxTexelBufferElements = 65536,
       .maxUniformBufferRange = 16384,
       .maxStorageBufferRange = 1u << 27,
@@ -54,14 +73,23 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .bufferImageGranularity = 1,
       .maxBoundDescriptorSets = 8,   /* SRT table slots: 0 = driver set, 1..8 = user sets, 9 = dynamic-buffer table (16 in hardware) */
       .maxPerStageDescriptorSamplers = 16,
-      .maxPerStageDescriptorUniformBuffers = 12,
+      .maxPerStageDescriptorUniformBuffers = ubo_count,   /* not a hardware wall: a Valhall UBO is one Buffer descriptor in a set table
+                                                     * and the SRT descriptor index is 24 bits (third_party/mesa compiler/pan_compiler.h:610-636;
+                                                     * PanVK, "Hardware limit is 2^24 each of buffer, texture, and sampler descriptors",
+                                                     * panvk_descriptor_set_layout.h:54-57). The cap that binds first is this driver's own
+                                                     * maxPerStageResources = 128: a stage cannot reference more descriptors than that,
+                                                     * so 128 is the honest per-stage UBO ceiling. 12 was the Vulkan 1.0 textbook minimum and
+                                                     * made zink report 11 const buffers, one short of ARB_uniform_buffer_object. */
       .maxPerStageDescriptorStorageBuffers = 4,
       .maxPerStageDescriptorSampledImages = 16,
       .maxPerStageDescriptorStorageImages = 4,
       .maxPerStageDescriptorInputAttachments = 4,
       .maxPerStageResources = 128,
       .maxDescriptorSetSamplers = 96,
-      .maxDescriptorSetUniformBuffers = 72,
+      .maxDescriptorSetUniformBuffers = ubo_set_count,   /* with transform feedback it equals maxPerStageDescriptorUniformBuffers: one set may
+                                                * hold every per-stage UBO. 128 * 32 B = 4 KiB of table, far under the per-set slot cap
+                                                * of 2^20 (mali_descriptor.c:219) and maxPerSetDescriptors 1024. With the opt-out both are
+                                                * the 1.0 minimums (72 >= 12), which is the spec relation that matters. */
       .maxDescriptorSetUniformBuffersDynamic = 8,
       .maxDescriptorSetStorageBuffers = 24,
       .maxDescriptorSetStorageBuffersDynamic = 4,
@@ -73,6 +101,21 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxVertexInputAttributeOffset = 2047,
       .maxVertexInputBindingStride = 2048,
       .maxVertexOutputComponents = 64,
+      /* Geometry: Vulkan's Required Limits table (Required_Limits, "Unsupported Limit" / "Supported Limit") requires
+       * 0 for every maxGeometry* while the geometryShader feature is unsupported, and 32/64/64/256/1024 when it is
+       * supported. The bit stays false until lane 2 (notes/gs-design.md §7), so the honest report is 0 -- which is
+       * also what our pinned upstream does with the feature off (panvk_vX_physical_device.c:942-946) and what
+       * dEQP-VK.api.info.device.limits checks. MALI_EXPERIMENTAL_GS=1 is the *development gate* that lets pipeline
+       * creation accept a provable pass-through GS (mali_gs.h); while it is on, the numbers this driver would
+       * advertise with the feature are reported (all at or above the supported minimums: 128 >= 64, 1024 = 1024).
+       * It is never set by the driver itself, never in a fleet build, and it does not advertise the bit. */
+      .maxGeometryShaderInvocations = mali_experimental_gs() ? 32 : 0,
+      .maxGeometryInputComponents = mali_experimental_gs() ? 128 : 0,
+      .maxGeometryOutputComponents = mali_experimental_gs() ? 128 : 0,
+      .maxGeometryOutputVertices = mali_experimental_gs() ? 256 : 0,
+      .maxGeometryTotalOutputComponents = mali_experimental_gs() ? 1024 : 0,
+      /* no maxGeometryStreams: Vulkan 1.4 removed it from VkPhysicalDeviceLimits; the stream count is the
+       * geometryStreams feature, which stays false (D3D11 has no multi-stream GS). */
       .maxFragmentInputComponents = 64,
       .maxFragmentOutputAttachments = 4,
       .maxFragmentDualSrcAttachments = 1,   /* dualSrcBlend: blend shader, attachment 0 */
@@ -88,9 +131,16 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxDrawIndirectCount = 0xffff,   /* multiDrawIndirect: record_indirect/expand_indirect expand any drawCount x stride (t_vk_feat mdilimit); spec minimum with the feature is 2^16-1 */
       .maxSamplerLodBias = 2.0f,
       .maxSamplerAnisotropy = 16.0f,
+      /* robustness2 requires both alignment limits: 1 or 4 for storage, a 1..256 power of two for uniform. The bound is
+       * checked per access against the descriptor size, so every 4-byte-aligned access is covered; 0 would be illegal. */
+      .robustStorageBufferAccessSizeAlignment = 4,
+      .robustUniformBufferAccessSizeAlignment = 4,
       .maxViewports = 16,   /* multiViewport: state only, see .multiViewport */
-      .maxViewportDimensions = {4096, 4096},
-      .viewportBoundsRange = {-8192.0f, 8191.0f},
+      /* Tied to maxImageDimension2D: VUID-VkPhysicalDeviceLimits-maxViewportDimensions-07700/07701 want the viewport to
+       * cover the largest image, and viewportBoundsRange at least [-2*maxImageDimension2D, 2*maxImageDimension2D-1]. 4096
+       * was below the GL 4.x spec minimum of 16384 and left that relation broken once the image limits went up. */
+      .maxViewportDimensions = {MALI_MAX_DIM_2D, MALI_MAX_DIM_2D},
+      .viewportBoundsRange = {-2.0f * (float)MALI_MAX_DIM_2D, 2.0f * (float)MALI_MAX_DIM_2D - 1.0f},
       .minMemoryMapAlignment = 64,
       .minTexelBufferOffsetAlignment = 256,
       .minUniformBufferOffsetAlignment = 256,
@@ -99,8 +149,8 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxTexelOffset = 7,
       .minTexelGatherOffset = -8,   /* shaderImageGatherExtended: i4 narrow / i8 register texel offset; t_vk_feat gatherlim */
       .maxTexelGatherOffset = 7,
-      .maxFramebufferWidth = 4096,
-      .maxFramebufferHeight = 4096,
+      .maxFramebufferWidth = MALI_MAX_DIM_2D,
+      .maxFramebufferHeight = MALI_MAX_DIM_2D,
       .maxFramebufferLayers = 256,
       .framebufferColorSampleCounts = samples_1_4,
       .framebufferDepthSampleCounts = samples_1_4,
@@ -133,11 +183,11 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxUpdateAfterBindDescriptorsInAllPools = 500000, .shaderSampledImageArrayNonUniformIndexingNative = false,
       .quadDivergentImplicitLod = false,
       .maxPerStageDescriptorUpdateAfterBindSamplers = 500000, .maxPerStageDescriptorUpdateAfterBindSampledImages = 500000,
-      .maxPerStageDescriptorUpdateAfterBindUniformBuffers = 12, .maxPerStageDescriptorUpdateAfterBindStorageBuffers = 4,
+      .maxPerStageDescriptorUpdateAfterBindUniformBuffers = ubo_count, .maxPerStageDescriptorUpdateAfterBindStorageBuffers = 4,
       .maxPerStageDescriptorUpdateAfterBindStorageImages = 4, .maxPerStageDescriptorUpdateAfterBindInputAttachments = 4,
       .maxPerStageUpdateAfterBindResources = 500000,
       .maxDescriptorSetUpdateAfterBindSamplers = 500000, .maxDescriptorSetUpdateAfterBindSampledImages = 500000,
-      .maxDescriptorSetUpdateAfterBindUniformBuffers = 72, .maxDescriptorSetUpdateAfterBindUniformBuffersDynamic = 8,
+      .maxDescriptorSetUpdateAfterBindUniformBuffers = ubo_set_count, .maxDescriptorSetUpdateAfterBindUniformBuffersDynamic = 8,
       .maxDescriptorSetUpdateAfterBindStorageBuffers = 24, .maxDescriptorSetUpdateAfterBindStorageBuffersDynamic = 4,
       .maxDescriptorSetUpdateAfterBindStorageImages = 24, .maxDescriptorSetUpdateAfterBindInputAttachments = 4,
    };
@@ -186,10 +236,28 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
    p->maxBufferSize = 1u << 30;
    p->provokingVertexModePerPipeline = false;   /* the bit lives in the per-render-pass FBD and tiler context */
    p->transformFeedbackPreservesTriangleFanProvokingVertex = false;
+   /* VK_EXT_transform_feedback (on by default, MALI_EXPERIMENTAL_TF=0 opts out: mali_tf.h): one stream (no geometry shaders),
+    * four buffers, 16 MiB each, 64-byte per-vertex records. The lowering writes through the ordinary store path, so
+    * these are enforced by mali_pipeline.c/mali_cmd.c rather than by a streamout job. */
+   if (mali_experimental_tf()) {
+      p->maxTransformFeedbackStreams = 1;
+      p->maxTransformFeedbackBuffers = 4;
+      p->maxTransformFeedbackBufferSize = 1ull << 24;
+      p->maxTransformFeedbackStreamDataSize = 64;
+      p->maxTransformFeedbackBufferDataSize = 64;
+      p->maxTransformFeedbackBufferDataStride = 2048;
+      p->transformFeedbackQueries = false;             /* VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT not implemented */
+      p->transformFeedbackStreamsLinesTriangles = false;
+      p->transformFeedbackRasterizationStreamSelect = false;   /* geometryStreams stays false */
+      p->transformFeedbackDraw = false;
+   }
    p->lineSubPixelPrecisionBits = 4;   /* == subPixelPrecisionBits; t_vk_feat linerast */
    p->maxCustomBorderColorSamplers = 4000;   /* == maxSamplerAllocationCount: a custom colour costs nothing beyond the descriptor */
    p->maxVertexAttribDivisor = 0xfffffff;   /* NPOT divisor encoding is exact to 2^28 (t_resources attr_instance) */
-   p->supportsNonZeroFirstInstance = false;   /* KHR property: stays false until t_vk_feat divisor (firstInstance cases) passes on hardware */
+   p->supportsNonZeroFirstInstance = false;   /* KHR property, still off: floor((firstInstance + i) / divisor) is what the hardware does and
+                                               * what CTS expects (vktDrawInstancedTests prepareVertexData, Vulkan's instance index starts at
+                                               * firstInstance), but the only device run of those cases (job 20261118-142435-48673771) failed and
+                                               * has not been explained or repeated, so firstInstance != 0 stays a documented limitation. */
    p->maxInlineUniformBlockSize = 256; p->maxPerStageDescriptorInlineUniformBlocks = 4; p->maxDescriptorSetInlineUniformBlocks = 4;
    p->maxCombinedImageSamplerDescriptorCount = 1; /* maintenance6; blockTexelViewCompatibleMultipleLayers stays false */
    p->maxInlineUniformTotalSize = 256;   /* t_vk_feat inlineub */
@@ -311,7 +379,26 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
    vk_physical_device_dispatch_table_from_entrypoints(&dispatch_table,
                                                       &mali_physical_device_entrypoints, true);
    vk_physical_device_dispatch_table_from_entrypoints(&dispatch_table, &wsi_physical_device_entrypoints, false);
+   /* WSI queries that must decide the X11 present path before wsi_common answers (see mali_wsi_x11_maybe_sw):
+    * zink asks surface support first and stops on FALSE (zink_kopper.c:130-132), so the no-DRI3 -> SHM switch
+    * cannot wait for vkCreateSwapchainKHR. */
+   dispatch_table.GetPhysicalDeviceSurfaceSupportKHR = mali_wsi_get_surface_support;
+   dispatch_table.GetPhysicalDeviceSurfaceCapabilitiesKHR = mali_wsi_get_surface_capabilities;
+   dispatch_table.GetPhysicalDeviceSurfaceFormatsKHR = mali_wsi_get_surface_formats;
    dispatch_table.GetPhysicalDeviceSurfacePresentModesKHR = mali_wsi_get_present_modes;   /* + IMMEDIATE on the software path */
+   /* The *2 forms read wsi_device directly (wsi_common.c:1149/1244), so they need the same per-surface switch or they
+    * answer the dma-buf story on the software path (CR #323 N5). */
+   dispatch_table.GetPhysicalDeviceSurfaceCapabilities2KHR = mali_wsi_get_surface_capabilities2;
+   dispatch_table.GetPhysicalDeviceSurfaceFormats2KHR = mali_wsi_get_surface_formats2;
+#if defined(VK_USE_PLATFORM_XCB_KHR)
+   dispatch_table.GetPhysicalDeviceXcbPresentationSupportKHR = mali_wsi_xcb_presentation_support;
+#endif
+#if defined(VK_USE_PLATFORM_XLIB_KHR)
+   dispatch_table.GetPhysicalDeviceXlibPresentationSupportKHR = mali_wsi_xlib_presentation_support;
+#endif
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
+   dispatch_table.GetPhysicalDeviceWaylandPresentationSupportKHR = mali_wsi_wayland_presentation_support;
+#endif
 
    struct mali_drm_node drm;
    bool has_drm = mali_drm_find_node(gpu, &drm);
@@ -348,7 +435,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .KHR_calibrated_timestamps = true,     /* t_dxvk_caps: device/monotonic/raw domains */
       .EXT_image_view_min_lod = true,        /* t_image view_min_lod; t_dxvk_caps name == feature */
       .KHR_unified_image_layouts = true,     /* t_dxvk_caps: image layouts are no-ops on Mali (barriers never transition), so every layout is usable for every access */
-      .EXT_robustness2 = true,               /* nullDescriptor only (t_vk_feat nulld) */
+      .EXT_robustness2 = true,               /* nullDescriptor + robustBufferAccess2 (t_vk_feat nulld, robust2) */
       .EXT_extended_dynamic_state2 = true,   /* rasterizerDiscard/depthBias/primitiveRestart enables are read in mali_cmd.c; dynamic LogicOp/patchControlPoints stay off (static logicOp runs through the blend shader) */
       /* Steam session (vk/STEAM-GAPS.md; t_steam_caps). All of it is Mesa wsi_common / runtime behaviour: the driver adds no code. */
       .EXT_queue_family_foreign = true,      /* queue-family ownership indices are ignored by the barrier code (coherent dma-buf memory): t_steam_caps barriers */
@@ -360,12 +447,30 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
          Both are runtime behaviour: vk_common_CreateRenderPass2/CmdBeginRenderPass2 build on dynamic rendering, the imageless framebuffer's views come
          from VkRenderPassAttachmentBeginInfo. t_vk_feat imageless (pixels on hardware), t_steam_caps by-name list. */
       .KHR_create_renderpass2 = true, .KHR_imageless_framebuffer = true,
+      /* Extension names Yuzu/Eden, Dolphin, PPSSPP, RPCS3, VMA and Wine (DXVK/vkd3d) probe for. Everything here is a name for
+         behaviour core 1.1-1.3 already guarantees (entry points are runtime code, aliased to the core ones) or a feature bit that is
+         already true and probed (t_vk_feat). No new driver code; t_steam_caps checks name == feature bit and the zink26 command table
+         checks that every command of an advertised extension resolves. */
+      .KHR_maintenance2 = true, .KHR_maintenance3 = true,
+      .KHR_get_memory_requirements2 = true, .KHR_bind_memory2 = true, .KHR_dedicated_allocation = true, .KHR_image_format_list = true,
+      .KHR_driver_properties = true, .KHR_shader_draw_parameters = true,
+      .KHR_storage_buffer_storage_class = true, .KHR_relaxed_block_layout = true, .KHR_sampler_mirror_clamp_to_edge = true,
+      .KHR_shader_non_semantic_info = true,
+      .EXT_shader_demote_to_helper_invocation = true,   /* feature shaderDemoteToHelperInvocation: t_vk_feat demote */
+      .EXT_subgroup_size_control = true,                /* t_vk_feat sgctl */
+      .EXT_inline_uniform_block = true,                 /* t_vk_feat inlineub */
+      .KHR_zero_initialize_workgroup_memory = true,     /* t_vk_feat zinit */
+      .KHR_vulkan_memory_model = true,                  /* t_vk_feat memmodel */
       .KHR_present_id = true, .KHR_present_wait = true,                    /* gamescope chains both feature structs unconditionally */
       .EXT_swapchain_maintenance1 = true, .KHR_swapchain_maintenance1 = true, /* gamescope's WSI layer forces it onto every client device */
+      .EXT_hdr_metadata = true,              /* wsi_SetHdrMetadataEXT (wsi_common); stored by the Wayland chain, no-op elsewhere */
       .KHR_incremental_present = true,       /* wsi_common parses VkPresentRegionsKHR; regions are only a damage hint and may be ignored (t_vk_present, t_steam_caps) */
    };
    /* VK_EXT_physical_device_drm only together with node identity: a DRM alias of our own device (t_vk_drm). */
    struct vk_device_extension_table enabled = extensions;
+   /* VK_EXT_transform_feedback: on by default, MALI_EXPERIMENTAL_TF=0 opts out (mali_tf.h), and the same switch drives the
+    * limits, the features and the UBO counts above. geometryStreams stays false (one stream, no geometry stage). */
+   enabled.EXT_transform_feedback = mali_experimental_tf();
    /* Also advertise when the app hands us a stand-in: SessionService.kt:1044-1053 exports
     * DD_OPEN_DRIVER=1 + DD_DRM_STANDIN=/dev/mali0 in open-driver mode, and /dev/mali0 is a misc char device that
     * mali_drm_find_node() cannot match at init (no /dev/dri alias yet). Without the extension gamescope stops at
@@ -379,9 +484,18 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
        * (vk_device.c:211) rejects a device without it: zink could not create a device
        * ("ZINK: vkCreateDevice failed (VK_ERROR_FEATURE_NOT_PRESENT)"). What it guarantees here: with the feature
        * on, mali_pipeline.c sets the compile layout's robust_access flag, so nir_lower_robust_access clamps
-       * buffer/image indices and offsets before the backend sees them (the same lowering robustness2 would use;
-       * get_ssbo_size/get_ubo_size stays refused, which is why robustBufferAccess2 stays unadvertised). */
+       * buffer/image indices and offsets before the backend sees them. */
       .robustBufferAccess = true,
+      /* VK_EXT_robustness2 (DXVK 3.1.1 requires robustBufferAccess2 at device creation, DXVK-GAP.md:11). The bound of an
+       * SSBO/UBO/texel buffer is dw1 of its 32-byte descriptor; lower_size_query turns the size query into a read of that word
+       * through resource table 62 (PanVK's panvk_vX_shader.c:607-630) and lower_load_bounds wraps every load in "in range ?
+       * load : 0", which is what robustness2 asks a load for (Mesa's own pass only rewrites a load's offset to the buffer start,
+       * an undefined value that suits robustBufferAccess but not robustness2). Stores/atomics come from nir_lower_robust_access;
+       * null descriptors are the all-zero slot (mali_descriptor.c:423), so they read 0 and drop writes. Probed by
+       * t_vk_feat robust2 (X4 G610 2026-11-22: 6/6). robustImageAccess2 stays false: it needs the OOB image value emulation
+       * (zenithblue patches 181/184) and DXVK does not require it. */
+      .robustBufferAccess2 = true,
+      .transformFeedback = mali_experimental_tf(),   /* default on; the guard is the plain (non-XFB) vertex program, mali_tf.h */
       .timelineSemaphore = true,
       .textureCompressionBC = true,
       .hostQueryReset = true,
@@ -427,7 +541,15 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .extendedDynamicState2 = true,   /* t_dxvk_caps; dynamic LogicOp stays false (static logicOp runs through the blend shader) and PatchControlPoints stays false (no tessellation) */
       .rectangularLines = true,    /* t_vk_feat linerast; bresenham/smooth/stippled stay false: nothing implements them */
       .customBorderColors = true, .customBorderColorWithoutFormat = true,   /* t_vk_feat cbc */
-      .vertexAttributeInstanceRateDivisor = false, .vertexAttributeInstanceRateZeroDivisor = true,   /* divisor > 1 is NOT advertised: the hardware divides (firstInstance + i), Vulkan wants firstInstance + i / divisor, and dEQP draw.*.instanced.*attrib_divisor_{2,20} (firstInstance 0,1,3,4,20) Fail on v13 (job 20261118-142435-48673771); needs a per-run descriptor rebase. Implementation stays in mali_cs_emit.c. t_vk_feat divisor (zero: divisor 1 with stride 0, as panvk) */
+      /* divisor > 1 is in the command stream: the Attribute descriptor's Frequency bit (genxml v11 "Attribute" 1:6) plus Attribute type
+       * "1D POT/NPOT Divisor" and the Divisor R/E/D words, packed by kb_draw_attr_instance (libkbase/src/draw.c:101-121) bit for bit as
+       * Mesa's pan_compute_npot_divisor (third_party/mesa/src/panfrost/lib/pan_encoder.h:95-111) and driven by the pipeline's
+       * VkVertexInputBindingDivisorDescriptionEXT (mali_pipeline.c:353-355 -> mali_cs_emit.c:389). The instance index fed to it is the draw's
+       * INSTANCE_OFFSET + i (mali_cs_emit.c:701/734), i.e. element = floor((firstInstance + i) / divisor), which is exactly Vulkan's rule and
+       * what CTS builds its reference from (vktDrawInstancedTests.cpp:926-927). The old comment here misread the spec (it compared against
+       * "firstInstance + i / divisor"), so the only open question is firstInstance != 0 (supportsNonZeroFirstInstance, above).
+       * Divisibility: t_vk_feat divisor (encoder, POT 2/4/8, NPOT 3/5/7, zero divisor) and inst_divisor (two instances, divisor 1 and 0 in one draw). */
+      .vertexAttributeInstanceRateDivisor = true, .vertexAttributeInstanceRateZeroDivisor = true,
       /* multiViewport: no geometry shader and no shaderOutputViewportIndex, so every primitive uses viewport/scissor 0; 1..15 are accepted state
          and ignored (mali_cmd.c). t_vk_draw multivp */
       .multiViewport = true,
@@ -640,14 +762,18 @@ mali_GetPhysicalDeviceExternalBufferProperties(
    VkPhysicalDevice physicalDevice, const VkPhysicalDeviceExternalBufferInfo *pExternalBufferInfo,
    VkExternalBufferProperties *pExternalBufferProperties)
 {
-   /* dma-buf only (M4). */
+   /* dma-buf only (M4). OPAQUE_FD is the same object to this driver (kbase hands out a dma-buf fd; see
+    * mali_memory.c's import/export): the two are interchangeable, and a client that queries before it imports
+    * (zink for gamescope, ANGLE) must be told so, or it picks the dma-buf path or gives up. */
+   const VkExternalMemoryHandleTypeFlags ours =
+      VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT | VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
    VkExternalMemoryProperties p = {0};
-   if (pExternalBufferInfo->handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT)
+   if (pExternalBufferInfo->handleType & ours)
       p = (VkExternalMemoryProperties){
          .externalMemoryFeatures = VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT |
                                    VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT,
-         .exportFromImportedHandleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
-         .compatibleHandleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
+         .exportFromImportedHandleTypes = ours,
+         .compatibleHandleTypes = ours,
       };
    pExternalBufferProperties->externalMemoryProperties = p;
 }

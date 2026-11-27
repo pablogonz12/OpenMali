@@ -66,6 +66,7 @@ static const struct ext dev_exts[] = {
    {"VK_EXT_shader_stencil_export", "ANGLE(optional)", 0},
    {"VK_EXT_index_type_uint8", "ANGLE(optional)", 0},
    {"VK_KHR_incremental_present", "ANGLE(optional)", 1},
+   {"VK_EXT_hdr_metadata", "DXVK/vkd3d-proton HDR(optional)", 0},
 };
 
 static const struct ext inst_exts[] = {
@@ -171,7 +172,8 @@ main(int argc, char **argv)
    /* gamescope createDevice(): features2 chain exactly as rendervulkan.cpp builds it */
    VkPhysicalDeviceRobustness2FeaturesEXT rb2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT};
    VkPhysicalDeviceSamplerYcbcrConversionFeatures ycc = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES, .pNext = &rb2};
-   VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &ycc};
+   VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &ycc};
+   VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &f11};
    VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .pNext = &f12};
    VkPhysicalDevicePresentWaitFeaturesKHR pw = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR, .pNext = &f13};
    VkPhysicalDevicePresentIdFeaturesKHR pid = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR, .pNext = &pw};
@@ -328,6 +330,10 @@ main(int argc, char **argv)
       {"VK_KHR_dynamic_rendering", f13.dynamicRendering}, {"VK_KHR_imageless_framebuffer", f12.imagelessFramebuffer}, {"VK_KHR_synchronization2", f13.synchronization2}, {"VK_KHR_maintenance4", f13.maintenance4},
       {"VK_EXT_private_data", f13.privateData}, {"VK_KHR_buffer_device_address", f12.bufferDeviceAddress}, {"VK_EXT_scalar_block_layout", f12.scalarBlockLayout},
       {"VK_EXT_host_query_reset", f12.hostQueryReset}, {"VK_KHR_uniform_buffer_standard_layout", f12.uniformBufferStandardLayout},
+      {"VK_KHR_shader_draw_parameters", f11.shaderDrawParameters}, {"VK_EXT_shader_demote_to_helper_invocation", f13.shaderDemoteToHelperInvocation},
+      {"VK_EXT_subgroup_size_control", f13.subgroupSizeControl}, {"VK_EXT_inline_uniform_block", f13.inlineUniformBlock},
+      {"VK_KHR_zero_initialize_workgroup_memory", f13.shaderZeroInitializeWorkgroupMemory}, {"VK_KHR_vulkan_memory_model", f12.vulkanMemoryModel},
+      {"VK_KHR_sampler_mirror_clamp_to_edge", f12.samplerMirrorClampToEdge},
    };
    for (unsigned i = 0; i < sizeof(pairs) / sizeof(pairs[0]); i++)
       CHECK(has(eps, ne, pairs[i].ext) == (int)pairs[i].f, "%s advertised=%d but its feature=%u", pairs[i].ext, has(eps, ne, pairs[i].ext), pairs[i].f);
@@ -364,6 +370,38 @@ main(int argc, char **argv)
    printf("gamescope vkCreateDevice: %d (extensions ok=%d, features ok=%d)\n", r, gs_ok, gs_feat_ok);
    if (gs_ok && gs_feat_ok) CHECK(r == VK_SUCCESS, "gamescope's device request: %d", r);
    else CHECK(r == VK_ERROR_FEATURE_NOT_PRESENT || r == VK_ERROR_EXTENSION_NOT_PRESENT, "an unsupported request must be refused, got %d", r);
+
+   CHECK(has(eps, ne, "VK_EXT_hdr_metadata"), "VK_EXT_hdr_metadata must be advertised");
+   if (has(eps, ne, "VK_EXT_hdr_metadata") && has(eps, ne, "VK_KHR_swapchain") && has(iep, nie, "VK_KHR_surface")) {   /* own instance + device: hdr_metadata requires VK_KHR_swapchain, which requires VK_KHR_surface */
+      const char *sx = "VK_KHR_surface";
+      VkInstanceCreateInfo hici = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app, .enabledExtensionCount = 1, .ppEnabledExtensionNames = &sx};
+      VkInstance hinst = NULL;
+      CHECK(CreateInstance(&hici, NULL, &hinst) == VK_SUCCESS, "instance with VK_KHR_surface");
+      PFN_vkEnumeratePhysicalDevices hEPD = hinst ? (PFN_vkEnumeratePhysicalDevices)gipa(hinst, "vkEnumeratePhysicalDevices") : NULL;
+      PFN_vkCreateDevice hCD = hinst ? (PFN_vkCreateDevice)gipa(hinst, "vkCreateDevice") : NULL;
+      PFN_vkGetDeviceProcAddr hGDPA = hinst ? (PFN_vkGetDeviceProcAddr)gipa(hinst, "vkGetDeviceProcAddr") : NULL;
+      PFN_vkDestroyInstance hDI = hinst ? (PFN_vkDestroyInstance)gipa(hinst, "vkDestroyInstance") : NULL;
+      uint32_t hn = 1;
+      VkPhysicalDevice hpd = NULL;
+      /* Without a device the device-creation CHECK below is skipped and the case would "pass" without ever resolving
+       * vkSetHdrMetadataEXT: a missing enumerator, a failed enumeration or count 0 is a test failure (CR thread,
+       * vk/tests/t_steam_caps.c:370). The instance is still destroyed at the end of this block. */
+      const VkResult hen = hEPD ? hEPD(hinst, &hn, &hpd) : VK_ERROR_INITIALIZATION_FAILED;
+      CHECK(hen == VK_SUCCESS && hn >= 1 && hpd,
+            "enumerate physical devices for the hdr case: result %d count %u device %p", (int)hen, hn, (void *)hpd);
+      const char *hx[] = {"VK_KHR_swapchain", "VK_EXT_hdr_metadata"};
+      VkDeviceQueueCreateInfo hq = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = (float[]){1.0f}};
+      VkDeviceCreateInfo hdi = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1, .pQueueCreateInfos = &hq,
+                                .enabledExtensionCount = 2, .ppEnabledExtensionNames = hx};
+      VkDevice hdev = NULL;
+      if (hpd && hCD) CHECK(hCD(hpd, &hdi, NULL, &hdev) == VK_SUCCESS, "device with VK_KHR_swapchain + VK_EXT_hdr_metadata");
+      if (hdev) {
+         /* resolution only: vkSetHdrMetadataEXT needs a valid swapchain (swapchainCount > 0), and the fake backend has no surface */
+         CHECK(hGDPA(hdev, "vkSetHdrMetadataEXT") != NULL, "vkSetHdrMetadataEXT resolves with VK_EXT_hdr_metadata enabled");
+         ((PFN_vkDestroyDevice)hGDPA(hdev, "vkDestroyDevice"))(hdev, NULL);
+      }
+      if (hDI) hDI(hinst, NULL);
+   }
 
    if (dev && has(eps, ne, "VK_EXT_queue_family_foreign")) {
       /* gamescope's modifier path: acquire/release ownership with QUEUE_FAMILY_FOREIGN_EXT around a dma-buf image; here on a buffer */

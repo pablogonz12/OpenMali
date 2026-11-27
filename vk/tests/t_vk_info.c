@@ -94,6 +94,7 @@ main(int argc, char **argv)
    if (!inst) return 1;
    I(EnumeratePhysicalDevices); I(GetPhysicalDeviceProperties2); I(GetPhysicalDeviceFeatures2);
    I(GetPhysicalDeviceQueueFamilyProperties2); I(GetPhysicalDeviceFormatProperties2); I(GetPhysicalDeviceImageFormatProperties);
+   I(EnumerateDeviceExtensionProperties);
    I(CreateDevice); I(DestroyInstance);
 
    uint32_t n = 1;
@@ -162,18 +163,69 @@ main(int argc, char **argv)
    CHECK(L->maxPerStageDescriptorSamplers >= 16 && L->maxPerStageDescriptorSampledImages >= 16, "per-stage minimums");
    CHECK(L->timestampPeriod > 0.0f, "timestampPeriod");
    CHECK(L->maxClipDistances >= 8 && L->maxCombinedClipAndCullDistances >= L->maxClipDistances, "clip distance limits (shaderClipDistance on: min 8)");
+   /* UBO counts follow the transform-feedback gate (mali_physical_device.c header comment): 128 with TF (the
+    * default), otherwise the Vulkan 1.0 minimums (12 per stage / 72 per set). gate off keeps st
+    * from advertising ARB_uniform_buffer_object on a GL 2.1 / GLSL 1.20 context, where its shaders cannot compile. */
+   {
+      /* Transform feedback is ON by default since #313; MALI_EXPERIMENTAL_TF=0 opts out. */
+      const char *g = getenv("MALI_EXPERIMENTAL_TF");
+      const int tf = !(g && g[0] == '0');
+      const uint32_t want_stage = tf ? 128 : 12, want_set = tf ? 128 : 72;
+      CHECK(L->maxPerStageDescriptorUniformBuffers == want_stage, "per-stage UBOs %u == %u (TF gate %d)", L->maxPerStageDescriptorUniformBuffers, want_stage, tf);
+      CHECK(L->maxDescriptorSetUniformBuffers == want_set, "per-set UBOs %u == %u (TF gate %d)", L->maxDescriptorSetUniformBuffers, want_set, tf);
+      CHECK(L->maxPerStageDescriptorUniformBuffers >= 12 && L->maxDescriptorSetUniformBuffers >= 72, "UBO minimums (1.0 table)");
+   }
    CHECK(L->minUniformBufferOffsetAlignment && !(L->minUniformBufferOffsetAlignment & (L->minUniformBufferOffsetAlignment - 1)), "ubo align pow2");
    CHECK(L->nonCoherentAtomSize && !(L->nonCoherentAtomSize & (L->nonCoherentAtomSize - 1)), "atom pow2");
    CHECK(L->framebufferColorSampleCounts & VK_SAMPLE_COUNT_1_BIT, "fb samples");
    {  /* 4x is advertised iff pipeline creation accepts it: opt-in via MALI_EXPERIMENTAL_MSAA=1 (LOAD/resolve incomplete) */
       const char *g = getenv("MALI_EXPERIMENTAL_MSAA");
-      VkSampleCountFlags want = (g && g[0] == '1') ? VK_SAMPLE_COUNT_4_BIT : 0;
+      VkSampleCountFlags want = (g && g[0] == '0') ? 0 : VK_SAMPLE_COUNT_4_BIT;
       VkImageFormatProperties ifp;
       VkResult r = GetPhysicalDeviceImageFormatProperties(pd, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
                                                             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, 0, &ifp);
       CHECK((L->framebufferColorSampleCounts & VK_SAMPLE_COUNT_4_BIT) == want, "4x fb colour samples follow the MSAA gate");
       CHECK((L->framebufferDepthSampleCounts & VK_SAMPLE_COUNT_4_BIT) == want, "4x fb depth samples follow the MSAA gate");
       CHECK(r == VK_SUCCESS && (ifp.sampleCounts & VK_SAMPLE_COUNT_4_BIT) == want, "4x image format samples follow the MSAA gate");
+      /* the default (env unset) must really be 4x for the depth format too, or the flip silently regresses */
+      VkImageFormatProperties dip;
+      VkResult dr = GetPhysicalDeviceImageFormatProperties(pd, VK_FORMAT_D32_SFLOAT, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+                                                            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, 0, &dip);
+      CHECK(dr == VK_SUCCESS && (dip.sampleCounts & VK_SAMPLE_COUNT_4_BIT) == want, "4x depth image format samples follow the MSAA gate");
+   }
+   /* VK_EXT_transform_feedback is ON by default since 29a67a9d (a zink client needs it for GL 3.0):
+    * MALI_EXPERIMENTAL_TF=0 is the legacy opt-out. The extension, the feature bit and the properties follow the same
+    * gate (mali_tf.h `tf_enabled()`: true unless the env starts with '0'), like the UBO counts above (line 172). */
+   {
+      const char *g = getenv("MALI_EXPERIMENTAL_TF");
+      const int want = !(g && g[0] == '0');
+      uint32_t en = 0;
+      int have = 0;
+      EnumerateDeviceExtensionProperties(pd, NULL, &en, NULL);
+      VkExtensionProperties *e = calloc(en ? en : 1, sizeof *e);
+      if (e && EnumerateDeviceExtensionProperties(pd, NULL, &en, e) == VK_SUCCESS)
+         for (uint32_t i = 0; i < en; i++)
+            if (!strcmp(e[i].extensionName, VK_EXT_TRANSFORM_FEEDBACK_EXTENSION_NAME)) have = 1;
+      free(e);
+      CHECK(have == want, "VK_EXT_transform_feedback %s, gate %d", have ? "advertised" : "absent", want);
+
+      VkPhysicalDeviceTransformFeedbackFeaturesEXT tff = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_FEATURES_EXT};
+      VkPhysicalDeviceFeatures2 q2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &tff};
+      GetPhysicalDeviceFeatures2(pd, &q2);
+      CHECK(tff.transformFeedback == (VkBool32)want, "transformFeedback feature follows the gate");
+      CHECK(tff.geometryStreams == VK_FALSE, "geometryStreams stays false (no geometry stage)");
+
+      VkPhysicalDeviceTransformFeedbackPropertiesEXT tfp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_PROPERTIES_EXT};
+      VkPhysicalDeviceProperties2 q3 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &tfp};
+      GetPhysicalDeviceProperties2(pd, &q3);
+      if (want) {
+         CHECK(tfp.maxTransformFeedbackStreams >= 1 && tfp.maxTransformFeedbackBuffers >= 1 &&
+               tfp.maxTransformFeedbackBufferSize > 0 && tfp.maxTransformFeedbackBufferDataSize > 0 &&
+               tfp.maxTransformFeedbackBufferDataStride > 0, "transform feedback properties");
+         CHECK(!tfp.transformFeedbackQueries && !tfp.transformFeedbackDraw &&
+               !tfp.transformFeedbackRasterizationStreamSelect && !tfp.transformFeedbackStreamsLinesTriangles,
+               "only implemented transform-feedback properties may be set");
+      }
    }
    CHECK(p13.maxInlineUniformBlockSize == 256 && p13.maxInlineUniformTotalSize == 256, "inline UBO limits (t_vk_feat inlineub)");
 
@@ -406,10 +458,19 @@ main(int argc, char **argv)
       CHECK(strstr(msg, "unsupported feature VkPhysicalDeviceFeatures::geometryShader") != NULL,
             "message names the feature: %s", msg);
    }
-   /* Same for a feature struct in the pNext chain (extension features): the flattened field name is printed. */
+   /* Same for a feature struct in the pNext chain (extension features): the flattened field name is printed. robustBufferAccess2
+    * is advertised now (robustness2, t_vk_feat robust2), so the unsupported half of the same struct is robustImageAccess2. */
    {
+      /* positive probe first: the advertised half must read true in the capability query, or the rejection below
+       * would pass just as well on a driver that reports both halves false (nothing tested, nothing proven) */
+      VkPhysicalDeviceRobustness2FeaturesEXT r2q = {
+         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT};
+      VkPhysicalDeviceFeatures2 fq = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &r2q};
+      GetPhysicalDeviceFeatures2(pd, &fq);
+      CHECK(r2q.robustBufferAccess2 == VK_TRUE, "robustBufferAccess2 must be reported true (it is advertised)");
+      CHECK(r2q.robustImageAccess2 == VK_FALSE, "robustImageAccess2 must stay false while it is unsupported");
       VkPhysicalDeviceRobustness2FeaturesEXT r2 = {
-         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .robustBufferAccess2 = VK_TRUE};
+         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT, .robustImageAccess2 = VK_TRUE};
       VkDeviceCreateInfo d3 = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1,
                                .pQueueCreateInfos = &qci, .pNext = &r2};
       VkDevice d = NULL;
@@ -428,8 +489,8 @@ main(int argc, char **argv)
          msg[n] = 0;
          fclose(cap);
       }
-      CHECK(rr == VK_ERROR_FEATURE_NOT_PRESENT, "robustBufferAccess2 must be rejected (%d)", rr);
-      CHECK(strstr(msg, "unsupported feature robustBufferAccess2") != NULL, "message names the chain feature: %s", msg);
+      CHECK(rr == VK_ERROR_FEATURE_NOT_PRESENT, "robustImageAccess2 must be rejected (%d)", rr);
+      CHECK(strstr(msg, "unsupported feature robustImageAccess2") != NULL, "message names the chain feature: %s", msg);
    }
 
 #define D(n) PFN_vk##n n = (PFN_vk##n)gdpa(dev, "vk" #n)
@@ -467,6 +528,25 @@ main(int argc, char **argv)
       GetDeviceBufferMemoryRequirements(dev, &req, &mr);
       CHECK(mr.memoryRequirements.size >= 4096 && mr.memoryRequirements.memoryTypeBits, "maintenance4 buffer reqs size=%llu bits=%x",
             (unsigned long long)mr.memoryRequirements.size, mr.memoryRequirements.memoryTypeBits);
+   }
+   /* bind_memory2: a swapchain-aliased bind (memory == NULL + BindImageMemorySwapchainInfo) is not implemented and must not report success */
+   {
+      PFN_vkCreateImage CreateImage = (PFN_vkCreateImage)gdpa(dev, "vkCreateImage");
+      PFN_vkDestroyImage DestroyImage = (PFN_vkDestroyImage)gdpa(dev, "vkDestroyImage");
+      PFN_vkBindImageMemory2 BindImageMemory2 = (PFN_vkBindImageMemory2)gdpa(dev, "vkBindImageMemory2");
+      VkImage im = VK_NULL_HANDLE;
+      VkImageCreateInfo ic = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = VK_FORMAT_R8G8B8A8_UNORM,
+         .extent = {16, 16, 1}, .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+         .usage = VK_IMAGE_USAGE_SAMPLED_BIT, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+      CHECK(CreateImage(dev, &ic, NULL, &im) == VK_SUCCESS, "CreateImage for bind test");
+      VkBindImageMemorySwapchainInfoKHR sw = {.sType = VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_SWAPCHAIN_INFO_KHR, .swapchain = (VkSwapchainKHR)(uintptr_t)0x1234, .imageIndex = 0};
+      VkBindImageMemoryInfo bi = {.sType = VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO, .pNext = &sw, .image = im, .memory = VK_NULL_HANDLE};
+      VkResult bst = VK_SUCCESS;
+      VkBindMemoryStatus bs = {.sType = VK_STRUCTURE_TYPE_BIND_MEMORY_STATUS, .pResult = &bst};
+      sw.pNext = &bs;
+      CHECK(BindImageMemory2(dev, 1, &bi) == VK_ERROR_UNKNOWN, "BindImageMemory2 with an unimplemented swapchain bind must return VK_ERROR_UNKNOWN");
+      CHECK(bst == VK_ERROR_UNKNOWN, "the failed bind reports VK_ERROR_UNKNOWN through VkBindMemoryStatus (got %d)", (int)bst);
+      DestroyImage(dev, im, NULL);
    }
    /* hostQueryReset */
    {

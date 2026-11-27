@@ -123,6 +123,25 @@ run(void)
    struct mali_buffer *mb = mali_buffer_from_handle(buf);
    CHECK(mb->vk.device_address == mm->bo.gpu_va, "buffer va");
    CHECK(mali_image_from_handle(img)->va == mm->bo.gpu_va + img_off, "image va");
+   /* F (#240): Vulkan 1.4 moves the usage mask into VkBufferUsageFlags2CreateInfoKHR, and VkBufferCreateInfo::usage must
+    * then be 0. The front end reads vk.usage for every usage decision (INDIRECT: host touch at bind time, indirect memory
+    * types), so a chain-only buffer must still record INDIRECT. */
+   VkBufferUsageFlags2CreateInfoKHR u2ci = {.sType = VK_STRUCTURE_TYPE_BUFFER_USAGE_FLAGS_2_CREATE_INFO_KHR,
+                                            .usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
+   VkBufferCreateInfo u2bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 4096, .pNext = &u2ci,
+                               .usage = 0, .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+   VkBuffer u2buf;
+   CHECK(p_CreateBuffer(dev, &u2bci, NULL, &u2buf) == VK_SUCCESS, "chain-only usage buffer");
+   const VkBufferUsageFlags u2 = mali_buffer_from_handle(u2buf)->vk.usage;
+   CHECK(u2 & VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, "VkBufferUsageFlags2CreateInfoKHR ignored: usage %08x", u2);
+   CHECK(u2 & VK_BUFFER_USAGE_TRANSFER_SRC_BIT, "chain-only TRANSFER_SRC lost: usage %08x", u2);
+   p_DestroyBuffer(dev, u2buf, NULL);
+   /* negative control: the bit must come from the mask, not from "any chain is indirect" */
+   u2ci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+   CHECK(p_CreateBuffer(dev, &u2bci, NULL, &u2buf) == VK_SUCCESS, "chain-only TRANSFER_SRC buffer");
+   CHECK(!(mali_buffer_from_handle(u2buf)->vk.usage & VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT),
+         "a chain-only TRANSFER_SRC buffer gained INDIRECT");
+   p_DestroyBuffer(dev, u2buf, NULL);
    /* view, sampler, texel buffer view */
    VkImageViewCreateInfo vci = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = img, .viewType = VK_IMAGE_VIEW_TYPE_2D,
                                 .format = VK_FORMAT_R8G8B8A8_UNORM,
@@ -206,11 +225,15 @@ run(void)
    CHECK(mali_image_view_desc(view, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &tex_e) == 0, "view desc");
    CHECK(iv->payload_va != 0 && tex_e.w[4] == (uint32_t)iv->payload_va, "texture payload pointer");
    e[1] = tex_e;
-   /* M5 sampler = libkbase's nearest/clamp sampler (mali_pack_sampler) plus genxml defaults (bits 21, 26) and maxLod (word 1) */
+   /* M5 sampler = libkbase's nearest/clamp sampler (mali_pack_sampler) plus maxLod (word 1). Bit 21 (round-to-nearest-even) is
+    * NOT set for NEAREST/NEAREST and bit 26 (clamp integer array indices) is never set (audit-descriptors.md #4,
+    * panvk_vX_sampler.c:112-118): the two bits are the whole difference to libkbase's reference. */
    struct mali_hw_desc ks;
    mali_pack_sampler(arch, &ks, 1, 1, 9);
    e[2] = mali_sampler_from_handle(smp)->hw;
-   CHECK((e[2].w[0] ^ ks.w[0]) == ((1u << 21) | (1u << 26)), "sampler word0 %08x vs %08x", e[2].w[0], ks.w[0]);
+   CHECK(!(e[2].w[0] & ((1u << 21) | (1u << 26))), "sampler word0 %08x: NEAREST clears 21, 26 stays clear", e[2].w[0]);
+   CHECK((e[2].w[0] & ~((1u << 21) | (1u << 26))) == (ks.w[0] & ~((1u << 21) | (1u << 26))),
+         "sampler word0 %08x vs %08x outside those two bits", e[2].w[0], ks.w[0]);
    CHECK(!memcmp(&e[2].w[2], &ks.w[2], 24), "sampler tail");
    mali_pack_buffer(arch, &e[3], va + 1024, 4096 - 1024);
    struct mali_fmt f;

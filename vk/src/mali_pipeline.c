@@ -14,6 +14,7 @@
 #include "mali_image.h"
 #include "vk_enum_to_str.h"
 #include "mali_msaa.h"
+#include "mali_gs.h"
 #include "mali_pipeline_layout.h"
 #include "vk_alloc.h"
 #include "vk_graphics_state.h"
@@ -23,6 +24,7 @@
 #include "vk_util.h"
 #include <pthread.h>
 #include <stdatomic.h>
+#include <inttypes.h>
 #include <stdlib.h>
 
 struct mali_pipeline {
@@ -31,6 +33,7 @@ struct mali_pipeline {
    struct vk_dynamic_graphics_state dynamic;   /* R4: static state values + which states are static (bound with the pipeline) */
    struct mali_gfx_state gfx;     /* vs/fs point into this object; vs_va/fs_va into code */
    struct mali_compiled vs, fs, cs, blend;   /* cs: compute pipelines (is_compute); the binary is at code + 0 */
+   struct mali_compiled vs_plain;            /* XFB programs: the same VS without the XFB lowering (mali_tf.h) */
    bool is_compute;
    struct mali_bo code;
    bool have_code;
@@ -48,6 +51,7 @@ pipeline_destroy(struct mali_device *dev, struct mali_pipeline *p, const VkAlloc
    mali_compiled_free(&p->fs);
    mali_compiled_free(&p->cs);
    mali_compiled_free(&p->blend);
+   mali_compiled_free(&p->vs_plain);   /* the XFB pipeline's side-effect-free vertex variant; the fail: path frees through here too */
    vk_object_free(&dev->vk, alloc, p);
 }
 
@@ -125,7 +129,8 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
       return VK_ERROR_OUT_OF_HOST_MEMORY;
    p->dev = dev;
 
-   const VkPipelineShaderStageCreateInfo *vss = NULL, *fss = NULL;
+   const VkPipelineShaderStageCreateInfo *vss = NULL, *fss = NULL, *gss = NULL;
+   unsigned gs_prims = 0;   /* lane 1: the input primitive of an accepted pass-through GS (0 = no geometry stage) */
    for (uint32_t i = 0; i < ci->stageCount; i++) {
       /* requiredSubgroupSizeStages is COMPUTE only: a graphics stage may not chain a requested size. */
       const VkPipelineShaderStageRequiredSubgroupSizeCreateInfo *rss =
@@ -139,6 +144,8 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
          vss = &ci->pStages[i];
       else if (ci->pStages[i].stage == VK_SHADER_STAGE_FRAGMENT_BIT)
          fss = &ci->pStages[i];
+      else if (ci->pStages[i].stage == VK_SHADER_STAGE_GEOMETRY_BIT)
+         gss = &ci->pStages[i];   /* accepted below only when it is a provable pass-through (mali_gs.c) */
       else {
          res = VK_ERROR_FEATURE_NOT_PRESENT; if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: unsupported pipeline state at %s:%d\n", __FILE__, __LINE__);   /* tessellation / geometry: not supported */
          goto fail;
@@ -149,6 +156,36 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    if (!vss || !stage_spirv(vss, &vcode, &vwords) || (fss && !stage_spirv(fss, &fcode, &fwords))) {
       res = VK_ERROR_FEATURE_NOT_PRESENT; if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: unsupported pipeline state at %s:%d\n", __FILE__, __LINE__);   /* VS-only (rasterizer discard) pipelines: later */
       goto fail;
+   }
+
+   /* Geometry shaders, lane 1 of notes/gs-design.md §4: a *provable* pass-through GS (1-in/1-out, in order, one stream,
+    * every output a copy of the matching input vertex — mali_gs.c) is compiled into the vertex program by not existing:
+    * the stream it would emit is exactly the one the vertex shader above already produces, so the VS is compiled
+    * unchanged and the draw below keeps its topology, its vertex count and its pipeline state, which is why the pass-through
+    * draw record *is* the existing one (mali_cmd.c). Zero jobs, zero dispatches, zero bytes. Any other geometry shader is
+    * refused here with a named reason, before any state is built: it needs lane 2's compute pre-pass. The feature bit stays
+    * false (mali_physical_device.c), so an application cannot reach this path at all; MALI_EXPERIMENTAL_GS=1 (mali_gs.h) is
+    * the development gate the gs_* tests use, and it never advertises anything. */
+   if (gss) {
+      const uint32_t *gcode = NULL;
+      uint32_t gwords = 0;
+      char why[192] = "no SPIR-V in the geometry stage";
+      if (!mali_experimental_gs()) {
+         res = VK_ERROR_FEATURE_NOT_PRESENT;
+         if (getenv("MALI_PIPE_DBG"))
+            fprintf(stderr, "mali_vk: geometry shader refused: geometryShader is not advertised (MALI_EXPERIMENTAL_GS=1 is the development gate)\n");
+         goto fail;
+      }
+      if (!stage_spirv(gss, &gcode, &gwords) ||
+          !mali_gs_passthrough(gcode, gwords, gss->pName, &gs_prims, why, sizeof why)) {
+         res = VK_ERROR_FEATURE_NOT_PRESENT;
+         if (getenv("MALI_PIPE_DBG"))
+            fprintf(stderr, "mali_vk: geometry shader refused: %s\n", why);
+         goto fail;
+      }
+      if (getenv("MALI_PIPE_DBG"))
+         fprintf(stderr, "mali_vk: geometry shader accepted as a pass-through (%u-in/1-out, compiled as the vertex program)\n",
+                 gs_prims);
    }
 
    all = vk_zalloc(&dev->vk.alloc, sizeof *all, 8, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
@@ -165,23 +202,64 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    VK_FROM_HANDLE(vk_pipeline_layout, layout, ci->layout);
    if (layout && (res = mali_pipeline_layout_flatten(layout, &flat)) != VK_SUCCESS)
       goto fail;
-   /* nir_lower_robust_access is only enabled for robustness2: it inserts get_ssbo_size/get_ubo_size, which this
-    * backend cannot lower yet (mali_descriptor_lower.c:218). robustBufferAccess itself is advertised because Vulkan
-    * 1.0 makes it mandatory (zink needs it); what this driver guarantees for it today is the dynamic array-index
-    * clamp in mali_descriptor_lower.c:129 plus the descriptor bounds, not full byte-range clamping. */
+   /* nir_lower_robust_access runs for robustness2 only (it costs a size load per access); its get_ssbo_size/get_ubo_size
+    * queries are lowered to a read of the descriptor's size word (mali_descriptor_lower.c lower_size_query), so the
+    * features it backs can be advertised on their own. robustBufferAccess alone is still advertised without it (Vulkan
+    * 1.0 makes it mandatory, zink needs it): the dynamic array-index clamp (mali_descriptor_lower.c:129) plus the
+    * descriptor bounds, not full byte-range clamping. */
    flat.c.robust_access = dev->vk.enabled_features.robustBufferAccess2 || dev->vk.enabled_features.robustImageAccess2;
 
+   /* VK_EXT_transform_feedback: four u64 buffer addresses go after the application's push constants, so an XFB
+    * program's push range grows by 32 B (the app never sees it; the shader's range check and the FAU reservation
+    * both need the grown size). Only for programs that declare XFB, so other pipelines keep their FAU layout. */
+   const unsigned app_push = layout ? flat.c.push_size : 0;
+   const int xfb = mali_spirv_has_xfb(vcode, vwords);
+   if (xfb) {
+      if (app_push + 32 > MALI_PUSH_MAX) {   /* the app already uses the whole block: no room for the addresses */
+         fprintf(stderr, "mali_vk: transform feedback needs 32 B of push constants after the application's %u\n", app_push);
+         res = VK_ERROR_FEATURE_NOT_PRESENT;
+         goto fail;
+      }
+      if (layout)
+         flat.c.push_size = app_push + 32;
+   }
    struct mali_compile_opts o = {.arch = arch, .layout = layout ? &flat.c : NULL};
+   o.xfb_pc = app_push;
+   o.xfb = xfb ? MALI_XFB_STORES : 0;
    o.stage = MALI_STAGE_VERTEX;
    o.strip_psiz = ci->pInputAssemblyState && ci->pInputAssemblyState->topology != VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
    o.spirv = vcode;
    o.spirv_words = vwords;
    o.entry = vss->pName;
+   /* The VS code depends on the FS's interpolants (noperspective mask): hand it the FS module that will be linked.
+    * fss == NULL only when the pipeline has no fragment stage (rasterizerDiscardEnable), which also writes no
+    * interpolants; the mask is then 0. There is no path in this driver that compiles the stages in separate
+    * invocations (no VK_EXT_shader_object, no VK_KHR_pipeline_library: they are not in the device's extension list),
+    * so every VS compile that can have interpolants has its FS here. */
+   o.fs_spirv = fss ? fcode : NULL;
+   o.fs_spirv_words = fss ? fwords : 0;
+   o.fs_entry = fss ? fss->pName : NULL;
    set_spec(&o, specbuf, vss->pSpecializationInfo);
-   if (mali_compile(&o, &p->vs, err, sizeof err)) {
+   int vcr = mali_compile(&o, &p->vs, err, sizeof err);
+   if (vcr) {
       fprintf(stderr, "mali_vk: VS compile failed: %s\n", err);
-      res = VK_ERROR_INVALID_SHADER_NV;
+      res = vcr == MALI_COMPILE_UNSUPPORTED ? VK_ERROR_FEATURE_NOT_PRESENT : VK_ERROR_INVALID_SHADER_NV;
       goto fail;
+   }
+   if (xfb) {
+      /* The same vertex shader without the XFB lowering: every draw outside a Begin/End range runs this one
+       * (mali_cmd.c), so a shader with XFB outputs stores nothing while capture is not active. MALI_XFB_PLAIN (not 0):
+       * the module still declares XFB, and a compile without a reserved area is refused (the #296 guard), which is why
+       * "o.xfb = 0" only ever worked as a cache hit that handed it the STORES binary. The push layout is the same. */
+      o.xfb = MALI_XFB_PLAIN;
+      o.xfb_pc = 0;
+      if (mali_compile(&o, &p->vs_plain, err, sizeof err)) {
+         fprintf(stderr, "mali_vk: VS compile (non-XFB variant) failed: %s\n", err);
+         res = VK_ERROR_INVALID_SHADER_NV;
+         goto fail;
+      }
+      o.xfb = MALI_XFB_STORES;
+      o.xfb_pc = app_push;
    }
    /* no fragment stage (rasterizerDiscardEnable pipelines): nothing to compile, every draw of the pipeline is skipped (vertex-stage side effects are not run) */
    o.stage = MALI_STAGE_FRAGMENT;
@@ -266,8 +344,9 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
 
    /* code BO: VS binary (its varying secondary shader follows inside it), FS binary, 256-byte aligned; blend shader after it, 16-aligned */
    size_t fs_off = (p->vs.bin_size + BIN_ALIGN - 1) & ~(size_t)(BIN_ALIGN - 1);
-   size_t bl_off = (fs_off + p->fs.bin_size + 15) & ~(size_t)15;
-   size_t code_sz = has_blend ? bl_off + p->blend.bin_size : fs_off + p->fs.bin_size;
+   size_t pl_off = (fs_off + p->fs.bin_size + BIN_ALIGN - 1) & ~(size_t)(BIN_ALIGN - 1);   /* non-XFB VS variant of an XFB program */
+   size_t bl_off = (pl_off + p->vs_plain.bin_size + 15) & ~(size_t)15;
+   size_t code_sz = has_blend ? bl_off + p->blend.bin_size : pl_off + p->vs_plain.bin_size;
    if (mali_device_pdev(dev)->backend->bo_alloc(dev->kdev, code_sz, MALI_BO_EXEC, &p->code)) {
       res = VK_ERROR_OUT_OF_DEVICE_MEMORY;
       goto fail;
@@ -276,6 +355,8 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    memcpy(p->code.cpu, p->vs.bin, p->vs.bin_size);
    if (p->fs.bin_size)
       memcpy((char *)p->code.cpu + fs_off, p->fs.bin, p->fs.bin_size);
+   if (p->vs_plain.bin_size)
+      memcpy((char *)p->code.cpu + pl_off, p->vs_plain.bin, p->vs_plain.bin_size);
    if (has_blend)
       memcpy((char *)p->code.cpu + bl_off, p->blend.bin, p->blend.bin_size);
 
@@ -290,6 +371,15 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    g->per_sample = samples > 1 && (o.sample_shading || p->fs.fs_sample_shading);
    g->vs_va = p->code.gpu_va;
    g->fs_va = p->code.gpu_va + fs_off;
+   g->xfb_pc = app_push;   /* where mali_cmd.c stores the XFB buffer addresses in the push block */
+   g->xfb = xfb;           /* xfb_pc == 0 is a valid offset, so the flag is what says the area exists */
+   if (p->vs_plain.bin_size) {
+      g->vs_plain = &p->vs_plain;          /* drawn whenever no Begin/End range is open (mali_cmd.c) */
+      g->vs_plain_va = p->code.gpu_va + pl_off;
+      if (getenv("MALI_TF_DBG"))
+         fprintf(stderr, "mali_tf: pipeline has a second, non-XFB vertex program at 0x%" PRIx64 " (XFB one at 0x%" PRIx64 ")\n",
+                 g->vs_plain_va, g->vs_va);
+   }
    g->push_base[0] = 40;
    g->push_base[1] = arch == 13 ? 24 : 0;   /* v13: FAU words 4,5 hold the blend descriptor */
    g->depth_func = VK_COMPARE_OP_ALWAYS;
@@ -309,6 +399,33 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
       default:
          res = VK_ERROR_FEATURE_NOT_PRESENT; if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: unsupported topology %d\n", ci->pInputAssemblyState->topology);
          goto fail;
+      }
+      /* A pass-through GS keeps the input topology: the vertex stream is unchanged. That is only a faithful draw for a
+       * LIST topology — a strip's gl_in order is the vertex order, so re-emitting those vertices as fresh strips reverses
+       * the winding of every odd triangle (and a fan's first vertex is not in gl_in at all), so strip/fan inputs are
+       * refused with a name instead of misrendering. */
+      if (gs_prims) {
+         const unsigned want = gs_prims == MALI_GS_POINTS ? 1 : gs_prims == MALI_GS_LINES ? 2 : 8;
+         /* the topology the draw will use is not knowable when the pipeline takes it dynamically, and a POINT/LINE
+          * polygon rewrite turns one triangle into several primitives (the per-vertex flags would then be split) */
+         const bool dyn_prim = BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_IA_PRIMITIVE_TOPOLOGY);
+         /* a dynamic polygon mode is a rewrite too: mali_cmd.c applies POINT/LINE from the dynamic state at draw time */
+         const bool dyn_poly = BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_RS_POLYGON_MODE);
+         const bool poly_rewrite = dyn_poly || (st.rs && st.rs->polygon_mode != VK_POLYGON_MODE_FILL);
+         if (dyn_prim || poly_rewrite) {
+            res = VK_ERROR_FEATURE_NOT_PRESENT;
+            if (getenv("MALI_PIPE_DBG"))
+               fprintf(stderr, "mali_vk: geometry shader refused: pass-through GS needs a static list topology and polygonMode FILL (dynamic topology %u, polygonMode %d)\n",
+                       (unsigned)dyn_prim, st.rs ? (int)st.rs->polygon_mode : (int)VK_POLYGON_MODE_FILL);
+            goto fail;
+         }
+         if (g->poly_mode || g->prim != want) {
+            res = VK_ERROR_FEATURE_NOT_PRESENT;
+            if (getenv("MALI_PIPE_DBG"))
+               fprintf(stderr, "mali_vk: geometry shader refused: pass-through GS needs a %s list topology (pipeline has prim %u, polygonMode rewrite %u)\n",
+                       gs_prims == MALI_GS_POINTS ? "point" : gs_prims == MALI_GS_LINES ? "line" : "triangle", g->prim, g->poly_mode);
+            goto fail;
+         }
       }
       g->prim_restart = ci->pInputAssemblyState->primitiveRestartEnable;
       /* fillModeNonSolid: Mali has no polygon mode. POINT = the vertices as a point list; LINE = triangle edges as an indexed line list built at frame build */
@@ -522,10 +639,11 @@ create_compute_one(struct mali_device *dev, const VkComputePipelineCreateInfo *c
    VK_FROM_HANDLE(vk_pipeline_layout, layout, ci->layout);
    if (layout && (res = mali_pipeline_layout_flatten(layout, &flat)) != VK_SUCCESS)
       goto fail;
-   /* nir_lower_robust_access is only enabled for robustness2: it inserts get_ssbo_size/get_ubo_size, which this
-    * backend cannot lower yet (mali_descriptor_lower.c:218). robustBufferAccess itself is advertised because Vulkan
-    * 1.0 makes it mandatory (zink needs it); what this driver guarantees for it today is the dynamic array-index
-    * clamp in mali_descriptor_lower.c:129 plus the descriptor bounds, not full byte-range clamping. */
+   /* nir_lower_robust_access runs for robustness2 only (it costs a size load per access); its get_ssbo_size/get_ubo_size
+    * queries are lowered to a read of the descriptor's size word (mali_descriptor_lower.c lower_size_query), so the
+    * features it backs can be advertised on their own. robustBufferAccess alone is still advertised without it (Vulkan
+    * 1.0 makes it mandatory, zink needs it): the dynamic array-index clamp (mali_descriptor_lower.c:129) plus the
+    * descriptor bounds, not full byte-range clamping. */
    flat.c.robust_access = dev->vk.enabled_features.robustBufferAccess2 || dev->vk.enabled_features.robustImageAccess2;
    struct mali_compile_opts o = {.arch = arch, .layout = layout ? &flat.c : NULL, .stage = MALI_STAGE_COMPUTE};
    /* Compute defaults to 8 reserved FAU words (32 B of push constants); a larger push block is copied in from word 0, so reserve it or
@@ -734,6 +852,20 @@ res_image_view(VkImageView h, struct mali_cmd_target *out)
    VkImageAspectFlags a = v->vk.aspects & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) ? (v->vk.aspects & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) : VK_IMAGE_ASPECT_COLOR_BIT;
    int r = target_of(img, a, v->vk.base_mip_level, v->vk.base_array_layer,
                      v->vk.view_type == VK_IMAGE_VIEW_TYPE_3D, out);
+   /* VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT: an SRGB view of a UNORM image (zink paints the window that way: notes/apilog.md,
+    * vfmt=50 over ifmt=44) or the reverse renders with the VIEW's encoding, and target_of() above resolved the image's.
+    * PanVK takes the colour attachment format from the image view (panvk_vX_cmd_draw.c:159,171; the blend conversion
+    * format at :794 comes from that same VkFormat), and its texture descriptor likewise (panvk_vX_image_view.c:344). */
+   if (!r && !out->is_zs && v->vk.view_format && v->vk.view_format != img->vk.format) {
+      bool ok;
+      const struct mali_rtfmt *vrt = mali_rtfmt_lookup(v->vk.view_format, &ok);
+      if (!ok) {
+         fprintf(stderr, "mali_vk: render target view format %s is not renderable (%d)\n",
+                 vk_Format_to_str(v->vk.view_format), (int)v->vk.view_format);
+         return -EINVAL;
+      }
+      out->rt = vrt;   /* also what the LOAD preload's conversion words (mali_cmd.c) and the blend format word use */
+   }
    if (r)
       fprintf(stderr, "mali_vk: image view rejected rc=%d: format %s (%d) image type %s view type %d aspects 0x%x "
               "view aspect 0x%x usage 0x%x samples %u level %u/%u layer %u/%u\n", r, vk_Format_to_str(img->vk.format),

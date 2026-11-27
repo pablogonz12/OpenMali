@@ -10,11 +10,15 @@
 #include <stdint.h>
 #include <vulkan/vulkan_core.h>
 
-/* Limits shared with mali_physical_device.c (Vulkan 1.0 minimums today; raise both together). */
-#define MALI_MAX_DIM_1D 4096u
-#define MALI_MAX_DIM_2D 4096u
-#define MALI_MAX_DIM_3D 256u
-#define MALI_MAX_LAYERS 256u
+/* Limits shared with mali_physical_device.c (raise both together; t_vk_feat imgmax is the device test).
+ * 16384 is the largest 2D texture the tiler/descriptor path was proven on (X8, t_vk_feat imgmax), not the number PanVK
+ * advertises: panvk_vX_physical_device.c:864-868 says 2^16 for every dimension, which no allocation of ours can back
+ * (a 65536^2 R8 image is 4 GiB against a 1 GiB maxMemoryAllocationSize, mali_physical_device.c:193). The 3D depth and
+ * the array-layer count are hardware descriptor fields, not allocation sizes: 2048 each, and 3D x/y proved at 2048. */
+#define MALI_MAX_DIM_1D 16384u
+#define MALI_MAX_DIM_2D 16384u
+#define MALI_MAX_DIM_3D 2048u
+#define MALI_MAX_LAYERS 2048u
 #define MALI_MAX_MIPS   16u
 #define MALI_BUF_ALIGN  256u /* minUniform/Storage/TexelBufferOffsetAlignment */
 

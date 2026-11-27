@@ -17,6 +17,7 @@
 
 #include "mali_cmd.h"
 #include "mali_meta.h"
+#include "mali_meta_vk.h"
 #include "mali_query_core.h"
 #include "mali_descriptor.h"
 #include "vk_buffer.h"
@@ -48,6 +49,38 @@ static int g_fail;
 
 #define W 256
 #define H 256
+
+/* E (#308): the region of the deferred MSAA resolve. The attachment view and the resolve view are independent views with
+ * their own mip level and array layer, and Vulkan resolves only the pass's render area — not the whole attachment. A
+ * shared level/layer or a whole-attachment rect writes the wrong mip of the resolve image and overwrites pixels outside
+ * the render area, which the app expects to keep. */
+static void
+test_resolve_region(void)
+{
+   struct mali_frame f;
+   memset(&f, 0, sizeof f);
+   f.width = 64; f.height = 48;
+   f.area[0] = 8; f.area[1] = 4; f.area[2] = 16; f.area[3] = 16;
+   f.resolve_level = 2; f.resolve_layer = 1;
+   f.resolve_dst_level = 1; f.resolve_dst_layer = 3;
+   VkImageResolve2 r;
+   mali_resolve_region(&f, &r);
+   CHECK(r.srcSubresource.mipLevel == 2 && r.srcSubresource.baseArrayLayer == 1,
+         "src subresource %u/%u, expected the attachment view 2/1", r.srcSubresource.mipLevel, r.srcSubresource.baseArrayLayer);
+   CHECK(r.dstSubresource.mipLevel == 1 && r.dstSubresource.baseArrayLayer == 3,
+         "dst subresource %u/%u: the resolve view's mip/layer (1/3) is ignored", r.dstSubresource.mipLevel, r.dstSubresource.baseArrayLayer);
+   CHECK(r.dstSubresource.layerCount == 1 && r.dstSubresource.aspectMask == VK_IMAGE_ASPECT_COLOR_BIT, "dst subresource shape");
+   CHECK(r.srcOffset.x == 8 && r.srcOffset.y == 4 && r.dstOffset.x == 8 && r.dstOffset.y == 4,
+         "resolve offsets %d,%d -> %d,%d, expected the render area origin 8,4", r.srcOffset.x, r.srcOffset.y, r.dstOffset.x, r.dstOffset.y);
+   CHECK(r.extent.width == 16 && r.extent.height == 16 && r.extent.depth == 1,
+         "resolve extent %ux%u: covers the whole attachment instead of the 16x16 render area", r.extent.width, r.extent.height);
+   /* no render area: BeginRendering leaves area[] zero, which means the whole attachment */
+   memset(f.area, 0, sizeof f.area);
+   mali_resolve_region(&f, &r);
+   CHECK(r.extent.width == 64 && r.extent.height == 48 && r.srcOffset.x == 0 && r.srcOffset.y == 0 && r.dstOffset.x == 0,
+         "no render area: %ux%u at %d,%d, expected the whole 64x48 attachment", r.extent.width, r.extent.height, r.srcOffset.x, r.srcOffset.y);
+}
+
 static const float k_pos[12] = {-0.5f, -0.5f, 0, 1, 0.5f, -0.5f, 0, 1, 0, 0.5f, 0, 1};
 
 struct draw { float so[4]; float z; float col[4]; };
@@ -136,7 +169,12 @@ static int res_view(VkImageView v, struct mali_cmd_target *o)
 }
 static int res_image(VkImage i, struct mali_cmd_target *o) { return res_view((VkImageView)i, o); }
 static int res_shader(const struct vk_shader *s, const struct mali_compiled **c, uint64_t *va) { return -1; }
-static const struct mali_cmd_res_ops k_res = {res_pipeline, res_view, res_image, res_shader};
+/* M15 write tracking: the fill/update case below needs a stand-in for the VkDeviceMemory behind a handle (the
+ * mark path only compares pointers); NULL everywhere else, which is what the other cases rely on. */
+static struct mali_memory *g_fake_buf_mem;
+static struct mali_memory *res_buffer_mem(VkBuffer b) { (void)b; return g_fake_buf_mem; }
+static const struct mali_cmd_res_ops k_res = {res_pipeline, res_view, res_image, res_shader,
+                                              NULL, NULL, res_buffer_mem, NULL, NULL};
 
 /* ---- Vulkan helpers (through the ICD's own dispatch) ---- */
 static PFN_vkVoidFunction (*gipa)(VkInstance, const char *);
@@ -671,6 +709,7 @@ int main(int argc, char **argv)
    test_clear_words();
    test_poly_assemble();
    test_store_op();
+   test_resolve_region();
    fill_compiled();
    if (setup_kb())
       return 1;
@@ -772,6 +811,22 @@ int main(int argc, char **argv)
       printf("{\"test\":\"t_cmd%d\",\"m13\":true,\"pass\":%s}\n", ARCH, g_fail ? "false" : "true");
    }
    if (extra) {
+      /* M15: vkCmdFillBuffer / vkCmdUpdateBuffer write their destination on the GPU, so the submission must mark
+       * the BO written: the device->CPU fence wait CSYNCs only marked BOs and the app maps stale bytes otherwise. */
+      {
+         VkCommandBuffer cf;
+         struct vk_command_buffer *vcf = new_cmd(pool, &cf);
+         struct vk_buffer *fb = make_buffer(F.vb.gpu_va, 4096);
+         VkBuffer fbh = vk_buffer_to_handle(fb);
+         uint32_t word = 0x11223344u;
+         g_fake_buf_mem = (struct mali_memory *)(uintptr_t)0x2b2b;
+         mali_CmdFillBuffer(cf, fbh, 0, 4096, 0);
+         mali_CmdUpdateBuffer(cf, fbh, 0, sizeof word, &word);
+         struct mali_cmd_buffer *cfm = mali_cmd_buffer_from_vk(vcf);
+         CHECK(cfm->nwrote == 1 && cfm->wrote[0] == g_fake_buf_mem,
+               "fill/update not marked GPU-written (nwrote %u, want 1 at the buffer's memory)", cfm->nwrote);
+         g_fake_buf_mem = NULL;
+      }
       /* 1. unsupported features surface as VK_ERROR_FEATURE_NOT_PRESENT at vkEndCommandBuffer, they never crash */
       VkCommandBuffer c2;
       new_cmd(pool, &c2);
