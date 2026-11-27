@@ -24,8 +24,11 @@ static int fails;
    else { printf("ok    "); printf(__VA_ARGS__); printf("\n"); } } while (0)
 
 struct fake_kernel {
-   int import_r;        /* what dmabuf_import_sync_file answers: 0 or -ENOTTY */
-   int export_r;        /* 0 or -ENOTTY */
+   int import_r;        /* what dmabuf_import_sync_file answers: 0, -ENOTTY or a soft error (-ENOMEM) */
+   int import_fail_at;  /* 1-based import call that answers import_soft_r (0 = every call answers import_r) */
+   int import_soft_r;
+   int export_r;        /* 0, -ENOTTY or a soft error (-EMFILE) */
+   int wait_r;          /* what fence_wait answers: 0 or -EIO */
    int export_fd;       /* the sync_file the export hands out (-1 = none pending) */
    unsigned imports, exports, waits;
    int last_flags;      /* flags of the last import/export */
@@ -38,6 +41,8 @@ fake_import(struct mali_kdev *kdev, int dmabuf_fd, uint32_t flags, int sync_fd)
 {
    struct fake_kernel *k = (struct fake_kernel *)kdev;
    k->imports++;
+   if (k->import_fail_at && k->imports >= k->import_fail_at)
+      return k->import_soft_r;
    k->last_flags = (int)flags;
    k->last_fence = sync_fd;
    return k->import_r;
@@ -61,7 +66,7 @@ fake_wait(struct mali_kdev *kdev, int fence_fd, int timeout_ms)
    struct fake_kernel *k = (struct fake_kernel *)kdev;
    k->waits++;
    (void)fence_fd; (void)timeout_ms;
-   return 0;
+   return k->wait_r;
 }
 
 static const struct mali_backend_ops fake_ops = {
@@ -149,6 +154,50 @@ main(void)
    EXPECT(mali_isync_producer(&d3, &fake_ops, (struct mali_kdev *)&k6, fds, 1, false, -1) == MALI_ISYNC_CPU_WAIT,
           "no fence fd: still reports the CPU wait");
    EXPECT(k6.waits == 0, "no fence fd: nothing to wait (%u)", k6.waits);
+
+   /* 9: the ioctl exists but one attach fails (reservation object, -ENOMEM): that submit takes the CPU wait, and
+    * the failure is not latched as "this kernel has no implicit fences". */
+   struct mali_isync_dev d4;
+   mali_isync_dev_init(&d4);
+   struct fake_kernel k7 = {.import_r = 0, .import_fail_at = 2, .import_soft_r = -ENOMEM, .export_r = 0, .export_fd = -1};
+   int w7 = 0;
+   EXPECT(mali_isync_producer_ex(&d4, &fake_ops, (struct mali_kdev *)&k7, fds, 2, false, fd0, &w7) == MALI_ISYNC_CPU_WAIT,
+          "second attach fails: this submit takes the CPU wait");
+   EXPECT(k7.imports == 2 && k7.waits == 1 && w7 == 0, "second attach fails: two imports, one good wait (%u/%u/%d)",
+          k7.imports, k7.waits, w7);
+   EXPECT(mali_isync_plan_producer(&d4, 2, false) == MALI_ISYNC_FENCE, "a soft attach error is not latched");
+   struct fake_kernel k8 = {.import_r = 0, .export_r = 0, .export_fd = -1};
+   EXPECT(mali_isync_producer(&d4, &fake_ops, (struct mali_kdev *)&k8, fds, 2, false, fd0) == MALI_ISYNC_FENCE,
+          "... the next submit tries the fence again");
+   EXPECT(k8.imports == 2, "next submit: one import per dma-buf (%u)", k8.imports);
+   mali_isync_dev_finish(&d4);
+
+   /* 10: the fallback CPU wait itself fails (GPU fault, -EIO): the status must reach the caller, which reports
+    * DEVICE_LOST instead of VK_SUCCESS. */
+   struct mali_isync_dev d5;
+   mali_isync_dev_init(&d5);
+   struct fake_kernel k9 = {.import_r = -ENOTTY, .export_r = -ENOTTY, .export_fd = -1, .wait_r = -EIO};
+   int w9 = 0;
+   EXPECT(mali_isync_producer_ex(&d5, &fake_ops, (struct mali_kdev *)&k9, fds, 1, false, fd0, &w9) == MALI_ISYNC_CPU_WAIT &&
+          w9 == -EIO, "fallback wait -EIO is reported (%d)", w9);
+   mali_isync_dev_finish(&d5);
+
+   /* 11: consumer export failures block the submission; a WRITE export (imported buffer this submit writes) asks the
+    * kernel for the readers' fences too. */
+   struct mali_isync_dev d6;
+   mali_isync_dev_init(&d6);
+   struct fake_kernel ka = {.import_r = 0, .export_r = -EMFILE, .export_fd = -1};
+   EXPECT(mali_isync_consumer_ex(&d6, &fake_ops, (struct mali_kdev *)&ka, fds, 2, MALI_DMA_BUF_SYNC_READ) == -EMFILE,
+          "consumer export -EMFILE is reported to the queue");
+   struct mali_isync_dev d7;
+   mali_isync_dev_init(&d7);
+   struct fake_kernel kb = {.import_r = 0, .export_r = 0, .export_fd = fd0};
+   EXPECT(mali_isync_consumer_ex(&d7, &fake_ops, (struct mali_kdev *)&kb, fds, 1, MALI_DMA_BUF_SYNC_WRITE) == 0,
+          "consumer WRITE export succeeds");
+   EXPECT(kb.last_flags == MALI_DMA_BUF_SYNC_WRITE, "an imported write asks for WRITE, i.e. the readers' fences too");
+   EXPECT(kb.exports == 1 && kb.waits == 1, "consumer WRITE: one export and one wait (%u/%u)", kb.exports, kb.waits);
+   mali_isync_dev_finish(&d6);
+   mali_isync_dev_finish(&d7);
 
    mali_isync_dev_finish(&d);
    mali_isync_dev_finish(&d2);

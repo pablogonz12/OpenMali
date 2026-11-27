@@ -3,6 +3,7 @@
  * descriptor entrypoints (the code in mali_descriptor.c is device-handle free; arch comes from the device here). */
 #include "mali_descriptor.h"
 #include "mali_entrypoints.h"
+#include "vk_descriptor_update_template.h"
 #include "mali_image.h"
 #include "mali_queue.h"
 
@@ -168,6 +169,57 @@ mali_UpdateDescriptorSets(VkDevice d, uint32_t nw, const VkWriteDescriptorSet *w
    mali_update_descriptor_sets(&dev->vk, nw, w, nc, c);
 }
 
+/* Implicit sync: a template update binds descriptors without going through mali_UpdateDescriptorSets, so the read
+ * marks have to be collected here from the template entries (type, offset, stride in the caller's data block). Without
+ * this an imported sampled image bound through a template would never have its producer's fence waited. */
+static void
+mark_template_reads(struct mali_dset *ds, VkDescriptorUpdateTemplate templ, const void *data)
+{
+   if (!ds || !templ || !data)
+      return;
+   struct vk_descriptor_update_template *t = vk_descriptor_update_template_from_handle(templ);
+   if (!t || t->type != VK_DESCRIPTOR_UPDATE_TEMPLATE_TYPE_DESCRIPTOR_SET)
+      return;
+   for (uint32_t e = 0; e < t->entry_count; e++) {
+      const struct vk_descriptor_template_entry *en = &t->entries[e];
+      for (uint32_t i = 0; i < en->array_count; i++) {
+         const uint8_t *p = (const uint8_t *)data + en->offset + (size_t)i * en->stride;
+         switch (en->type) {
+         case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+         case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+         case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+         case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC: {
+            const VkDescriptorBufferInfo *bi = (const VkDescriptorBufferInfo *)p;
+            struct mali_buffer *mb = bi->buffer ? mali_buffer_from_handle(bi->buffer) : NULL;
+            if (mb)
+               mali_dset_mark_read(ds, mb->mem);
+            break;
+         }
+         case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+         case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+         case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+         case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE: {
+            const VkDescriptorImageInfo *ii = (const VkDescriptorImageInfo *)p;
+            struct mali_image_view *iv = ii->imageView ? mali_image_view_from_handle(ii->imageView) : NULL;
+            if (iv && iv->vk.image)
+               mali_dset_mark_read(ds, container_of(iv->vk.image, struct mali_image, vk)->mem);
+            break;
+         }
+         case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+         case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER: {
+            VkBufferView bvh;
+            memcpy(&bvh, p, sizeof bvh);
+            struct mali_buffer_view *vb = bvh ? mali_buffer_view_from_handle(bvh) : NULL;
+            if (vb && vb->vk.buffer)
+               mali_dset_mark_read(ds, container_of(vb->vk.buffer, struct mali_buffer, vk)->mem);
+            break;
+         }
+         default: break;
+         }
+      }
+   }
+}
+
 VKAPI_ATTR void VKAPI_CALL
 mali_UpdateDescriptorSetWithTemplate(VkDevice d, VkDescriptorSet set, VkDescriptorUpdateTemplate t, const void *data)
 {
@@ -177,5 +229,6 @@ mali_UpdateDescriptorSetWithTemplate(VkDevice d, VkDescriptorSet set, VkDescript
    struct mali_dset *ds = mali_dset_from_handle(set);
    if (ds)
       ds->wrote_full = true;
+   mark_template_reads(ds, t, data);
    mali_update_descriptor_set_with_template(&dev->vk, set, t, data);
 }

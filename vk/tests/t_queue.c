@@ -994,7 +994,10 @@ test_isync(uint32_t slow_us)
    CHECK(AllocateMemory(dev, &ai2, NULL, &cons) == VK_SUCCESS, "import alloc (consumer side marked)");
    (void)unpk;
 
-   VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = sz, .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT};
+   /* the imported handle type must be declared on the buffer too, or binding that memory is invalid API usage */
+   VkExternalMemoryBufferCreateInfo emb = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO, .handleTypes = ht};
+   VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = &emb, .size = sz,
+                            .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT};
    VkBuffer buf;
    CHECK(CreateBuffer(dev, &bi, NULL, &buf) == VK_SUCCESS, "buffer");
    CHECK(BindBufferMemory(dev, buf, cons, 0) == VK_SUCCESS, "bind");

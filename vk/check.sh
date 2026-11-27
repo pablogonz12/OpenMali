@@ -200,7 +200,7 @@ fi
 rm -f "$OUT"/sstats-stale-*.log
 # Implicit sync (mali_isync.c): a submit that only SAMPLES an imported dma-buf waits its producer's fence before it
 # runs (the Xwayland-glamor read path); MALI_IMPLICIT_SYNC=0 is the A/B arm. Both compare against a control submit.
-run "implicit sync: sampled imported BO waits" 0 MALI_BACKEND=fake MALI_FAKE_DMABUF_SYNC=1 MALI_FAKE_SLOW_US=150000 $TQ --only isync
+run "implicit sync: sampled imported BO waits" 0 MALI_BACKEND=fake MALI_FAKE_DMABUF_SYNC=1 MALI_FAKE_SLOW_US=150000 MALI_IMPLICIT_SYNC=1 $TQ --only isync
 run "implicit sync off" 0 MALI_BACKEND=fake MALI_FAKE_DMABUF_SYNC=1 MALI_FAKE_SLOW_US=150000 MALI_IMPLICIT_SYNC=0 $TQ --only isync
 # MALI_SHARED_STATS=1 (mali_sstats.c) on the same submit: the diagnostic samples BOs it finds shared and must not
 # change the result. Its BO here is 4 KiB, i.e. under the 64 KiB floor, so nothing is logged (t_sstats has the lines).
