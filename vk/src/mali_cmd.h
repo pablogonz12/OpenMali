@@ -37,6 +37,7 @@ struct mali_cmd_target {
    bool has_s;      /* the view has a stencil aspect: s_va / s_row_stride name the S8 plane */
    uint64_t s_va;
    uint32_t s_row_stride;
+   uint32_t s_surface_stride;
    unsigned samples;     /* image sample count (1 or 4) */
    uint32_t surface_stride;   /* bytes per sample plane (MSAA images: samples consecutive) */
    bool multi;      /* image has more than one level/layer/sample or is not 2D: vkCmdClearColorImage takes the M12 compute path */

@@ -154,6 +154,29 @@ static int res_view(VkImageView v, struct mali_cmd_target *o)
 {
    /* --loadstore attachment handles: 1 = RGBA8 colour, 2 = D32F depth, 3 = D32F + S8 (depth and stencil, separate plane VAs),
     * 4 = D24X8 (LOAD is unsupported but NONE is not). Handle 2 is also the D32 depth-only view of --extra logicOp-retained. */
+   if ((uintptr_t)v == 5) { /* 4x colour: 64 x 32 */
+      *o = (struct mali_cmd_target){.va = 0x100000, .row_stride = 256, .width = 64, .height = 32,
+                                    .samples = 4, .surface_stride = 8192};
+      return 0;
+   }
+   if ((uintptr_t)v == 6) { /* 4x S8: 64 x 48, with a padded sample plane */
+      *o = (struct mali_cmd_target){.va = 0x200000, .row_stride = 64, .width = 64, .height = 48,
+                                    .is_zs = true, .has_s = true, .s_va = 0x200000, .s_row_stride = 64,
+                                    .samples = 4, .surface_stride = 3328, .s_surface_stride = 3328};
+      return 0;
+   }
+   if ((uintptr_t)v == 7) { /* 4x depth, separate from the S8 target */
+      *o = (struct mali_cmd_target){.va = 0x300000, .row_stride = 256, .width = 64, .height = 48,
+                                    .zs_format = 1, .is_zs = true, .samples = 4, .surface_stride = 12288};
+      return 0;
+   }
+   if ((uintptr_t)v == 8 || (uintptr_t)v == 9) {
+      *o = (struct mali_cmd_target){.va = 0x300000, .row_stride = 256, .width = 63, .height = 47,
+         .zs_format = (uintptr_t)v == 8 ? 2 : 1, .is_zs = true, .has_s = true,
+         .s_va = 0x200000, .s_row_stride = 64, .samples = 4,
+         .surface_stride = 12032, .s_surface_stride = 3072};
+      return 0;
+   }
    if ((uintptr_t)v == 1) {
       *o = (struct mali_cmd_target){.va = F.rt.gpu_va, .row_stride = W * 4, .width = W, .height = H, .rt = NULL};
       return 0;
@@ -468,6 +491,85 @@ test_store_op(void)
    CHECK(fbd_rt_write_enable(false, true) == 1, "MSAA resolve needs the RT write");
 }
 
+/* The stencil image can be taller than the colour framebuffer and its sample
+ * plane can have padding.  The legacy descriptor uses framebuffer height. */
+static void
+test_stencil_store_stride_baseline(void)
+{
+   struct mali_env env = { .arch = ARCH, .tile_log2 = 10 };
+   struct mali_frame f = {0};
+   uint8_t fbd[KB_FB_DESC_SIZE_ZS], one[KB_FB_DESC_SIZE_ZS];
+   uint32_t mode, stride;
+   f.width = 64;
+   f.height = 32;                 /* colour height; stencil height is 48 */
+   f.has_colour = f.has_st = true;
+   f.samples = 4;
+   f.colour.va = 0x100000;
+   f.colour.row_stride = 256;
+   f.colour.store = true;
+   f.st.va = 0x200000;
+   f.st.row_stride = 64;
+   f.st.surface_stride = 64 * 48 + 256; /* padded actual stencil plane */
+   f.st.store = true;
+   CHECK(mali_render_pack_fbd(&env, &f, fbd, 0, 0x300000) == 0, "stencil FBD pack");
+   memcpy(&mode, fbd + KB_FB_FBD_SIZE, 4);
+   memcpy(&stride, fbd + KB_FB_FBD_SIZE + 15 * 4, 4);
+   CHECK(((mode >> 24) & 3) == 3 && stride == 64 * 48 + 256, "layered mode/stride %u/%u", (mode >> 24) & 3, stride);
+   f.samples = 1;
+   CHECK(mali_render_pack_fbd(&env, &f, fbd, 0, 0x300000) == 0, "1x pack");
+   memcpy(&mode, fbd + KB_FB_FBD_SIZE, 4);
+   memcpy(&stride, fbd + KB_FB_FBD_SIZE + 15 * 4, 4);
+   CHECK(((mode >> 24) & 3) == 0 && stride == 64 * 32, "1x unchanged");
+   memcpy(one, fbd, sizeof one);
+   f.st.surface_stride = 0;
+   CHECK(mali_render_pack_fbd(&env, &f, fbd, 0, 0x300000) == 0 && !memcmp(one, fbd, sizeof fbd), "1x byte equal with or without sample stride");
+   f.st.surface_stride = 64 * 48 + 256;
+   f.samples = 4;
+   f.has_zs = true;
+   f.zs.zs_format = KB_ZS_D32F;
+   f.zs.va = 0x400000;
+   f.zs.row_stride = 256;
+   f.zs.surface_stride = 12544;
+   CHECK(mali_render_pack_fbd(&env, &f, fbd, 0, 0x300000) == 0, "depth pack");
+   memcpy(&mode, fbd + KB_FB_FBD_SIZE, 4);
+   memcpy(&stride, fbd + KB_FB_FBD_SIZE + 11 * 4, 4);
+   CHECK(((mode >> 8) & 3) == 3 && ((mode >> 24) & 3) == 3 && stride == 12544, "depth layered mode/stride");
+}
+
+/* Exercise the producer, not just a hand-constructed mali_frame. */
+static void
+test_stencil_store_recording(VkCommandPool pool)
+{
+   DFN(EndCommandBuffer);
+   for (unsigned i = 0; i < 3; i++) {
+      VkCommandBuffer cb;
+      struct vk_command_buffer *vc = new_cmd(pool, &cb);
+      VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+         .imageView = (VkImageView)(uintptr_t)5, .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+      VkRenderingAttachmentInfo sa = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+         .imageView = (VkImageView)(uintptr_t)6, .imageLayout = VK_IMAGE_LAYOUT_STENCIL_ATTACHMENT_OPTIMAL,
+         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+         .storeOp = i == 1 ? VK_ATTACHMENT_STORE_OP_DONT_CARE : VK_ATTACHMENT_STORE_OP_STORE};
+      VkRenderingAttachmentInfo da = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+         .imageView = (VkImageView)(uintptr_t)7, .imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+      VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {64, 32}},
+         .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &ca,
+         .pStencilAttachment = &sa, .pDepthAttachment = i == 2 ? &da : NULL};
+      mali_CmdBeginRendering(cb, &ri);
+      struct mali_cmd_buffer *cmd = mali_cmd_buffer_from_vk(vc);
+      const struct mali_frame *f = &cmd->cur;
+      CHECK(cmd->in_render && f->has_colour && f->has_st && f->samples == 4 && f->height == 32 &&
+            f->st.va == 0x200000 && f->st.row_stride == 64, "record stencil case %u shape", i);
+      CHECK(f->has_zs == (i == 2), "record stencil case %u depth", i);
+      CHECK(f->st.surface_stride == 3328u,
+            "record stencil case %u plane stride %u", i, f->st.surface_stride);
+      mali_CmdEndRendering(cb);
+      CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "record stencil case %u end", i);
+   }
+}
+
 /* Ring wrap + chunking (host, fake kbase backend). A 4 KiB ring, a 3000-instruction stream and pieces from
  * kb_queue_piece_instrs: every piece must be readable at its masked ring address as it crosses the end of the ring,
  * a stream longer than the ring must still be accepted in pieces, and one oversized block must be refused. */
@@ -583,6 +685,45 @@ ls_preloads(const struct mali_frame *f)
    while (n < f->ndraws && f->draws[n].pipe && f->draws[n].pipe->gfx.fs != &g_fs)
       n++;
    return n;
+}
+
+static void
+test_msaa_zs_only(VkCommandPool pool)
+{
+   DFN(EndCommandBuffer);
+   for (unsigned i = 0; i < 4; i++) {
+      VkCommandBuffer cb;
+      struct vk_command_buffer *vc = new_cmd(pool, &cb);
+      bool depth = i != 1, stencil = i != 0;
+      uintptr_t view = i == 0 ? 7 : i == 1 ? 6 : i == 2 ? 8 : 9;
+      VkRenderingAttachmentInfo a = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+         .imageView = (VkImageView)view, .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+         .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+      VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+         .renderArea = {{0, 0}, {32, 32}}, .layerCount = 1,
+         .pDepthAttachment = depth ? &a : NULL, .pStencilAttachment = stencil ? &a : NULL};
+      mali_CmdBeginRendering(cb, &ri);
+      struct mali_cmd_buffer *cmd = mali_cmd_buffer_from_vk(vc);
+      struct mali_frame *f = &cmd->cur;
+      CHECK(cmd->in_render && f->samples == 4 && f->has_zs == depth && f->has_st == stencil,
+            "4x depth/stencil-only case %u records", i);
+      CHECK(f->ndraws == 1 && f->draws[0].push, "4x case %u preload", i);
+      if (f->ndraws && f->draws[0].push) {
+         uint32_t pc[5];
+         memcpy(pc, f->draws[0].push->push[1], sizeof pc);
+         CHECK(pc[3] == (depth ? (i == 0 ? 12288u : 12032u) : 0u), "4x case %u depth stride %u", i, pc[3]);
+         CHECK(pc[4] == (stencil ? (i == 1 ? 3328u : 3072u) : 0u), "4x case %u stencil stride %u", i, pc[4]);
+      }
+      uint8_t fbd[KB_FB_DESC_SIZE_ZS];
+      struct mali_env env = {.arch = ARCH, .tile_log2 = 10};
+      CHECK(mali_render_pack_fbd(&env, f, fbd, 0, 0x300000) == 0, "4x case %u pack", i);
+      uint32_t w[16];
+      memcpy(w, fbd + KB_FB_FBD_SIZE, sizeof w);
+      CHECK(!depth || (((w[0] >> 8) & 3) == 3 && w[11] == f->zs.surface_stride), "4x case %u depth writeback", i);
+      CHECK(!stencil || (((w[0] >> 24) & 3) == 3 && w[15] == f->st.surface_stride), "4x case %u stencil writeback", i);
+      mali_CmdEndRendering(cb);
+      CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "4x case %u end", i);
+   }
 }
 
 /* Records one pass with one triangle and checks the load-op outcome at record time (the frame draw list is the command stream's draws). */
@@ -706,10 +847,11 @@ int main(int argc, char **argv)
       else if (!strcmp(argv[i], "--ringwrap")) ringwrap = true;
    }
    setenv("MALI_BACKEND", "fake", 1);
-   setenv("MALI_FAKE_GPU", ARCH == 13 ? "v13" : "v11", 1);
+   setenv("MALI_FAKE_GPU", ARCH == 13 ? "v13" : ARCH == 10 ? "v10" : "v11", 1);
    test_clear_words();
    test_poly_assemble();
    test_store_op();
+   test_stencil_store_stride_baseline();
    test_resolve_region();
    fill_compiled();
    if (setup_kb())
@@ -751,6 +893,8 @@ int main(int argc, char **argv)
    VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
    VkCommandPool pool;
    CHECK(CreateCommandPool(dev, &pci, NULL, &pool) == VK_SUCCESS, "CreateCommandPool");
+   if (extra)
+      test_stencil_store_recording(pool);
    if (extra) {
       /* Exercise real refusal sites with debugging disabled, including a
        * different reason and an identical refusal in a second buffer. */
@@ -991,6 +1135,7 @@ int main(int argc, char **argv)
    if (loadstore) {
       struct mali_meta_dev seam = {.user = &F, .arch = ARCH, .alloc = hw_alloc, .free = ls_meta_free, .upload_shader = ls_upload};
       mali_meta_set_dev(&seam);
+      test_msaa_zs_only(pool);
       static const struct ls_case cases[] = {
          {.name = "colour_none", .col = true, .lcol = VK_ATTACHMENT_LOAD_OP_NONE_KHR, .pre = 0},
          {.name = "colour_dont_care", .col = true, .lcol = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .pre = 0},
