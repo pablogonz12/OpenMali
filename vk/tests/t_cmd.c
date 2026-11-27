@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 #include "mali_cmd.h"
+#include "mali_image.h"
 #include "mali_meta.h"
 #include "mali_meta_vk.h"
 #include "mali_query_core.h"
@@ -80,6 +81,65 @@ test_resolve_region(void)
    mali_resolve_region(&f, &r);
    CHECK(r.extent.width == 64 && r.extent.height == 48 && r.srcOffset.x == 0 && r.srcOffset.y == 0 && r.dstOffset.x == 0,
          "no render area: %ux%u at %d,%d, expected the whole 64x48 attachment", r.extent.width, r.extent.height, r.srcOffset.x, r.srcOffset.y);
+   int32_t area[] = {8, 4, 80, 40};
+   CHECK(mali_resolve_1x_clamp(&r, area, 64, 48, 32, 20), "clipped resolve disappeared");
+   CHECK(r.srcOffset.x == 8 && r.dstOffset.y == 4 && r.extent.width == 24 && r.extent.height == 16,
+         "clipped resolve %d,%d %ux%u", r.srcOffset.x, r.srcOffset.y, r.extent.width, r.extent.height);
+   area[0] = 40;
+   CHECK(!mali_resolve_1x_clamp(&r, area, 64, 48, 32, 20), "out-of-bounds resolve was not skipped");
+   r.srcSubresource.baseArrayLayer = 2;
+   r.dstSubresource.baseArrayLayer = 3;
+   mali_resolve_1x_slices(&r, true, true);
+   CHECK(r.srcOffset.z == 2 && r.dstOffset.z == 3 &&
+         r.srcSubresource.baseArrayLayer == 0 && r.dstSubresource.baseArrayLayer == 0,
+         "3D slices not mapped to z offsets");
+   r.srcOffset.z = r.dstOffset.z = 0;
+   r.srcSubresource.baseArrayLayer = 2;
+   r.dstSubresource.baseArrayLayer = 3;
+   mali_resolve_1x_slices(&r, false, true);
+   CHECK(r.srcOffset.z == 0 && r.srcSubresource.baseArrayLayer == 2 &&
+         r.dstOffset.z == 3 && r.dstSubresource.baseArrayLayer == 0,
+         "2D array layer was not preserved");
+}
+
+static void
+test_resolve_view_formats(void)
+{
+   struct mali_image src = {0}, dst = {0};
+   struct mali_image_desc d = {.format = VK_FORMAT_R8G8B8A8_UNORM, .type = VK_IMAGE_TYPE_2D,
+      .extent = {16, 16, 1}, .levels = 1, .layers = 1, .samples = 1};
+   CHECK(!mali_image_layout_init(ARCH, &d, &src.lay), "source layout");
+   CHECK(!mali_image_layout_init(ARCH, &d, &dst.lay), "destination layout");
+   src.va = 0x100000;
+   dst.va = 0x200000;
+   VkImageBlit2 r = {.sType = VK_STRUCTURE_TYPE_IMAGE_BLIT_2,
+      .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+      .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+      .srcOffsets = {{0, 0, 0}, {16, 16, 1}}, .dstOffsets = {{0, 0, 0}, {16, 16, 1}}};
+   struct mali_meta_list l = {0};
+   int err = mali_meta_plan_blit_views(&l, &src, &dst, &r,
+                                       VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_B8G8R8A8_UNORM);
+   CHECK(!err && l.n == 1 && (l.j[0].push[20] & 8), "mutable BGRA view must swap channels");
+   mali_meta_list_free(&l);
+   d.format = VK_FORMAT_B8G8R8A8_UNORM;
+   CHECK(!mali_image_layout_init(ARCH, &d, &dst.lay), "BGRA destination layout");
+   err = mali_meta_plan_blit_views(&l, &src, &dst, &r,
+                                   VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM);
+   CHECK(!err && l.n == 1 && !(l.j[0].push[20] & 8), "matching views must not swap channels");
+   mali_meta_list_free(&l);
+   d.type = VK_IMAGE_TYPE_3D;
+   d.extent.depth = 4;
+   CHECK(!mali_image_layout_init(ARCH, &d, &src.lay), "3D source layout");
+   CHECK(!mali_image_layout_init(ARCH, &d, &dst.lay), "3D destination layout");
+   r.srcOffsets[0].z = 2; r.srcOffsets[1].z = 3;
+   r.dstOffsets[0].z = 3; r.dstOffsets[1].z = 4;
+   err = mali_meta_plan_blit_views(&l, &src, &dst, &r,
+                                   VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_B8G8R8A8_UNORM);
+   CHECK(!err && l.n == 1 &&
+         l.j[0].bind[0].va + l.j[0].push[0] == src.va + 2 * src.lay.plane[0].slice[0].surface_stride &&
+         l.j[0].bind[1].va + l.j[0].push[3] == dst.va + 3 * dst.lay.plane[0].slice[0].surface_stride,
+         "3D blit must select each view slice");
+   mali_meta_list_free(&l);
 }
 
 static const float k_pos[12] = {-0.5f, -0.5f, 0, 1, 0.5f, -0.5f, 0, 1, 0, 0.5f, 0, 1};
@@ -150,6 +210,7 @@ static int res_pipeline(VkPipeline p, struct mali_gfx_state *o)
    o->depth_func = KB_FUNC_ALWAYS;
    return 0;
 }
+static VkImageView g_resolve_test_view;
 static int res_view(VkImageView v, struct mali_cmd_target *o)
 {
    /* --loadstore attachment handles: 1 = RGBA8 colour, 2 = D32F depth, 3 = D32F + S8 (depth and stencil, separate plane VAs),
@@ -177,7 +238,7 @@ static int res_view(VkImageView v, struct mali_cmd_target *o)
          .surface_stride = 12032, .s_surface_stride = 3072};
       return 0;
    }
-   if ((uintptr_t)v == 1) {
+   if ((uintptr_t)v == 1 || (g_resolve_test_view && v == g_resolve_test_view)) {
       *o = (struct mali_cmd_target){.va = F.rt.gpu_va, .row_stride = W * 4, .width = W, .height = H, .rt = NULL};
       return 0;
    }
@@ -231,6 +292,39 @@ static struct vk_command_buffer *new_cmd(VkCommandPool pool, VkCommandBuffer *h)
    struct vk_command_buffer *vc = vk_command_buffer_from_handle(*h);
    vc->dynamic_graphics_state.rs.depth_clip_enable = VK_MESA_DEPTH_CLIP_ENABLE_NOT_CLAMP;   /* Vulkan default (no pipeline here to set it) */
    return vc;
+}
+
+static void
+test_resolve_mismatched_view(VkCommandPool pool)
+{
+   struct mali_image src = {0}, dst = {0};
+   src.vk.format = VK_FORMAT_R8G8B8A8_UNORM;
+   src.vk.mip_levels = 1;
+   dst.vk.format = VK_FORMAT_R8_UNORM;
+   dst.vk.mip_levels = 1;
+   struct mali_image_view sv = {0}, dv = {0};
+   sv.vk.base.type = dv.vk.base.type = VK_OBJECT_TYPE_IMAGE_VIEW;
+   sv.vk.image = &src.vk;
+   sv.vk.view_format = VK_FORMAT_R8G8B8A8_UNORM;
+   dv.vk.image = &dst.vk;
+   dv.vk.view_format = VK_FORMAT_R8G8B8A8_UNORM;
+   g_resolve_test_view = mali_image_view_to_handle(&sv);
+   VkCommandBuffer cb;
+   struct vk_command_buffer *vc = new_cmd(pool, &cb);
+   struct mali_cmd_buffer *m = mali_cmd_buffer_from_vk(vc);
+   VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+      .imageView = g_resolve_test_view, .resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT,
+      .resolveImageView = mali_image_view_to_handle(&dv),
+      .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+   VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+      .renderArea = {{0, 0}, {W, H}}, .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &ca};
+   mali_CmdBeginRendering(cb, &ri);
+   CHECK(!m->cur.resolve_1x && !m->cur.resolve_dst, "mismatched resolve was recorded");
+   mali_CmdEndRendering(cb);
+   DFN(EndCommandBuffer);
+   CHECK(EndCommandBuffer(cb) == VK_SUCCESS && m->nframes == 1,
+         "mismatched resolve must skip without recording a copy");
+   g_resolve_test_view = VK_NULL_HANDLE;
 }
 
 static VkRenderingInfo rendering_info(VkRenderingAttachmentInfo *ca, bool clear)
@@ -853,6 +947,7 @@ int main(int argc, char **argv)
    test_store_op();
    test_stencil_store_stride_baseline();
    test_resolve_region();
+   test_resolve_view_formats();
    fill_compiled();
    if (setup_kb())
       return 1;
@@ -893,8 +988,10 @@ int main(int argc, char **argv)
    VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
    VkCommandPool pool;
    CHECK(CreateCommandPool(dev, &pci, NULL, &pool) == VK_SUCCESS, "CreateCommandPool");
-   if (extra)
+   if (extra) {
+      test_resolve_mismatched_view(pool);
       test_stencil_store_recording(pool);
+   }
    if (extra) {
       /* Exercise real refusal sites with debugging disabled, including a
        * different reason and an identical refusal in a second buffer. */
