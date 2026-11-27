@@ -73,6 +73,8 @@ struct mali_rp_pass {
    uint32_t load, store;          /* VkAttachmentLoadOp / VkAttachmentStoreOp (0 = none for a meta pass) */
    uint32_t resolve_mode;         /* 0 none, 1 single-sample resolve (copy/blit), 2 MSAA resolve */
    uint32_t resolve_fmt;
+   uint64_t va;        /* colour attachment 0 as the pass was built (VkImage memory + offset) */
+   uint32_t pitch;     /* its row stride in the descriptor; compare with what the app was told (GetImageSubresourceLayout) */
    uint32_t draws;
    uint32_t npipes;
    struct mali_rp_pipe pipe[MALI_RP_MAX_PIPE];

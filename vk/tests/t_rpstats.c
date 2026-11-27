@@ -166,7 +166,7 @@ main(void)
    k.gpu = paint(sz, 64, 64, 64, 255);
    mali_rpstats_pass(&on, &p);
    mali_rpstats_flush(&on, &fake_ops, (struct mali_kdev *)&k);
-   EXPECT(count("rp n=1 kind=render extent=1024x600 layers=1 samples=1 fmt=37 load=2 store=0 resolve=none,0 draws=7") == 1,
+   EXPECT(count("rp n=1 kind=render extent=1024x600 layers=1 samples=1 fmt=37 load=2 store=0 resolve=none,0 va=0x0 pitch=0 draws=7") == 1,
           "render: the pass identity, extent, load/store and draw count are on the line");
    EXPECT(count("nonzero=100.0 mean=111.75 alpha_nonzero=100.0") == 1,
           "render: a painted attachment (64,64,64,255) reads nonzero=100.0, mean=111.75, alpha 100.0");
@@ -213,7 +213,7 @@ main(void)
    pr.att[1].bpp = 4;
    mali_rpstats_pass(&on, &pr);
    mali_rpstats_flush(&on, &fake_ops, (struct mali_kdev *)&kr);
-   EXPECT(count("samples=4 fmt=37 load=2 store=0 resolve=msaa,37 draws=7 nonzero=100.0,100.0") == 1,
+   EXPECT(count("samples=4 fmt=37 load=2 store=0 resolve=msaa,37 va=0x0 pitch=0 draws=7 nonzero=100.0,100.0") == 1,
           "resolve: samples=4 and one nonzero per attachment");
 
    /* 6: a BO the live guard refuses is not read. */

@@ -189,11 +189,12 @@ mali_rpstats_flush(struct mali_rpstats *s, const struct mali_backend_ops *be, st
       pthread_mutex_lock(&s->lock);
       s->nlogged++;
       pthread_mutex_unlock(&s->lock);
-      mali_wait_line("rp n=%u kind=%s extent=%ux%u layers=%u samples=%u fmt=%u load=%u store=%u resolve=%s,%u "
+      mali_wait_line("rp n=%u kind=%s extent=%ux%u layers=%u samples=%u fmt=%u load=%u store=%u resolve=%s,%u va=0x%llx pitch=%u "
                      "draws=%u nonzero=%s mean=%s alpha_nonzero=%s pipes=%u%s descs=sampled:%u ubos:%u imports:%u "
                      "sets:%u writes:%u",
                      i + 1, kind_name[p->kind & 7], p->w, p->h, p->layers, p->samples, p->fmt, p->load, p->store,
-                     rk, p->resolve_fmt, p->draws, nz, mn, al, p->npipes, pipes, p->desc_sampled, p->desc_ubo,
+                     rk, p->resolve_fmt, (unsigned long long)p->va, p->pitch, p->draws, nz, mn, al, p->npipes,
+                     pipes, p->desc_sampled, p->desc_ubo,
                      p->desc_imports, p->desc_sets, p->desc_writes);
    }
 }

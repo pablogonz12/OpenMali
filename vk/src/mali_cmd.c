@@ -1425,6 +1425,8 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       cmd->rp.fmt = t.rt ? t.rt->vk_format : VK_FORMAT_R8G8B8A8_UNORM;
       cmd->rp.load = (uint32_t)ca->loadOp;
       cmd->rp.store = (uint32_t)ca->storeOp;
+      cmd->rp.va = t.va;
+      cmd->rp.pitch = t.row_stride;
       struct mali_memory *am = g_res.image_view_mem ? g_res.image_view_mem(ca->imageView) : NULL;
       if (am && am->bo.cpu) {
          cmd->rp.att[0].bo = &am->bo;
