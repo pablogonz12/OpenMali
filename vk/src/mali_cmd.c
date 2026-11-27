@@ -51,8 +51,8 @@ mali_cmd_set_hw(const struct mali_hw *hw)
 void
 mali_cmd_unsupported(struct mali_cmd_buffer *cmd, const char *what)
 {
-   /* All reasons are static string literals. Recording is concurrent. */
-   static const char *seen[256];
+   /* Reasons may be temporary buffers. Recording is concurrent. */
+   static char *seen[256];
    static unsigned count;
    static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
    bool first = true;
@@ -62,8 +62,12 @@ mali_cmd_unsupported(struct mali_cmd_buffer *cmd, const char *what)
          first = false;
          break;
       }
-   if (first && count < sizeof(seen) / sizeof(seen[0]))
-      seen[count++] = what;
+   if (first && count < sizeof(seen) / sizeof(seen[0])) {
+      char *copy = strdup(what);
+      if (copy)
+         seen[count++] = copy;
+      /* On allocation failure, log this occurrence and retry next time. */
+   }
    pthread_mutex_unlock(&mutex);
    if (first)
       fprintf(stderr, "mali_cmd: unsupported %s\n", what);
