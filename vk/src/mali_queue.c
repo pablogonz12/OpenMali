@@ -639,6 +639,7 @@ static VkResult mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_subm
 static VkResult
 mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
 {
+   uint64_t prof_start = mali_prof_enabled() ? mali_wait_now() : 0;
    struct mali_device *dev = container_of(vq->base.device, struct mali_device, vk);
    mali_wait_heartbeat(dev, 1, 0);
    uint32_t imported = 0;
@@ -649,6 +650,11 @@ mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
          VkResult sr = vk_sync_signal(vkdev, submit->signals[i].sync, submit->signals[i].signal_value);
          (void)sr; /* best effort: the queue is lost already */
       }
+   }
+   if (prof_start) {
+      mali_prof_add(MALI_PROF_SUBMITS, 1);
+      mali_prof_add(MALI_PROF_SUBMIT_NS, mali_wait_now() - prof_start);
+      mali_prof_tick();
    }
    return res;
 }

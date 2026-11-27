@@ -1680,8 +1680,8 @@ mali_wsi_debug_present(struct mali_device *dev, struct wsi_swapchain *chain, uin
    (void)dev; (void)wi;
 }
 
-VKAPI_ATTR VkResult VKAPI_CALL
-mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
+static VkResult
+mali_wsi_queue_present_impl(VkQueue queue, const VkPresentInfoKHR *info)
 {
    static uint64_t seq;
    uint64_t n = p_atomic_inc_return(&seq);
@@ -1864,6 +1864,18 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
    if (mali_wsi_debug() || !quiet)
       fprintf(stderr, "mali_vk: wsi present #%llu -> %s (%d)\n", (unsigned long long)n, vk_Result_to_str(r), (int)r);
    return r;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
+{
+   uint64_t start = mali_prof_enabled() ? mali_wait_now() : 0;
+   VkResult result = mali_wsi_queue_present_impl(queue, info);
+   if (start) {
+      mali_prof_add(MALI_PROF_PRESENTS, 1);
+      mali_prof_add(MALI_PROF_PRESENT_NS, mali_wait_now() - start);
+   }
+   return result;
 }
 
 /* The last VkPresentIdKHR seen per swapchain. Present records it and returns - waiting for the compositor's

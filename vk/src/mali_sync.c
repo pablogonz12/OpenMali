@@ -27,6 +27,82 @@ static FILE *wait_file;
 static pthread_mutex_t wait_file_lock = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic uint64_t wait_submits, wait_presents, wait_active, wait_last_hb;
 
+static FILE *
+debug_open_prefix(const char *env, const char *comm)
+{
+   if (!env || env[0] != '/')
+      return NULL;
+   size_t len = strlen(env) + 64;
+   char *path = malloc(len);
+   if (!path)
+      return NULL;
+   snprintf(path, len, "%s-%s-%ld.log", env, comm, (long)getpid());
+   int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+   free(path);
+   if (fd < 0)
+      return NULL;
+   FILE *file = fdopen(fd, "a");
+   if (!file)
+      close(fd);
+   else
+      setvbuf(file, NULL, _IOLBF, 0);
+   return file;
+}
+
+static pthread_once_t prof_once = PTHREAD_ONCE_INIT;
+static pthread_mutex_t prof_lock = PTHREAD_MUTEX_INITIALIZER;
+static FILE *prof_file;
+static _Atomic uint64_t prof_values[MALI_PROF_COUNTERS];
+static _Atomic uint64_t prof_last;
+
+static void
+prof_init(void)
+{
+   char comm[16] = "?";
+   prctl(PR_GET_NAME, comm, 0, 0, 0);
+   prof_file = debug_open_prefix(getenv("MALI_PROF"), comm);
+   atomic_store(&prof_last, mali_wait_now());
+}
+
+int
+mali_prof_enabled(void)
+{
+   pthread_once(&prof_once, prof_init);
+   return prof_file != NULL;
+}
+
+void
+mali_prof_add(enum mali_prof_counter counter, uint64_t value)
+{
+   if (mali_prof_enabled())
+      atomic_fetch_add_explicit(&prof_values[counter], value, memory_order_relaxed);
+}
+
+void
+mali_prof_tick(void)
+{
+   if (!mali_prof_enabled())
+      return;
+   uint64_t now = mali_wait_now();
+   if (now - atomic_load(&prof_last) < 1000000000ull)
+      return;
+   pthread_mutex_lock(&prof_lock);
+   if (now - atomic_load(&prof_last) >= 1000000000ull) {
+      uint64_t v[MALI_PROF_COUNTERS];
+      for (unsigned i = 0; i < MALI_PROF_COUNTERS; i++)
+         v[i] = atomic_exchange_explicit(&prof_values[i], 0, memory_order_relaxed);
+      atomic_store(&prof_last, now);
+      fprintf(prof_file, "mali_prof: submits=%" PRIu64 " presents=%" PRIu64
+              " submit_ns=%" PRIu64 " wait_ns=%" PRIu64
+              " d2c_count=%" PRIu64 " d2c_bos=%" PRIu64 " d2c_bytes=%" PRIu64 " d2c_ns=%" PRIu64
+              " c2d_count=%" PRIu64 " c2d_bos=%" PRIu64 " c2d_bytes=%" PRIu64 " c2d_ns=%" PRIu64
+              " present_ns=%" PRIu64 "\n",
+              v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7],
+              v[8], v[9], v[10], v[11], v[12]);
+   }
+   pthread_mutex_unlock(&prof_lock);
+}
+
 static void
 wait_init(void)
 {
@@ -37,22 +113,8 @@ wait_init(void)
    prctl(PR_GET_NAME, comm, 0, 0, 0);
    if (!strcmp(env, "1")) {
       wait_file = stderr;
-   } else if (env[0] == '/') {
-      size_t len = strlen(env) + 64;
-      char *path = malloc(len);
-      if (!path)
-         return;
-      snprintf(path, len, "%s-%s-%ld.log", env, comm, (long)getpid());
-      int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
-      free(path);
-      if (fd >= 0) {
-         wait_file = fdopen(fd, "a");
-         if (!wait_file)
-            close(fd);
-      }
-      if (wait_file)
-         setvbuf(wait_file, NULL, _IOLBF, 0);
-   }
+   } else
+      wait_file = debug_open_prefix(env, comm);
    if (wait_file)
       fprintf(wait_file, "mali_wait: startup comm=%s pid=%ld mali-open %s\n",
               comm, (long)getpid(), MALI_GIT_SHA);
@@ -313,7 +375,10 @@ mali_sync_wait(struct vk_device *vk, struct vk_sync *sync, uint64_t wait_value,
          mali_wait_log("fence_wait", s, "waiting for", (now - start) / 1000000, wait_value);
          logged_fence = true;
       }
+      uint64_t prof_start = mali_prof_enabled() ? mali_wait_now() : 0;
       int r = be->fence_wait(dev->kdev, fd, slice);
+      if (prof_start)
+         mali_prof_add(MALI_PROF_WAIT_NS, mali_wait_now() - prof_start);
       close(fd);
       if (r == 0)
          { result = VK_SUCCESS; goto done; }
