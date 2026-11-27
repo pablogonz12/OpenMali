@@ -103,6 +103,12 @@ struct regs {
 static const struct regs R11 = { 72, 74, 64, 68, 70 };
 static const struct regs R13 = { 80, 82, 88, 84, 86 };
 
+/* The first register of the scratch range every queue may clobber: IDVS/COMPUTE/FRAGMENT SR end at 63 (v11) / 65 (v13) / 46, and
+ * PanVK puts its own temporaries at 66..83 (v11, 128 registers from v12: panvk_cmd_buffer.h PANVK_CS_REG_SCRATCH_START = 66). A
+ * GPU-read indirect draw uses two 64-bit pairs, both free in this driver (struct regs uses 64..74 on v11 and 80..88 on v13). */
+#define KB_CS_SCRATCH 66   /* 66:67: the descriptor address */
+#define KB_CS_SCRATCH2 76  /* 76:77: reserved for the FAU patch a queued follow-up needs */
+
 /* The equation itself lives in mali_blend.c (no driver or Mesa headers) so tests/t_blend_eq.c can check the packing on the host. */
 static bool
 mali_fixed_to_blend_eq(const struct mali_fixed *f, struct mali_blend_eq_in *o)
@@ -151,6 +157,8 @@ apply_blend(uint32_t *bl, const struct mali_fixed *fx)
 
 struct ddesc {   /* per-draw GPU blocks */
    uint64_t spd_p, spd_v, spd_f, vst, fst, bl, zsd, vfau, ffau;
+   uint64_t vfau_va;         /* the FAU block's address without kb_draw_fau_ptr's count: a GPU-read indirect draw stores the
+                              * command's firstVertex/firstInstance into words 6/7 from the CS (shaderDrawParameters) */
    uint8_t *vsset;           /* the driver set (VS and FS share it and one SRT: the FS reads only the all-zero dummy sampler), reused by every draw with the same static state */
    uint64_t vsset_va;
    uint32_t bl23[2];         /* words 2..3 of the blend descriptor (CPU copy: the arena is write-combined, never read back) */
@@ -226,8 +234,11 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
    const unsigned res_alloc = (((nres + 3) & ~3u) * KB_RES_SIZE + 63u) & ~63u;   /* 64-aligned: the dynamic table follows it in the same block */
    const unsigned dyn_alloc = d->ndyn ? ((d->ndyn * KB_DESC_SET_STRIDE) + 63u) & ~63u : 0;
 
-   /* s1/s2/s3 from the record-time dirty mask (no state compares). first_instance is a per-draw parameter. */
-   const bool s1 = po && pd && !(d->dirty & (MALI_D_PIPE | MALI_D_FX | MALI_D_BIND)) && pd->first_instance == d->first_instance;
+   /* s1/s2/s3 from the record-time dirty mask (no state compares). first_instance is a per-draw parameter.
+    * A GPU-read indirect draw (`ind_va`) never reuses: its arguments are unknown at build, so the FAU block that carries
+    * BaseVertex/BaseInstance is patched per draw by the command stream (emit_draw_regs) and must not be shared. */
+   const bool s1 = po && pd && !d->ind_va && !pd->ind_va && !(d->dirty & (MALI_D_PIPE | MALI_D_FX | MALI_D_BIND)) &&
+                   pd->first_instance == d->first_instance;
    /* s1: static state incl. first_instance, vertex buffers and bound sets: shader programs, blend, depth-stencil and the driver set are reused.
     * s2: also the same dynamic offsets: the SRT and dynamic table are reused too. */
    const bool s2 = s1 && !(d->dirty & MALI_D_DYNBUF);
@@ -281,6 +292,10 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       vst = Anz(hw, res_alloc + dyn_alloc, 64, &o->vst);
       if (!vst)
          return -ENOMEM;
+      /* ... except the entries the 4-entry rounding adds past nres: the hardware never reads them, but a recycled arena page
+       * can still hold a previous draw's user-set entry there, i.e. a GPU pointer into a BO that has been freed since. It is
+       * a dump/audit problem (golden.py R-VA), not a hardware one, and at most 3 entries * 32 B to clear. */
+      memset((uint8_t *)vst + nres * KB_RES_SIZE, 0, (((nres + 3) & ~3u) - nres) * KB_RES_SIZE);
       o->fst = o->vst;
       if (dyn_alloc) {
          dyn = (uint32_t *)((uint8_t *)vst + res_alloc);
@@ -297,6 +312,7 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
    }
    if ((!s1 && (!spd_p || (!v13 && !spd_v) || !spd_f || !bl || !zsd)) || (!s3 && (!vfau || !ffau)))
       return -ENOMEM;
+   o->vfau_va = s3 ? po->vfau_va : va_vfau;
    if (!s3) {
       o->vfau = kb_draw_fau_ptr(va_vfau, vs->fau_count);
       o->ffau = kb_draw_fau_ptr(va_ffau, fs->fau_count);
@@ -589,7 +605,7 @@ prim_size_bits(const struct mali_gfx_state *g, const struct mali_fixed *fx)
  * the whole per-draw register packing can be skipped when a record renews none of the state groups and every parameter is
  * the same, which is the common case (same pipeline and viewport, only the dynamic offsets move). */
 struct dwp {
-   uint64_t index_va, occ_va;
+   uint64_t index_va, occ_va, ind_va;
    uint32_t count, instance_count, first_index, first_vertex, first_instance, occ_mode;
    uint32_t index_bytes, index_size, indexed;
 };
@@ -597,7 +613,7 @@ struct dwp {
 static void
 dwp_of(struct dwp *p, const struct mali_draw *d)
 {
-   p->index_va = d->index_va; p->occ_va = d->occ_va;
+   p->index_va = d->index_va; p->occ_va = d->occ_va; p->ind_va = d->ind_va;
    p->count = d->count; p->instance_count = d->instance_count; p->first_index = d->first_index;
    p->first_vertex = d->first_vertex; p->first_instance = d->first_instance; p->occ_mode = d->occ_mode;
    p->index_bytes = d->index_bytes; p->index_size = d->index_size; p->indexed = d->indexed ? 1u : 0u;
@@ -614,14 +630,41 @@ same_draw_words(const struct dwp *a, const struct mali_draw *b)
    return a->count == b->count && a->instance_count == b->instance_count && a->first_index == b->first_index &&
           a->first_vertex == b->first_vertex && a->first_instance == b->first_instance && a->occ_mode == b->occ_mode &&
           a->occ_va == b->occ_va && a->indexed == (b->indexed ? 1u : 0u) && a->index_va == b->index_va &&
-          a->index_bytes == b->index_bytes && a->index_size == b->index_size;
+          a->index_bytes == b->index_bytes && a->index_size == b->index_size && a->ind_va == b->ind_va;
+}
+
+/* A GPU-read indirect draw: PanVK loads the descriptor into the IDVS registers with one `cs_load_to` (panvk_vX_cmd_draw.c:3357,
+ * reg_mask 0b11111 indexed / 0b11011 non-indexed, SR33..37 = INDEX_COUNT, INSTANCE_COUNT, INDEX_OFFSET, VERTEX_OFFSET,
+ * INSTANCE_OFFSET). Same here, so a VkDraw*IndirectCommand a compute job wrote in this submission is what the draw executes
+ * instead of the CPU's mapping of it, which still holds what the host wrote. The load is asynchronous in the LS scoreboard
+ * slot: the WAIT is what makes the values visible to RUN_IDVS, and the shadow forgets the five registers rather than
+ * comparing a later M32 against a value the load replaced. */
+static void
+emit_indirect_args(struct cs *c, bool v13, const struct mali_draw *d, uint64_t vfau_va)
+{
+   const unsigned first = v13 ? KB13_IDVS_INDEX_COUNT : KB_IDVS_INDEX_COUNT;
+   M48(c, KB_CS_SCRATCH, d->ind_va);
+   E(c, kb_cs_load_multiple(first, KB_CS_SCRATCH, d->indexed ? 0x1fu : 0x1bu, 0));
+   E(c, kb_cs_wait(1u << KB_CS_SLOT_LS));
+   for (unsigned r = first; r < first + 5; r++)
+      c->sv[r >> 3] &= (uint8_t)~(1u << (r & 7));
+   if (!d->indexed)
+      M32(c, v13 ? KB13_IDVS_INDEX_OFFSET : KB_IDVS_INDEX_OFFSET, 0);   /* a non-indexed command has no firstIndex (mask bit 2 clear) */
+   if (vfau_va && d->gfx.vs && d->gfx.vs->fau_count >= 9) {
+      /* shaderDrawParameters: the VS reads BaseVertex/BaseInstance from FAU words 6/7 (compile.c lower_sysvals, bytes 24/28),
+       * which the CPU cannot fill for a GPU-read command. PanVK patches the same two words from the registers after the load
+       * (panvk_vX_cmd_draw.c:3365-3378). The block is this draw's own: build_draw_descs never reuses the FAU of an indirect
+       * record (s1), so the store cannot change a block an earlier draw already ran with. */
+      M48(c, KB_CS_SCRATCH2, vfau_va);
+      E(c, kb_cs_store_multiple(v13 ? KB13_IDVS_VERTEX_OFFSET : KB_IDVS_VERTEX_OFFSET, KB_CS_SCRATCH2, 0x3, 24));
+      E(c, kb_cs_wait(1u << KB_CS_SLOT_LS));
+   }
 }
 
 static void
 emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame *f, const struct mali_draw *d,
                const struct ddesc *o, uint64_t va_tsd, uint64_t va_tctx, bool same_words)
-{
-   const struct mali_gfx_state *g = &d->gfx;
+{   const struct mali_gfx_state *g = &d->gfx;
    bool v13 = env->arch == 13;
    if (same_words) {
       /* nothing but the SRT pointers can have changed (see same_draw_words) */
@@ -682,13 +725,17 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
          M48(c, KB_IDVS_VERTEX_SRT, kb_draw_srt_ptr(o->vst, d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets));
          M48(c, KB_IDVS_FRAGMENT_SRT, kb_draw_srt_ptr(o->fst, d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets));
       }
-      M32(c, KB_IDVS_INDEX_COUNT, d->count);
-      M32(c, KB_IDVS_INSTANCE_COUNT, d->instance_count);
-      M32(c, KB_IDVS_INDEX_OFFSET, d->first_index);
+      if (d->ind_va) {
+         emit_indirect_args(c, false, d, o->vfau_va);
+      } else {
+         M32(c, KB_IDVS_INDEX_COUNT, d->count);
+         M32(c, KB_IDVS_INSTANCE_COUNT, d->instance_count);
+         M32(c, KB_IDVS_INDEX_OFFSET, d->first_index);
+         M32(c, KB_IDVS_VERTEX_OFFSET, d->first_vertex);   /* UNVERIFIED for firstVertex != 0 (no hardware evidence) */
+         M32(c, KB_IDVS_INSTANCE_OFFSET, d->first_instance);
+      }
       M32(c, KB_IDVS_INDEX_BUFFER_SIZE, d->indexed ? d->index_bytes : 0);
       M48(c, KB_IDVS_INDEX_BUFFER, d->indexed ? d->index_va : 0);
-      M32(c, KB_IDVS_VERTEX_OFFSET, d->first_vertex);   /* UNVERIFIED for firstVertex != 0 (no hardware evidence) */
-      M32(c, KB_IDVS_INSTANCE_OFFSET, d->first_instance);
       M32(c, KB_IDVS_SCISSOR, (uint32_t)scis);
       M32(c, KB_IDVS_SCISSOR + 1, (uint32_t)(scis >> 32));
       M32(c, KB_IDVS_LOW_DEPTH_CLAMP, minz);
@@ -717,11 +764,15 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
          M48(c, KB13_IDVS_VERTEX_SRT, kb_draw_srt_ptr(o->vst, d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets));
          M48(c, KB13_IDVS_FRAGMENT_SRT, kb_draw_srt_ptr(o->fst, d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets));
       }
-      M32(c, KB13_IDVS_INDEX_COUNT, d->count);
-      M32(c, KB13_IDVS_INSTANCE_COUNT, d->instance_count);
-      M32(c, KB13_IDVS_INDEX_OFFSET, d->first_index);
-      M32(c, KB13_IDVS_VERTEX_OFFSET, d->first_vertex);   /* UNVERIFIED for firstVertex != 0 */
-      M32(c, KB13_IDVS_INSTANCE_OFFSET, d->first_instance);
+      if (d->ind_va) {
+         emit_indirect_args(c, true, d, o->vfau_va);
+      } else {
+         M32(c, KB13_IDVS_INDEX_COUNT, d->count);
+         M32(c, KB13_IDVS_INSTANCE_COUNT, d->instance_count);
+         M32(c, KB13_IDVS_INDEX_OFFSET, d->first_index);
+         M32(c, KB13_IDVS_VERTEX_OFFSET, d->first_vertex);   /* UNVERIFIED for firstVertex != 0 */
+         M32(c, KB13_IDVS_INSTANCE_OFFSET, d->first_instance);
+      }
       M32(c, KB13_IDVS_SCISSOR, (uint32_t)scis);
       M32(c, KB13_IDVS_SCISSOR + 1, (uint32_t)(scis >> 32));
       M32(c, KB13_IDVS_VIEWPORT_HIGH, (uint32_t)vh);
@@ -1102,7 +1153,9 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
          memset(&dd, 0, sizeof dd);
          if ((rc = build_draw_descs(hw, f, dr, &dd, i ? &pv : NULL, i ? &dd_prev : NULL)))
             goto out;
-         const bool same_words = same_draw_words(have_dwp ? &dwp_prev : NULL, dr);
+         /* an indirect draw's FAU words are patched from the loaded arguments, and each draw gets its own FAU block, so the
+          * register group is never "the same words" for it - even two calls with the same buffer address */
+         const bool same_words = !dr->ind_va && same_draw_words(have_dwp ? &dwp_prev : NULL, dr);
          emit_draw_regs(&c, env, f, dr, &dd, va_tsd, va_tctx, same_words);
          dwp_of(&dwp_cur, dr);
          dwp_prev = dwp_cur;
@@ -1124,6 +1177,9 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
             pv.first_instance = dr->first_instance;
             pv.first_vertex = dr->first_vertex;
             pv.draw_id = dr->draw_id;
+            /* the predecessor snapshot must remember that this draw was indirect: the next draw's s1 asks !pd->ind_va, and
+             * without the field the direct draw after an indirect one would reuse the patched FAU block */
+            pv.ind_va = dr->ind_va;
          }
          dd_prev = dd;
       }
@@ -1292,8 +1348,10 @@ mali_frame_note_rec(struct mali_frame *f, const struct mali_rec *r)
 {
    if (r->dirty & (MALI_D_PIPE | MALI_D_FX | MALI_D_VP | MALI_D_SC))
       f->cur_pipe = r->pipe;
-   if (r->ind)
+   if (r->ind || r->ind_va)
       f->any_ind = true;
+   if (r->ind && !r->ind_va && !r->ind_nodrain)
+      f->any_ind_cpu = true;   /* MALI_IND_CPU=1: no drain on purpose (the failing control) */
    if (f->cur_pipe && f->cur_pipe->gfx.poly_mode && r->indexed)
       f->poly_cpu = true;
 }
@@ -1357,7 +1415,7 @@ mali_draw_expand(struct mali_draw *x, const struct mali_rec *r)
    x->index_size = r->index_size; x->first_index = r->first_index;
    x->count = r->count; x->instance_count = r->instance_count; x->first_vertex = r->first_vertex; x->first_instance = r->first_instance;
    x->draw_id = r->draw_id; x->occ_va = r->occ_va; x->ind = r->ind; x->ind_count = r->ind_count; x->ind_n = r->ind_n;
-   x->ind_stride = r->ind_stride; x->occ_mode = r->occ_mode;
+   x->ind_stride = r->ind_stride; x->ind_va = r->ind_va; x->ind_nodrain = r->ind_nodrain; x->occ_mode = r->occ_mode;
 }
 
 void

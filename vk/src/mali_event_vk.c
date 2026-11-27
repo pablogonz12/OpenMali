@@ -106,7 +106,7 @@ mali_CmdBeginQueryIndexedEXT(VkCommandBuffer h, VkQueryPool pool, uint32_t q, Vk
 {
    if (index) {
       CMD(h);
-      vk_command_buffer_set_error(&cmd->vk, VK_ERROR_FEATURE_NOT_PRESENT);
+      mali_cmd_unsupported(cmd, "begin indexed query with nonzero index");
       return;
    }
    mali_CmdBeginQuery(h, pool, q, flags);
@@ -117,7 +117,7 @@ mali_CmdEndQueryIndexedEXT(VkCommandBuffer h, VkQueryPool pool, uint32_t q, uint
 {
    if (index) {
       CMD(h);
-      vk_command_buffer_set_error(&cmd->vk, VK_ERROR_FEATURE_NOT_PRESENT);
+      mali_cmd_unsupported(cmd, "end indexed query with nonzero index");
       return;
    }
    mali_CmdEndQuery(h, pool, q);
