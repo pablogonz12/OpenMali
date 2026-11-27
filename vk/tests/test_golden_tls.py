@@ -22,3 +22,16 @@ for state in ('live', 'freed', 'missing'):
     assert ('BO1' in text) == (state != 'missing'), (state, text)
     assert bool(violations) == (state != 'live'), (state, text, violations)
 print('packed TLS live, freed, missing: OK')
+
+for addr, enabled, check, expected in (
+        (0x100, True, True, True), (0, True, True, True),
+        (0, False, True, False), (0x100, True, False, False),
+        (0, True, False, False)):
+    dev = golden.Dev(0)
+    dev.mem.add(desc, struct.pack('<8I', 0, 0, addr >> 8,
+                                  (1 << 28) if enabled else 0, 0, 0, 0, 0))
+    violations = []
+    ctx = golden.Ctx(dev, 1, 11, [], violations)
+    ctx.words(desc, 32, 'TSD', check=check)
+    assert bool(violations) == expected, (addr, enabled, check, violations)
+print('packed TLS outside window, enabled zero, empty and check disabled: OK')

@@ -26,6 +26,10 @@ int main(void)
    struct mali_frame f;
    uint32_t b[4];
 
+   /* The BBOX mode is read from the environment on every call, so clear an inherited MALI_BBOX32 (1 or 2): checks 1-3
+    * below assert the default tile rounding and would fail under an A/B mode. Each mode is then selected explicitly. */
+   unsetenv("MALI_BBOX32");
+
    /* 1. full-attachment render area: exactly the attachment, every mode */
    memset(&f, 0, sizeof f);
    f.width = 1280; f.height = 720;

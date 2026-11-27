@@ -19,7 +19,9 @@ run() { # tag, extra env...
    [ -s "$f" ] || { echo "FAIL  t_arena: no stats file for $tag" >&2; exit 1; }
    cat "$f"
 }
-read -r anew znew <<<"$(run new)"
+# MALI_ARENA_ZERO=0 explicitly: a caller with MALI_ARENA_ZERO=1 exported would otherwise make both runs zero
+# everything and turn the znew < zold comparison below into a false failure.
+read -r anew znew <<<"$(run new MALI_ARENA_ZERO=0)"
 read -r aold zold <<<"$(run old MALI_ARENA_ZERO=1)"
 echo "  default (dirty arena): alloc $anew, zeroed $znew"
 echo "  MALI_ARENA_ZERO=1:     alloc $aold, zeroed $zold"

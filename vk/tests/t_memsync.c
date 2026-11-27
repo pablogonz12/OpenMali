@@ -82,6 +82,11 @@ int main(void)
    /* ---- MALI_SYNC_DIRTY: CPU -> device MEM_SYNC only for the BOs the CPU may have written ---- */
    {
       struct mali_bo u, ex;
+      /* The policy is read from the environment at every sync, so an inherited MALI_SYNC_DIRTY=0 would make the
+       * default-policy assertions below fail (everything synced). Save the caller's value, run the default policy, then
+       * the =0 case, and restore it (unsetenv when it was unset). */
+      char *env_dirty = getenv("MALI_SYNC_DIRTY") ? strdup(getenv("MALI_SYNC_DIRTY")) : NULL;
+      unsetenv("MALI_SYNC_DIRTY");
       if (b->bo_alloc(k, 65536, MALI_BO_HOSTLAZY, &u) || b->bo_alloc(k, 65536, MALI_BO_EXPORT, &ex)) {
          printf("FAIL  bo_alloc dirty\n");
          return 1;
@@ -119,7 +124,7 @@ int main(void)
       unsigned b0 = kb_fake_memsync_count(u.gpu_va);
       for (int i = 0; i < 3; i++) b->host_sync(k);
       EXPECT(kb_fake_memsync_count(u.gpu_va) == b0 + 3, "MALI_SYNC_DIRTY=0: one MEM_SYNC per submit again (%u)", kb_fake_memsync_count(u.gpu_va) - b0);
-      unsetenv("MALI_SYNC_DIRTY");
+      if (env_dirty) { setenv("MALI_SYNC_DIRTY", env_dirty, 1); free(env_dirty); } else unsetenv("MALI_SYNC_DIRTY");
       b->bo_free(k, &u);
       b->bo_free(k, &ex);
    }

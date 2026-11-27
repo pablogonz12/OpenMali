@@ -437,17 +437,26 @@ kbase_bo_wrote(struct mali_kdev *k, struct mali_bo *b)
       __atomic_add_fetch(&bo->gpu_writes, 1, __ATOMIC_RELAXED);
 }
 
+/* The three host-write callbacks below run on the app's thread (vkMapMemory/vkUnmapMemory/vkFlushMappedMemoryRanges)
+ * while mem_sync_bos() runs on whichever thread submits a queue, and that function reads and clears the same flags under
+ * bo_lock. Without the lock the clear can overwrite a map() that happened just after the sync loop read cpu_mapped, and
+ * the CPU's later writes would never be pushed. So take bo_lock here too, so a touch that overlaps a sync lands either
+ * before the loop reads the flags or after it cleared them (and leaves the BO dirty for the next submit).
+ * The buffer path passes a NULL kdev (mali_buffer.c bo_host_touch after a rebind, before any submit of that buffer), so
+ * there is no lock to take there; kdev is what carries it. */
 static void
 kbase_bo_host_touch(struct mali_kdev *k, struct mali_bo *b)
 {
    if (!b || !b->priv)
       return;
    struct kb_bo *bo = b->priv;
+   if (k) pthread_mutex_lock(&k->bo_lock);
    bo->host_lazy = false;
    /* MALI_SYNC_DIRTY: the CPU may write through this mapping at any time, so the BO is dirty until it is unmapped and
     * a sync has covered it (mem_sync_bos keeps it dirty while cpu_mapped is set). */
    bo->cpu_dirty = true;
    bo->cpu_mapped = true;
+   if (k) pthread_mutex_unlock(&k->bo_lock);
 }
 
 /* MALI_SYNC_DIRTY: vkUnmapMemory. The bytes the CPU wrote are still not visible to the GPU, so cpu_dirty stays set:
@@ -455,16 +464,24 @@ kbase_bo_host_touch(struct mali_kdev *k, struct mali_bo *b)
 static void
 kbase_bo_host_unmap(struct mali_kdev *k, struct mali_bo *b)
 {
-   if (b && b->priv)
-      ((struct kb_bo *)b->priv)->cpu_mapped = false;
+   if (!b || !b->priv)
+      return;
+   struct kb_bo *bo = b->priv;
+   if (k) pthread_mutex_lock(&k->bo_lock);
+   bo->cpu_mapped = false;   /* cpu_dirty stays set: only the sync under bo_lock clears it */
+   if (k) pthread_mutex_unlock(&k->bo_lock);
 }
 
 /* MALI_SYNC_DIRTY: vkFlushMappedMemoryRanges / a driver CPU copy into an app BO (bo_host_touch already covers maps). */
 static void
 kbase_bo_host_dirty(struct mali_kdev *k, struct mali_bo *b)
 {
-   if (b && b->priv)
-      ((struct kb_bo *)b->priv)->cpu_dirty = true;
+   if (!b || !b->priv)
+      return;
+   struct kb_bo *bo = b->priv;
+   if (k) pthread_mutex_lock(&k->bo_lock);
+   bo->cpu_dirty = true;
+   if (k) pthread_mutex_unlock(&k->bo_lock);
 }
 
 static int
