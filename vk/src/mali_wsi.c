@@ -1032,6 +1032,7 @@ present_wait_submit_fence(struct mali_device *dev, uint32_t image_index)
    const struct mali_backend_ops *be = dev ? mali_device_pdev(dev)->backend : NULL;
    struct timespec t0, t1;
    clock_gettime(CLOCK_MONOTONIC, &t0);
+   mali_prof_add(MALI_PROF_WAITS_PRESENT, 1);
    int wr = be && be->fence_wait ? be->fence_wait(dev->kdev, ffd, 1000) : 0;
    clock_gettime(CLOCK_MONOTONIC, &t1);
    close(ffd);

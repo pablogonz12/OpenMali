@@ -212,9 +212,13 @@ prof_emit(int force)
                  " submit_ns=%" PRIu64 " wait_ns=%" PRIu64
                  " d2c_count=%" PRIu64 " d2c_bos=%" PRIu64 " d2c_bytes=%" PRIu64 " d2c_ns=%" PRIu64
                  " c2d_count=%" PRIu64 " c2d_bos=%" PRIu64 " c2d_bytes=%" PRIu64 " c2d_ns=%" PRIu64
-                 " present_ns=%" PRIu64 "\n",
+                 " present_ns=%" PRIu64
+                 " w_fence=%" PRIu64 " w_poll=%" PRIu64 " w_counter=%" PRIu64 " w_present=%" PRIu64
+                 " w_map=%" PRIu64 " di_bos=%" PRIu64 " di_b=%" PRIu64 " dn_bos=%" PRIu64
+                 " dn_b=%" PRIu64 " dmap=%" PRIu64 " dunmap=%" PRIu64 "\n",
                  v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7],
-                 v[8], v[9], v[10], v[11], v[12]);
+                 v[8], v[9], v[10], v[11], v[12],
+                 v[13], v[14], v[15], v[16], v[17], v[18], v[19], v[20], v[21], v[22], v[23]);
          if (n > 0)
             prof_puts(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
       }
@@ -511,6 +515,10 @@ mali_sync_wait(struct vk_device *vk, struct vk_sync *sync, uint64_t wait_value,
          mali_wait_log("fence_wait", s, "waiting for", (now - start) / 1000000, wait_value);
          logged_fence = true;
       }
+      if (left == 0)
+         mali_prof_add(MALI_PROF_WAITS_POLL, 1);      /* vkGetFenceStatus / vkWaitForFences with timeout 0 */
+      else
+         mali_prof_add(MALI_PROF_WAITS_FENCE, 1);     /* vkWaitForFences, vkQueueWaitIdle, vkDeviceWaitIdle, acquire */
       uint64_t prof_start = mali_prof_enabled() ? mali_wait_now() : 0;
       int r = be->fence_wait(dev->kdev, fd, slice);
       if (prof_start)

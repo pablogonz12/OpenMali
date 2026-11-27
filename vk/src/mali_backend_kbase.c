@@ -452,6 +452,7 @@ kbase_bo_host_touch(struct mali_kdev *k, struct mali_bo *b)
    struct kb_bo *bo = b->priv;
    if (k) pthread_mutex_lock(&k->bo_lock);
    bo->host_lazy = false;
+   mali_prof_add(MALI_PROF_WAITS_MAP, 1);
    /* MALI_SYNC_DIRTY: the CPU may write through this mapping at any time, so the BO is dirty until it is unmapped and
     * a sync has covered it (mem_sync_bos keeps it dirty while cpu_mapped is set). */
    bo->cpu_dirty = true;
@@ -811,6 +812,11 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
           prof_bos++;
           prof_bytes += b->size;
        }
+       if (dev2cpu) {
+          mali_prof_add(b->imported ? MALI_PROF_D2C_IMP_BOS : MALI_PROF_D2C_NAT_BOS, 1);
+          mali_prof_add(b->imported ? MALI_PROF_D2C_IMP_BYTES : MALI_PROF_D2C_NAT_BYTES, b->size);
+          mali_prof_add(b->cpu_mapped ? MALI_PROF_D2C_MAPPED_BOS : MALI_PROF_D2C_UNMAPPED_BOS, 1);
+       }
       if (dev2cpu && !b->imported && sr >= 0)
          b->synced_writes = wrote;   /* what this ioctl covered; a concurrent submit's mark stays pending */
       else if (!dev2cpu && sr >= 0 && !b->cpu_mapped)
@@ -868,6 +874,7 @@ out:
 static int
 kbase_wait_counter(struct mali_kdev *k, const volatile uint64_t *c, uint64_t target, int timeout_ms)
 {
+   mali_prof_add(MALI_PROF_WAITS_COUNTER, 1);
    struct timespec t0;
    clock_gettime(CLOCK_MONOTONIC, &t0);
    for (unsigned spin = 0;; spin++) {
