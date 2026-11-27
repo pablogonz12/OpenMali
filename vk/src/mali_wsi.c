@@ -1094,6 +1094,7 @@ present_wait_submit_fence(struct mali_device *dev, uint32_t image_index)
    const struct mali_backend_ops *be = dev ? mali_device_pdev(dev)->backend : NULL;
    struct timespec t0, t1;
    clock_gettime(CLOCK_MONOTONIC, &t0);
+   mali_prof_add(MALI_PROF_WAITS_PRESENT, 1);
    int wr = be && be->fence_wait ? be->fence_wait(dev->kdev, ffd, 1000) : 0;
    clock_gettime(CLOCK_MONOTONIC, &t1);
    close(ffd);
@@ -1742,6 +1743,7 @@ mali_wsi_debug_present(struct mali_device *dev, struct wsi_swapchain *chain, uin
    (void)dev; (void)wi;
 }
 
+<<<<<<< HEAD
 /* MALI_SHARED_STATS: the swapchain image's dma-buf, as the compositor is about to be handed it. On the dma-buf path
  * wsi_common imports the present's sync_file and the compositor waits it, so this wait is for the CPU sample only:
  * bounded like the software present's (1 s, a lost render must not hang a present) and it also ends in kbase's
@@ -1771,6 +1773,10 @@ mali_wsi_shared_stats(struct mali_device *dev, struct wsi_swapchain *chain, uint
 
 VKAPI_ATTR VkResult VKAPI_CALL
 mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
+=======
+static VkResult
+mali_wsi_queue_present_impl(VkQueue queue, const VkPresentInfoKHR *info)
+>>>>>>> origin/lane/cmf-d2c
 {
    static uint64_t seq;
    uint64_t n = p_atomic_inc_return(&seq);
@@ -1956,6 +1962,19 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
    if (mali_wsi_debug() || !quiet)
       fprintf(stderr, "mali_vk: wsi present #%llu -> %s (%d)\n", (unsigned long long)n, vk_Result_to_str(r), (int)r);
    return r;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
+{
+   uint64_t start = mali_prof_enabled() ? mali_wait_now() : 0;
+   VkResult result = mali_wsi_queue_present_impl(queue, info);
+   if (start) {
+      mali_prof_add(MALI_PROF_PRESENTS, 1);
+      mali_prof_add(MALI_PROF_PRESENT_NS, mali_wait_now() - start);
+      mali_prof_tick();   /* a present-only client (a compositor) ticks here, not only in the submit path */
+   }
+   return result;
 }
 
 /* The last VkPresentIdKHR seen per swapchain. Present records it and returns - waiting for the compositor's

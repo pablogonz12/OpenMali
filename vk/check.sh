@@ -181,6 +181,7 @@ else echo "FAIL  vk_feat tf_write opt-out v11"; echo "$out" | sed 's/^/        /
 
 # M4: memory, sync, queue (fake backend; MALI_FAKE_SLOW_US makes the fences really block).
 TQ="$OUT/t_queue --direct $OUT/libvulkan_mali.so"
+run "per-process profiling" 0 bash "$V/tests/t_prof.sh" "$OUT"
 run "queue all v11"      0 MALI_BACKEND=fake MALI_FAKE_GPU=v11 $TQ
 run "queue teardown v13"  0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 MALI_FAKE_SLOW_US=400000 $TQ --only teardown
 run "queue all v13 slow" 0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 MALI_FAKE_SLOW_US=200 $TQ --submits 1000

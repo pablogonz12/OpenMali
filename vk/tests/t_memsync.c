@@ -204,6 +204,68 @@ int main(void)
       EXPECT(all, "MALI_SYNC_ALL=1: every mapped BO is CSYNCed (old behaviour)");
       unsetenv("MALI_SYNC_ALL");
 
+      /* ---- MALI_SYNC_READ: a device->CPU MEM_SYNC only for a BO the CPU can read now (mapped), which is what the CMF's
+       * Xwayland needed: it swept 1314 unmapped imports (2.9 GB) on every fence wait, 105 times a second ---- */
+      {
+         struct mali_bo rd[2];   /* [0] mapped by the app, [1] never mapped */
+         if (b->bo_alloc(k, 65536, MALI_BO_HOSTLAZY, &rd[0]) || b->bo_alloc(k, 65536, MALI_BO_HOSTLAZY, &rd[1])) {
+            printf("FAIL  bo_alloc sync-read\n");
+            return 1;
+         }
+         uint32_t old = 0x11111111, fresh = 0xcafef00d;
+         memset(rd[0].cpu, 0x11, 64);
+         memset(rd[1].cpu, 0x11, 64);
+         b->bo_host_touch(k, &rd[0]);   /* mapped: the CPU may read it at any time */
+         unsigned r0 = kb_fake_memsync_count(rd[0].gpu_va), r1 = kb_fake_memsync_count(rd[1].gpu_va);
+
+         /* an unmapped render target is not swept, and the CPU cannot see the GPU's write (it is not reading it) */
+         kb_fake_gpu_write(rd[1].gpu_va, 0, &fresh, sizeof fresh);
+         b->bo_wrote(k, &rd[1]);
+         b->wait_counter(k, &c3, 1, 100);
+         EXPECT(kb_fake_memsync_count(rd[1].gpu_va) == r1, "sync-read: an unmapped GPU-written BO is not swept (%u)", kb_fake_memsync_count(rd[1].gpu_va) - r1);
+
+         /* a mapped BO the GPU wrote is still synced before the CPU reads it, and the read is correct */
+         kb_fake_gpu_write(rd[0].gpu_va, 0, &fresh, sizeof fresh);
+         b->bo_wrote(k, &rd[0]);
+         b->wait_counter(k, &c3, 1, 100);
+         uint32_t seen0 = 0;
+         memcpy(&seen0, rd[0].cpu, sizeof seen0);
+         EXPECT(kb_fake_memsync_count(rd[0].gpu_va) > r0, "sync-read: a mapped GPU-written BO is synced at the wait (%u)", kb_fake_memsync_count(rd[0].gpu_va) - r0);
+         EXPECT(seen0 == fresh, "sync-read: the mapped BO reads the GPU's value (0x%08x)", seen0);
+
+         /* the map is where an unmapped BO gets its freshness: host_touch syncs it and the CPU reads the GPU's bytes */
+         unsigned before_map = kb_fake_memsync_count(rd[1].gpu_va);
+         b->bo_host_touch(k, &rd[1]);
+         EXPECT(kb_fake_memsync_count(rd[1].gpu_va) == before_map + 1, "sync-read: mapping a GPU-written BO syncs it once (%u)", kb_fake_memsync_count(rd[1].gpu_va) - before_map);
+         uint32_t seen1 = 0;
+         memcpy(&seen1, rd[1].cpu, sizeof seen1);
+         EXPECT(seen1 == fresh, "sync-read: after the map the CPU reads the GPU's value (0x%08x)", seen1);
+
+         /* while it stays mapped the per-wait sweep keeps covering it; after the unmap it is skipped again */
+         kb_fake_gpu_write(rd[1].gpu_va, 0, &old, sizeof old);
+         b->bo_wrote(k, &rd[1]);
+         b->wait_counter(k, &c3, 1, 100);
+         EXPECT(kb_fake_memsync_count(rd[1].gpu_va) == before_map + 2, "sync-read: a mapped BO is still swept at each wait (%u)", kb_fake_memsync_count(rd[1].gpu_va) - before_map);
+         b->bo_host_unmap(k, &rd[1]);
+         kb_fake_gpu_write(rd[1].gpu_va, 0, &fresh, sizeof fresh);
+         b->bo_wrote(k, &rd[1]);
+         unsigned after_unmap = kb_fake_memsync_count(rd[1].gpu_va);
+         b->wait_counter(k, &c3, 1, 100);
+         EXPECT(kb_fake_memsync_count(rd[1].gpu_va) == after_unmap, "sync-read: an unmapped BO is skipped again (%u)", kb_fake_memsync_count(rd[1].gpu_va) - after_unmap);
+
+         /* escape hatch: MALI_SYNC_READ=0 restores the old sweep (every GPU-written BO at every wait) */
+         setenv("MALI_SYNC_READ", "0", 1);
+         b->wait_counter(k, &c3, 1, 100);
+         EXPECT(kb_fake_memsync_count(rd[1].gpu_va) == after_unmap + 1, "MALI_SYNC_READ=0: the unmapped BO is swept again (old behaviour, %u)", kb_fake_memsync_count(rd[1].gpu_va) - after_unmap);
+         unsetenv("MALI_SYNC_READ");
+
+         /* the buffer path calls bo_host_touch with no kdev (mali_buffer.c: a rebind before any submit). The map-time
+          * sync must not dereference it: that NULL deref (0x1c8, the offset of a kdev member) segfaulted Xwayland at
+          * start on the CMF the first time this rule was tried (cmf-1128-000646). */
+         b->bo_host_touch(NULL, &rd[1]);
+         EXPECT(1, "sync-read: bo_host_touch with a NULL kdev does not dereference it");
+      }
+
       /* ---- measurement: 300 fence waits, 5 BOs, one BO written per frame ---- */
       double best_track = 1e30, best_all = 1e30;
       unsigned n_track = 0, n_all = 0;

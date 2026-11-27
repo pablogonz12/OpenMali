@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/prctl.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
@@ -27,6 +28,220 @@ static FILE *wait_file;
 static pthread_mutex_t wait_file_lock = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic uint64_t wait_submits, wait_presents, wait_active, wait_last_hb;
 
+/* A thread name is a legal file name only by accident: PR_GET_NAME can return anything the application set (Chromium
+ * names its threads "GL Composer Thr", a '/' in one of them used to make open() fail silently and the process wrote no
+ * sink at all). Keep [A-Za-z0-9._-], map the rest to '_'. */
+static void
+debug_sanitize(char *name)
+{
+   for (char *p = name; *p; p++)
+      if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') ||
+            *p == '.' || *p == '_' || *p == '-'))
+         *p = '_';
+}
+
+/* The PROCESS name (/proc/self/comm), not the name of whichever thread happened to call us first: a Steam client's
+ * first submit comes from a thread called "GL Composer Thr", so the sink file was labelled with a thread nobody could
+ * attribute to steamwebhelper, and the threads that never submit (the main one) never got a file at all. */
+static void
+debug_comm(char *buf, size_t len)
+{
+   int fd = open("/proc/self/comm", O_RDONLY | O_CLOEXEC);
+   ssize_t n = fd >= 0 ? read(fd, buf, len - 1) : -1;
+   if (fd >= 0)
+      close(fd);
+   if (n > 0) {
+      buf[n] = 0;
+      char *nl = strchr(buf, '\n');
+      if (nl)
+         *nl = 0;
+   } else {
+      char name[16] = "";
+      prctl(PR_GET_NAME, name, 0, 0, 0);
+      snprintf(buf, len, "%s", name);
+   }
+   if (!buf[0])
+      snprintf(buf, len, "?");
+   debug_sanitize(buf);
+}
+
+/* mkdir -p of the directory the sink lives in: MALI_PROF is often a path that exists on the host but not inside the
+ * Steam runtime container the game runs in, where open() then just failed and the process stayed silent. */
+static void
+debug_mkdirs(const char *path)
+{
+   char *copy = strdup(path);
+   if (!copy)
+      return;
+   for (char *p = copy + 1; *p; p++) {
+      if (*p != '/')
+         continue;
+      *p = 0;
+      mkdir(copy, 0700);
+      *p = '/';
+   }
+   mkdir(copy, 0700);
+   free(copy);
+}
+
+/* The sink path: "<prefix>-<comm>-<pid>.log" next to the prefix. Returns an fd owned by the caller, or -1. */
+static int
+debug_open_sink(const char *env, const char *comm, char *path, size_t path_len)
+{
+   size_t len = strlen(env) + strlen(comm) + 32;
+   char *buf = malloc(len);
+   if (!buf)
+      return -1;
+   snprintf(buf, len, "%s-%s-%ld.log", env, comm, (long)getpid());
+   char *slash = strrchr(buf, '/');
+   if (slash && slash != buf) {
+      *slash = 0;
+      debug_mkdirs(buf);
+      *slash = '/';
+   }
+   if (path && path_len)
+      snprintf(path, path_len, "%s", buf);
+   int fd = open(buf, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+   free(buf);
+   return fd;
+}
+
+static FILE *
+debug_open_prefix(const char *env, const char *comm)
+{
+   if (!env || env[0] != '/')
+      return NULL;
+   int fd = debug_open_sink(env, comm, NULL, 0);
+   if (fd < 0)
+      return NULL;
+   FILE *file = fdopen(fd, "a");
+   if (!file)
+      close(fd);
+   else
+      setvbuf(file, NULL, _IOLBF, 0);
+   return file;
+}
+
+static pthread_once_t prof_once = PTHREAD_ONCE_INIT;
+static pthread_mutex_t prof_lock = PTHREAD_MUTEX_INITIALIZER;
+static int prof_fd = -1;
+static _Atomic uint64_t prof_values[MALI_PROF_COUNTERS];
+static _Atomic uint64_t prof_last;
+
+/* A sink line is written with write(2), not stdio: the interesting processes are the ones Steam kills with SIGKILL (a
+ * hung steamwebhelper, a game that is force-stopped), and a buffered line that was formatted but not flushed at that
+ * moment is gone. Nothing here relies on the process reaching atexit. */
+static void
+prof_puts(const char *buf, size_t len)
+{
+   while (len) {
+      ssize_t n = write(prof_fd, buf, len);
+      if (n <= 0) {
+         if (n < 0 && errno == EINTR)
+            continue;
+         return;
+      }
+      buf += n;
+      len -= (size_t)n;
+   }
+}
+
+static void
+prof_init(void)
+{
+   const char *env = getenv("MALI_PROF");
+   if (!env || env[0] != '/')
+      return;
+   char comm[32];
+   debug_comm(comm, sizeof(comm));
+   char path[PATH_MAX];
+   prof_fd = debug_open_sink(env, comm, path, sizeof(path));
+   if (prof_fd < 0) {
+      fprintf(stderr, "mali_vk: MALI_PROF sink not writable: %s (%s)\n", path, strerror(errno));
+      return;
+   }
+   atomic_store(&prof_last, mali_wait_now());
+   /* A startup line makes "the process opened the device but never submitted" distinguishable from "the process never
+    * reached the driver": an empty file is an answer, no file at all is a different bug. */
+   char line[192];
+   int n = snprintf(line, sizeof(line), "mali_prof: startup comm=%s pid=%ld mali-open %s\n",
+                    comm, (long)getpid(), MALI_GIT_SHA);
+   if (n > 0)
+      prof_puts(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
+}
+
+int
+mali_prof_enabled(void)
+{
+   pthread_once(&prof_once, prof_init);
+   return prof_fd >= 0;
+}
+
+void
+mali_prof_add(enum mali_prof_counter counter, uint64_t value)
+{
+   if (mali_prof_enabled())
+      atomic_fetch_add_explicit(&prof_values[counter], value, memory_order_relaxed);
+}
+
+/* One line per second of submission, written where the driver is already executing. There is deliberately no timer
+ * thread: a Steam client creates a device only to probe it, destroys it and dlcloses the ICD, and a thread of ours
+ * still running in that unloaded library segfaulted the client at start (cmf-1127-233734). Entries that tick:
+ * vkQueueSubmit (mali_queue.c), vkQueuePresentKHR (mali_wsi.c), mali_wait_heartbeat (below) and the final line at
+ * vkDestroyDevice. */
+static void
+prof_emit(int force)
+{
+   uint64_t now = mali_wait_now();
+   if (!force && now - atomic_load(&prof_last) < 1000000000ull)
+      return;
+   pthread_mutex_lock(&prof_lock);
+   if (force || now - atomic_load(&prof_last) >= 1000000000ull) {
+      uint64_t v[MALI_PROF_COUNTERS];
+      int moved = 0;
+      for (unsigned i = 0; i < MALI_PROF_COUNTERS; i++) {
+         v[i] = atomic_exchange_explicit(&prof_values[i], 0, memory_order_relaxed);
+         moved |= v[i] != 0;
+      }
+      atomic_store(&prof_last, now);
+      /* "every second while it submits": an idle process writes no line, the counter delta is the record of work. */
+      if (moved) {
+         char line[512];
+         int n = snprintf(line, sizeof(line),
+                 "mali_prof: submits=%" PRIu64 " presents=%" PRIu64
+                 " submit_ns=%" PRIu64 " wait_ns=%" PRIu64
+                 " d2c_count=%" PRIu64 " d2c_bos=%" PRIu64 " d2c_bytes=%" PRIu64 " d2c_ns=%" PRIu64
+                 " c2d_count=%" PRIu64 " c2d_bos=%" PRIu64 " c2d_bytes=%" PRIu64 " c2d_ns=%" PRIu64
+                 " present_ns=%" PRIu64
+                 " w_fence=%" PRIu64 " w_poll=%" PRIu64 " w_counter=%" PRIu64 " w_present=%" PRIu64
+                 " w_map=%" PRIu64 " di_bos=%" PRIu64 " di_b=%" PRIu64 " dn_bos=%" PRIu64
+                 " dn_b=%" PRIu64 " dmap=%" PRIu64 " dunmap=%" PRIu64 "\n",
+                 v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7],
+                 v[8], v[9], v[10], v[11], v[12],
+                 v[13], v[14], v[15], v[16], v[17], v[18], v[19], v[20], v[21], v[22], v[23]);
+         if (n > 0)
+            prof_puts(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
+      }
+   }
+   pthread_mutex_unlock(&prof_lock);
+}
+
+void
+mali_prof_tick(void)
+{
+   if (mali_prof_enabled())
+      prof_emit(0);
+}
+
+/* The last, partial second before the device goes away: a probe device that submits once and is destroyed in the same
+ * second must still leave its line. */
+void
+mali_prof_final(void)
+{
+   if (mali_prof_enabled())
+      prof_emit(1);
+}
+
 static void
 wait_init(void)
 {
@@ -37,22 +252,8 @@ wait_init(void)
    prctl(PR_GET_NAME, comm, 0, 0, 0);
    if (!strcmp(env, "1")) {
       wait_file = stderr;
-   } else if (env[0] == '/') {
-      size_t len = strlen(env) + 64;
-      char *path = malloc(len);
-      if (!path)
-         return;
-      snprintf(path, len, "%s-%s-%ld.log", env, comm, (long)getpid());
-      int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
-      free(path);
-      if (fd >= 0) {
-         wait_file = fdopen(fd, "a");
-         if (!wait_file)
-            close(fd);
-      }
-      if (wait_file)
-         setvbuf(wait_file, NULL, _IOLBF, 0);
-   }
+   } else
+      wait_file = debug_open_prefix(env, comm);
    if (wait_file)
       fprintf(wait_file, "mali_wait: startup comm=%s pid=%ld mali-open %s\n",
               comm, (long)getpid(), MALI_GIT_SHA);
@@ -151,6 +352,7 @@ mali_wait_count(int change)
 void
 mali_wait_heartbeat(struct mali_device *dev, int submit, int present)
 {
+   mali_prof_tick();   /* the profiling sink ticks wherever the driver runs; MALI_WAIT_DBG is independent of it */
    if (!mali_wait_debug())
       return;
    if (submit) atomic_fetch_add(&wait_submits, 1);
@@ -329,7 +531,14 @@ mali_sync_wait(struct vk_device *vk, struct vk_sync *sync, uint64_t wait_value,
          mali_wait_log("fence_wait", s, "waiting for", (now - start) / 1000000, wait_value);
          logged_fence = true;
       }
+      if (left == 0)
+         mali_prof_add(MALI_PROF_WAITS_POLL, 1);      /* vkGetFenceStatus / vkWaitForFences with timeout 0 */
+      else
+         mali_prof_add(MALI_PROF_WAITS_FENCE, 1);     /* vkWaitForFences, vkQueueWaitIdle, vkDeviceWaitIdle, acquire */
+      uint64_t prof_start = mali_prof_enabled() ? mali_wait_now() : 0;
       int r = be->fence_wait(dev->kdev, fd, slice);
+      if (prof_start)
+         mali_prof_add(MALI_PROF_WAIT_NS, mali_wait_now() - prof_start);
       close(fd);
       if (r == 0)
          { result = VK_SUCCESS; goto done; }
