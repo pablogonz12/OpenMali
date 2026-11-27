@@ -1302,6 +1302,41 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          psrc.sample_stride = t.surface_stride;
       }
    } else if (ca->resolveMode != VK_RESOLVE_MODE_NONE) {
+      if (getenv("MALI_PIPE_DBG")) {
+         struct mali_image_view *v = mali_image_view_from_handle(ca->imageView);
+         struct mali_image_view *rv = mali_image_view_from_handle(ca->resolveImageView);
+         const struct vk_image *im = v ? v->vk.image : NULL;
+         const struct vk_image *rim = rv ? rv->vk.image : NULL;
+         char tuple[768];
+         snprintf(tuple, sizeof tuple,
+                  "target_samples=%u image_samples=%u view_fmt=%d image_fmt=%d view_type=%d "
+                  "mip=%u+%u layer=%u+%u extent=%ux%ux%u target_extent=%ux%u "
+                  "swizzle=%u,%u,%u,%u resolve_samples=%u resolve_fmt=%d resolve_image_fmt=%d "
+                  "load=%d store=%d resolve_mode=%d depth=%u stencil=%u",
+                  t.samples, im ? im->samples : 0, v ? v->vk.view_format : 0, im ? im->format : 0,
+                  v ? v->vk.view_type : 0, v ? v->vk.base_mip_level : 0, v ? v->vk.level_count : 0,
+                  v ? v->vk.base_array_layer : 0, v ? v->vk.layer_count : 0,
+                  im ? im->extent.width : 0, im ? im->extent.height : 0, im ? im->extent.depth : 0,
+                  t.width, t.height, v ? v->vk.swizzle.r : 0, v ? v->vk.swizzle.g : 0,
+                  v ? v->vk.swizzle.b : 0, v ? v->vk.swizzle.a : 0,
+                  rim ? rim->samples : 0, rv ? rv->vk.view_format : 0, rim ? rim->format : 0,
+                  ca->loadOp, ca->storeOp, ca->resolveMode,
+                  ri->pDepthAttachment && ri->pDepthAttachment->imageView != VK_NULL_HANDLE,
+                  ri->pStencilAttachment && ri->pStencilAttachment->imageView != VK_NULL_HANDLE);
+         static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+         static char seen[64][768];
+         static unsigned count;
+         pthread_mutex_lock(&lock);
+         unsigned i;
+         for (i = 0; i < count; i++)
+            if (!strcmp(seen[i], tuple))
+               break;
+         if (i == count && count < 64) {
+            strcpy(seen[count++], tuple);
+            fprintf(stderr, "mali_cmd: resolve diagnostic %s\n", tuple);
+         }
+         pthread_mutex_unlock(&lock);
+      }
       unsupported(cmd, "resolve of a single-sampled attachment");
       return;
    }
