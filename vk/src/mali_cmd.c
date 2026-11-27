@@ -1226,13 +1226,8 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       else if (!cv || !rv || !cv->vk.image || !rv->vk.image) why = "1x resolve: missing view or image";
       else if (ri->layerCount != 1) why = "1x resolve: layerCount is not one";
       else if (ri->viewMask) why = "1x resolve: multiview is not supported";
-      else if (f->area[0] < 0 || f->area[1] < 0 || f->area[2] < 0 || f->area[3] < 0)
-         why = "1x resolve: negative render area";
       else if (rv->vk.base_mip_level >= rv->vk.image->mip_levels)
          why = "1x resolve: invalid resolve image level";
-      else if ((uint64_t)f->area[0] + f->area[2] > u_minify(rv->vk.image->extent.width, rv->vk.base_mip_level) ||
-               (uint64_t)f->area[1] + f->area[3] > u_minify(rv->vk.image->extent.height, rv->vk.base_mip_level))
-         why = "1x resolve: render area exceeds resolve image level";
       if (!why) {
          f->resolve_src = (uint64_t)(uintptr_t)cv->vk.image;
          f->resolve_dst = (uint64_t)(uintptr_t)rv->vk.image;
@@ -1426,6 +1421,8 @@ mali_CmdEndRendering(VkCommandBuffer h)
    const uint64_t resolve_src = cmd->cur.resolve_src, resolve_dst = cmd->cur.resolve_dst;
    const bool resolve_1x = cmd->cur.resolve_1x;
    VkImageResolve2 one_region;
+   int32_t resolve_area[4];
+   memcpy(resolve_area, cmd->cur.area, sizeof resolve_area);
    if (resolve_1x)
       mali_resolve_region(&cmd->cur, &one_region);
    push_frame(cmd, &cmd->cur);
@@ -1434,6 +1431,35 @@ mali_CmdEndRendering(VkCommandBuffer h)
    if (resolve_src && resolve_dst && resolve_1x) {
       struct mali_image *src = (struct mali_image *)(uintptr_t)resolve_src;
       struct mali_image *dst = (struct mali_image *)(uintptr_t)resolve_dst;
+      uint32_t sw = u_minify(src->vk.extent.width, one_region.srcSubresource.mipLevel);
+      uint32_t sh = u_minify(src->vk.extent.height, one_region.srcSubresource.mipLevel);
+      uint32_t dw = u_minify(dst->vk.extent.width, one_region.dstSubresource.mipLevel);
+      uint32_t dh = u_minify(dst->vk.extent.height, one_region.dstSubresource.mipLevel);
+      int64_t x = MAX2(resolve_area[0], 0), y = MAX2(resolve_area[1], 0);
+      int64_t ex = MIN2((int64_t)resolve_area[0] + MAX2(resolve_area[2], 0), MIN2(sw, dw));
+      int64_t ey = MIN2((int64_t)resolve_area[1] + MAX2(resolve_area[3], 0), MIN2(sh, dh));
+      struct { int32_t area[4]; uint32_t sw, sh, dw, dh; } tuple;
+      memcpy(tuple.area, resolve_area, sizeof tuple.area);
+      tuple.sw = sw; tuple.sh = sh; tuple.dw = dw; tuple.dh = dh;
+      static pthread_mutex_t clamp_lock = PTHREAD_MUTEX_INITIALIZER;
+      static unsigned clamp_count;
+      static __typeof__(tuple) clamp_seen[256];
+      pthread_mutex_lock(&clamp_lock);
+      unsigned c;
+      for (c = 0; c < clamp_count; c++)
+         if (!memcmp(&clamp_seen[c], &tuple, sizeof tuple)) break;
+      if (c == clamp_count && clamp_count < 256) {
+         clamp_seen[clamp_count++] = tuple;
+         fprintf(stderr, "mali_cmd: 1x resolve clamped area %dx%d@%d,%d src %ux%u dst %ux%u\n",
+                 resolve_area[2], resolve_area[3], resolve_area[0], resolve_area[1], sw, sh, dw, dh);
+      }
+      pthread_mutex_unlock(&clamp_lock);
+      if (ex <= x || ey <= y)
+         goto resolve_done;
+      one_region.srcOffset.x = one_region.dstOffset.x = (int32_t)x;
+      one_region.srcOffset.y = one_region.dstOffset.y = (int32_t)y;
+      one_region.extent.width = (uint32_t)(ex - x);
+      one_region.extent.height = (uint32_t)(ey - y);
       const bool copy = src->vk.format == dst->vk.format;
       static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
       static struct { VkFormat src, dst; } seen[256];
@@ -1486,6 +1512,7 @@ mali_CmdEndRendering(VkCommandBuffer h)
                                 .regionCount = 1, .pRegions = &rr};
       mali_CmdResolveImage2(h, &ri);
    }
+resolve_done:
    if (cmd->ndef) {                         /* M13: ops recorded inside the pass retire after it */
       struct mali_frame o;
       memset(&o, 0, sizeof o);
