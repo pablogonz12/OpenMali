@@ -280,6 +280,7 @@ done
 # (MALI_FAKE_DUMP); the dump is rendered address-normalised and diffed against tests/golden/<test>-<gpu>.txt. BO flag rules run in the
 # fake backend's bo_alloc (a violation fails the test itself).
 GOLD=$V/tests/golden; GDIR=$OUT/golden; mkdir -p "$GOLD" "$GDIR"
+run "golden packed TLS" 0 python3 -I "$V/tests/test_golden_tls.py"
 golden() { # test, gpu, extra args...
    local t=$1 g=$2 name out rc; shift 2
    name=$t-$g; rm -f "$GDIR/$name.jsonl" "$GDIR/$name.txt"

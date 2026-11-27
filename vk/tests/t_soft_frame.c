@@ -817,6 +817,26 @@ case_halves(void)
    return 1;
 }
 
+/* A single command buffer can build many frames before any submission: none
+ * of the TLS addresses recorded by those frames may be freed on growth. */
+static int
+case_tls_growth(void)
+{
+   const struct mali_hw *hw = mali_soft_device_hw(dev);
+   CHECK(hw && hw->tls && hw->va_cpu, "TLS and address resolver");
+   uint64_t va[11];
+   for (unsigned i = 0; i < 11; i++) {
+      uint8_t *p = hw->tls(hw->user, (size_t)4096 << i, &va[i]);
+      CHECK(p, "TLS allocation %u", i);
+      *p = (uint8_t)(i + 1);
+   }
+   for (unsigned i = 0; i < 11; i++) {
+      const uint8_t *p = hw->va_cpu(hw->user, va[i], 1);
+      CHECK(p && *p == i + 1, "TLS allocation %u freed before submission", i);
+   }
+   return 1;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -864,6 +884,7 @@ main(int argc, char **argv)
    if (!only || !strcmp(only, "load")) ok &= case_load();
    if (!only || !strcmp(only, "halves")) ok &= case_halves();
    if (!only || !strcmp(only, "fan")) ok &= case_fan();
+   if (!only || !strcmp(only, "tls-growth")) ok &= case_tls_growth();
    p_DeviceWaitIdle(dev);
    printf("%s\n", ok && !g_fail ? "PASS" : "FAILED");
    return ok && !g_fail ? 0 : 1;
