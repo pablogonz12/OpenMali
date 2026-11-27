@@ -28,6 +28,7 @@
 #include "mali_cs_emit.h"
 #include "mali_event.h"
 #include "mali_blend.h"
+#include "mali_va_check.h"
 
 /* FAU block size in bytes: the qword count given to the hardware, rounded up to 64 B (V13-NEXT2.md). */
 #define FAU_BYTES(words32) (((((size_t)(words32) + 1) / 2) * 8 + 63) & ~(size_t)63)
@@ -199,6 +200,8 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
 {
    const struct mali_env *env = &hw->env;
    const struct mali_gfx_state *g = &d->gfx;
+   MALI_VA_CHECK("draw-index", env->arch, d->index_va, d->index_va, 0, d->index_bytes);
+   MALI_VA_CHECK("draw-occlusion", env->arch, d->occ_va, d->occ_va, 0, 0);
    const struct mali_compiled *vs = g->vs, *fs = g->fs;
    bool v13 = env->arch == 13;
    uint64_t va_vfau, va_ffau;
@@ -333,8 +336,10 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
          else
             kb_draw_attr_unused(e);
       }
-      for (unsigned b = 0; b < nvb; b++)
+      for (unsigned b = 0; b < nvb; b++) {
+         MALI_VA_CHECK("vertex-buffer", env->arch, d->vb_va[b], d->vb_va[b], 0, d->vb_size[b]);
          kb_draw_buffer((uint32_t *)(vsset + (KB_VS_ATTRS + 1 + b) * KB_DESC_SET_STRIDE), d->vb_va[b], d->vb_size[b]);
+      }
       memset(vsset + MALI_DUMMY_SAMPLER_IDX * KB_DESC_SET_STRIDE, 0, KB_DESC_SET_STRIDE);   /* dummy sampler: must be all zero */
    }
    if (!s2) {

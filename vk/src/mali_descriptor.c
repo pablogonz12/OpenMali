@@ -3,6 +3,7 @@
 #include "mali_descriptor.h"
 #include "mali_format.h"
 #include "mali_image.h"
+#include "mali_va_check.h"
 
 #include "vk_alloc.h"
 #include "vk_log.h"
@@ -18,6 +19,7 @@
 void
 mali_pack_buffer(unsigned arch, struct mali_hw_desc *d, uint64_t va, uint32_t size)
 {
+   MALI_VA_CHECK("buffer-descriptor", arch, va, va, 0, size);
    memset(d, 0, sizeof *d);
    d->w[0] = 9u | (1u << 4);   /* type Buffer, size in bytes */
    d->w[1] = size;
@@ -28,6 +30,7 @@ mali_pack_buffer(unsigned arch, struct mali_hw_desc *d, uint64_t va, uint32_t si
 void
 mali_pack_plane_linear(unsigned arch, struct mali_hw_desc *d, uint64_t va, unsigned w, unsigned h, uint32_t row_stride)
 {
+   MALI_VA_CHECK("linear-plane", arch, va, va, 0, (uint64_t)row_stride * h);
    memset(d, 0, sizeof *d);
    d->w[0] = 10u | (1u << 4) | (2u << 8) | (2u << 24);   /* Plane, generic, linear clump order, RAW32 */
    d->w[1] = row_stride * h;
@@ -40,6 +43,7 @@ mali_pack_plane_linear(unsigned arch, struct mali_hw_desc *d, uint64_t va, unsig
 void
 mali_pack_texture_2d_rgba8(unsigned arch, struct mali_hw_desc *d, unsigned w, unsigned h, uint64_t plane_va)
 {
+   MALI_VA_CHECK("texture-plane-descriptor", arch, plane_va, plane_va, 0, 0);
    memset(d, 0, sizeof *d);
    d->w[0] = 2u | (2u << 4) | (PIXFMT_RGBA8 << 10);   /* Texture, 2D, format */
    d->w[1] = (w - 1) | ((h - 1) << 16);
@@ -474,6 +478,7 @@ write_one(struct mali_dset *s, const struct mali_lbinding *b, uint32_t idx, VkDe
          else s->dyn[b->dyn_idx + idx] = (struct mali_dyn_buf){ 0, 0 };
       } else if (g_res->buffer(bi->buffer, &va, &size) == 0) {
          uint64_t range = bi->range == VK_WHOLE_SIZE ? size - bi->offset : bi->range;
+         MALI_VA_CHECK("descriptor-buffer-offset", s->arch, va + bi->offset, va, bi->offset, range);
          va += bi->offset;
          if (b->stride) {
             mali_pack_buffer(s->arch, &hw, va, (uint32_t)range);
@@ -613,5 +618,6 @@ void
 mali_dyn_buf_pack(unsigned arch, struct mali_hw_desc *d, const struct mali_dyn_buf *b, uint32_t dyn_offset)
 {
    if (!b->va) { memset(d, 0, sizeof *d); return; }   /* null dynamic buffer stays a Null Descriptor */
+   MALI_VA_CHECK("dynamic-buffer-offset", arch, b->va + dyn_offset, b->va, dyn_offset, b->size);
    mali_pack_buffer(arch, d, b->va + dyn_offset, (uint32_t)(b->size));
 }
