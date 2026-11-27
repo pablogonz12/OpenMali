@@ -81,10 +81,10 @@ class Ctx:
         v &= MASK48
         return VA_LO <= v < VA_HI or HEAP_LO <= v < HEAP_HI
 
-    def nv(s, q, fm=63, where='', check=True):
+    def nv(s, q, fm=63, where='', check=True, address=False):
         """Normalise a 64-bit value that may be a GPU address (+ low flag bits fm, + high byte). Non-addresses stay numbers."""
         lo = (q & MASK48) & ~fm
-        if not s.looks_va(lo): return '%#x' % q
+        if not address and not s.looks_va(lo): return '%#x' % q
         r = s.find(lo)
         if not r:
             if check: s.violate('R-VA', '%s %#x is not inside any BO' % (where or 'value', q & MASK48))
@@ -106,7 +106,12 @@ class Ctx:
         i = 0
         while i < len(w):
             q = w[i] | (w[i + 1] << 32) if i + 1 < len(w) else 0
-            if i + 1 < len(w) and i % 2 == 0 and s.looks_va(q):
+            if where in ('TSD', 'TSD_v', 'TSD_f') and i == 2 and q & (((1 << 40) - 1) | (1 << 60)):
+                # tls_fill stores VA >> 8 in words 2/3; bit 60 is a
+                # separate enable flag, not part of the 48-bit address.
+                addr = (q & ((1 << 40) - 1)) << 8
+                toks.append((s.nv(addr, 0, '%s.tls' % where, check, address=True) + '^%#x' % (q >> 40), 2)); i += 2
+            elif i + 1 < len(w) and i % 2 == 0 and s.looks_va(q):
                 toks.append((s.nv(q, 63, '%s+%#x' % (where, i * 4), check), 2)); i += 2
             else:
                 toks.append(('%08x' % w[i], 1)); i += 1
