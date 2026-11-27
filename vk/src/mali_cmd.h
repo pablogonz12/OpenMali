@@ -22,6 +22,10 @@
 
 #define MALI_CMD_WROTE_MAX 64
 
+struct mali_cmd_buffer;
+/* The reason is copied when retained for rate limiting. */
+void mali_cmd_unsupported(struct mali_cmd_buffer *cmd, const char *what);
+
 /* A render target or depth image as the command buffer needs it. */
 struct mali_cmd_target {
    uint64_t va;
