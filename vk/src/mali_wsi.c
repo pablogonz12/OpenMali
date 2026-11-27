@@ -1743,7 +1743,6 @@ mali_wsi_debug_present(struct mali_device *dev, struct wsi_swapchain *chain, uin
    (void)dev; (void)wi;
 }
 
-<<<<<<< HEAD
 /* MALI_SHARED_STATS: the swapchain image's dma-buf, as the compositor is about to be handed it. On the dma-buf path
  * wsi_common imports the present's sync_file and the compositor waits it, so this wait is for the CPU sample only:
  * bounded like the software present's (1 s, a lost render must not hang a present) and it also ends in kbase's
@@ -1771,12 +1770,8 @@ mali_wsi_shared_stats(struct mali_device *dev, struct wsi_swapchain *chain, uint
    mali_memory_unguard();
 }
 
-VKAPI_ATTR VkResult VKAPI_CALL
-mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
-=======
 static VkResult
 mali_wsi_queue_present_impl(VkQueue queue, const VkPresentInfoKHR *info)
->>>>>>> origin/lane/cmf-d2c
 {
    static uint64_t seq;
    uint64_t n = p_atomic_inc_return(&seq);

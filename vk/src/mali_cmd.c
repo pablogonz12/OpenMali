@@ -1678,7 +1678,6 @@ mali_CmdEndRendering(VkCommandBuffer h)
    mali_resolve_region(&cmd->cur, &rr);
    int32_t area[4];
    memcpy(area, cmd->cur.area, sizeof area);
-<<<<<<< HEAD
    /* MALI_RP_STATS: the resolve target is part of this pass' output. */
    if (cmd->rp_open && resolve_src && resolve_dst) {
       struct mali_image *rd = (struct mali_image *)(uintptr_t)resolve_dst;
@@ -1692,8 +1691,6 @@ mali_CmdEndRendering(VkCommandBuffer h)
          cmd->rp.natt++;
       }
    }
-=======
->>>>>>> origin/lane/cmf-d2c
    push_frame(cmd, &cmd->cur);
    memset(&cmd->cur, 0, sizeof cmd->cur);   /* the draw list now belongs to the finished frame */
    cmd->in_render = false;

@@ -1053,13 +1053,8 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
    if (dev->hw && dev->hw->fp.on && submit->command_buffer_count == 0 && submit->wait_count > 0 && submit->signal_count > 0)
       mali_fprof_present(&dev->hw->fp);
    if (res != VK_SUCCESS)
-<<<<<<< HEAD
       return (mali_wait_event("device_lost site=mali_queue.c:749"), vk_queue_set_lost(vq, "queue signal import failed: %d", res)); /* GPU work is in flight, its fence is lost */
-   if (getenv("MALI_PROF")) {
-=======
-      return vk_queue_set_lost(vq, "queue signal import failed: %d", res); /* GPU work is in flight, its fence is lost */
    if (getenv("MALI_PROF_LEGACY")) {
->>>>>>> origin/lane/cmf-d2c
       double p3 = prof_now();
       prof_acc[0] += p1 - p0; prof_acc[1] += p2 - p1; prof_acc[2] += p3 - p2;
       if (++prof_n % 200 == 0) {
