@@ -1,4 +1,9 @@
 /* SPDX-License-Identifier: MIT */
+#include "mali_wait_debug.h"
+/* Standalone layout test links mali_image.c without the ICD's diagnostic logger. */
+void mali_wait_event(const char *fmt, ...) { (void)fmt; }
+void mali_wait_result(const char *function, int result, const char *fmt, ...)
+{ (void)function; (void)result; (void)fmt; }
 /* M5 offline tests: format table, image layout, descriptor bytes vs libkbase (hardware-proven). No GPU. Usage: t_image [-v] */
 #include "../src/mali_image.h"
 #include "../src/mali_rtfmt_tab.h"

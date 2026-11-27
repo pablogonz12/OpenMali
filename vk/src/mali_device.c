@@ -7,6 +7,7 @@
 #include "mali_entrypoints.h"
 #include "mali_cmd.h"
 #include "mali_queue.h"
+#include "mali_wait_debug.h"
 #include "vk_alloc.h"
 #include "vk_cmd_enqueue_entrypoints.h"
 #include "vk_common_entrypoints.h"
@@ -134,6 +135,10 @@ mali_CreateDevice_impl(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo
 
    mali_resources_init();
    mali_queue_device_init(dev);
+   /* The MALI_PROF sink is opened here, when the device is opened, not lazily on the first submit: a process that
+    * opens the device and only then goes quiet (a Chromium GPU process, Xwayland) still gets its file and its
+    * startup line, which is what tells "opened the device, never submitted" from "never reached the driver". */
+   mali_prof_enabled();
    result = pdev->backend->device_create(&pdev->gpu, &dev->kdev);
    if (result != 0) {
       result = vk_error(dev, result == -ENOMEM ? VK_ERROR_OUT_OF_HOST_MEMORY
@@ -187,6 +192,7 @@ fail:
    if (dev->has_queue)
       vk_queue_finish(&dev->queue.vk);
    mali_hw_finish(dev);
+   mali_prof_final();   /* the last, partial second of this device, before anything it counted is torn down */
    pdev->backend->device_destroy(dev->kdev);
    mali_queue_device_finish(dev);
    vk_device_finish(&dev->vk);

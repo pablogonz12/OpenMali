@@ -166,6 +166,7 @@ cat > "$OUT/mali_icd.json" <<J
 {"file_format_version":"1.0.1","ICD":{"library_path":"$OUT/libvulkan_mali.so","api_version":"1.3.0"}}
 J
 ${CC%% *} -std=c11 -O2 -Wall -Wextra -Werror -I"$MESA/include" -o "$OUT/t_icd" "$V/tests/t_icd.c" -ldl
+${CC%% *} -std=c11 -O2 -Wall -Wextra -Werror -I"$MESA/include" -o "$OUT/t_prof_unload" "$V/tests/t_prof_unload.c" -ldl
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -I"$MESA/include" -o "$OUT/t_queue" "$V/tests/t_queue.c" -ldl -pthread
 
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_frameprof" "$V/tests/t_frameprof.c" -ldl -lm -pthread

@@ -181,6 +181,7 @@ else echo "FAIL  vk_feat tf_write opt-out v11"; echo "$out" | sed 's/^/        /
 
 # M4: memory, sync, queue (fake backend; MALI_FAKE_SLOW_US makes the fences really block).
 TQ="$OUT/t_queue --direct $OUT/libvulkan_mali.so"
+run "per-process profiling" 0 bash "$V/tests/t_prof.sh" "$OUT"
 run "queue all v11"      0 MALI_BACKEND=fake MALI_FAKE_GPU=v11 $TQ
 run "queue teardown v13"  0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 MALI_FAKE_SLOW_US=400000 $TQ --only teardown
 run "queue all v13 slow" 0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 MALI_FAKE_SLOW_US=200 $TQ --submits 1000
@@ -192,6 +193,20 @@ run "MALI_FENCE_ALWAYS restores it (expected fail)" 1 MALI_BACKEND=fake MALI_FAU
 for n in 1 50; do run "fault inject $n" 0 MALI_BACKEND=fake MALI_FAULT_INJECT=$n $TQ --only fault; done
 # WSI audit regressions: fd validation, sync export waits for a queued signal, DRM modifier/bind checks, failed submit still signals
 for c in wsifd syncexport wsiimg; do run "wsi $c" 0 MALI_BACKEND=fake $TQ --only $c; done
+for d in 0 1; do run "wait debug=$d" 0 MALI_BACKEND=fake MALI_WAIT_DBG=$d $TQ --only waitdebug; done
+wait_debug_dir=$(mktemp -d)
+run "wait debug=file" 0 MALI_BACKEND=fake MALI_WAIT_DBG="$wait_debug_dir/w" $TQ --only waitdebug
+run "external image debug exercise" 0 MALI_BACKEND=fake MALI_WAIT_DBG="$wait_debug_dir/image" $TQ --only wsiimg
+if grep -q 'result function=vkCreateImage .*count=2' "$wait_debug_dir"/image-*.log &&
+   grep -q 'external_image .*format=.*extent=64x64x1' "$wait_debug_dir"/image-*.log &&
+   grep -q 'external_plane index=0 offset=0 pitch=' "$wait_debug_dir"/image-*.log; then
+   echo "ok    external image debug records"
+else
+   echo "FAIL  external image debug records"; fail=1
+fi
+rm -f "$wait_debug_dir"/w-*.log
+rm -f "$wait_debug_dir"/image-*.log
+rmdir "$wait_debug_dir"
 run "wsi failsignal" 0 MALI_BACKEND=fake MALI_FAULT_INJECT=5 $TQ --only failsignal
 
 # M15: frame profiler (mali_fprof.c) on the fake backend. The last case leaves MALI_FRAME_PROF unset and requires
