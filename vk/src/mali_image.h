@@ -146,7 +146,7 @@ struct mali_image_view {
 VK_DEFINE_NONDISP_HANDLE_CASTS(mali_image_view, vk.base, VkImageView, VK_OBJECT_TYPE_IMAGE_VIEW)
 
 /* Debug registry checks identity without reading freed image storage. */
-void mali_debug_check_view(VkImageView view);
+bool mali_debug_check_view(VkImageView view);
 
 struct mali_buffer {
    struct vk_buffer vk;

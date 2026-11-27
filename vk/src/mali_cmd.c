@@ -25,6 +25,8 @@
 #include "vk_graphics_state.h"
 #include "util/bitset.h"
 #include "util/u_math.h"
+#include "util/format/u_format.h"
+#include "vk_format.h"
 
 static struct mali_cmd_res_ops g_res;
 static struct mali_hw g_hw;
@@ -1225,14 +1227,27 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       struct mali_image_view *cv = mali_image_view_from_handle(ca->imageView);
       struct mali_image_view *rv = mali_image_view_from_handle(ca->resolveImageView);
       const char *why = NULL;
+      bool skip_resolve = rv && !mali_debug_check_view(ca->resolveImageView);
+      if (skip_resolve)
+         fprintf(stderr, "mali_cmd: skip 1x resolve: invalid image lifetime\n");
+      if (rv && !skip_resolve && rv->vk.image) {
+         unsigned vb = util_format_get_blocksize(vk_format_to_pipe_format(rv->vk.view_format));
+         unsigned ib = util_format_get_blocksize(vk_format_to_pipe_format(rv->vk.image->format));
+         if (vb && ib && vb != ib) {
+            skip_resolve = true;
+            fprintf(stderr, "mali_cmd: skip 1x resolve: view/image texel size mismatch %u/%u\n", vb, ib);
+         }
+      }
       if (f->samples != 1) why = "1x resolve: source is not single-sampled";
       else if (ca->resolveMode != VK_RESOLVE_MODE_AVERAGE_BIT) why = "1x resolve: mode is not AVERAGE";
       else if (!cv || !rv || !cv->vk.image || !rv->vk.image) why = "1x resolve: missing view or image";
       else if (ri->layerCount != 1) why = "1x resolve: layerCount is not one";
       else if (ri->viewMask) why = "1x resolve: multiview is not supported";
-      else if (rv->vk.base_mip_level >= rv->vk.image->mip_levels)
+      else if (!skip_resolve && rv->vk.base_mip_level >= rv->vk.image->mip_levels)
          why = "1x resolve: invalid resolve image level";
-      if (!why) {
+      if (skip_resolve) {
+         /* Do not write through a foreign or incompatible target. */
+      } else if (!why) {
          if (getenv("MALI_PIPE_DBG"))
             fprintf(stderr, "mali_cmd: 1x resolve views src_view=%p src_image=%p src_extent=%ux%u dst_view=%p dst_image=%p dst_extent=%ux%u generations=%llu/%llu\n",
                     (void *)(uintptr_t)ca->imageView, (void *)cv->vk.image,
