@@ -18,6 +18,7 @@
 #include "kbase.h"
 #include "kbase_cs.h"
 #include "kbase_uapi.h"
+#include "mali_wait_debug.h"
 
 extern uint64_t kb_bo_extra_flags; /* libkbase bo.c: OR'd into plain GPU allocations */
 
@@ -126,6 +127,13 @@ kbase_device_create(const struct mali_gpu_info *gpu, struct mali_kdev **out)
       free(k);
       return r < 0 ? r : -ENODEV;
    }
+   if (getenv("MALI_WSI_DEBUG") || mali_wait_debug()) {
+      unsigned major, minor;
+      kb_uapi_version(k->ctx, &major, &minor);
+      if (getenv("MALI_WSI_DEBUG"))
+         fprintf(stderr, "mali_vk: negotiated kbase uAPI %u.%u\n", major, minor);
+      mali_wait_event("negotiated kbase uAPI %u.%u", major, minor);
+   }
 
    const char *dbg = getenv("MALI_SUBMIT_DBG");
    k->dbg = dbg ? (unsigned)strtoul(dbg, NULL, 0) : 0;
@@ -147,6 +155,9 @@ kbase_device_create(const struct mali_gpu_info *gpu, struct mali_kdev **out)
    k_int_nocoh_default = gpu->arch_major == 11;
    if (cl ? cl[0] == '1' : gpu->arch_major == 10 || gpu->arch_major == 11 || gpu->arch_major == 13)
       kb_bo_extra_flags |= 0x800;
+   mali_wait_event("bo_flags backend=kbase extra=0x%llx coherent_local=%s override=%s",
+                   (unsigned long long)kb_bo_extra_flags, kb_bo_extra_flags & 0x800 ? "yes" : "no",
+                   cl ? cl : "unset");
    if (getenv("MALI_WSI_DEBUG") || getenv("MALI_SUBMIT_DBG"))
       fprintf(stderr, "mali_vk: kbase bo flags 0x%llx (%s): COHERENT_LOCAL applies to native and imported BOs; "
               "internal BOs %s\n", (unsigned long long)kb_bo_extra_flags,
@@ -433,6 +444,8 @@ kbase_bo_wrote(struct mali_kdev *k, struct mali_bo *b)
  * before the loop reads the flags or after it cleared them (and leaves the BO dirty for the next submit).
  * The buffer path passes a NULL kdev (mali_buffer.c bo_host_touch after a rebind, before any submit of that buffer), so
  * there is no lock to take there; kdev is what carries it. */
+static bool mem_sync_one_locked(struct mali_kdev *k, struct kb_bo *b, unsigned op);
+
 static void
 kbase_bo_host_touch(struct mali_kdev *k, struct mali_bo *b)
 {
@@ -441,6 +454,23 @@ kbase_bo_host_touch(struct mali_kdev *k, struct mali_bo *b)
    struct kb_bo *bo = b->priv;
    if (k) pthread_mutex_lock(&k->bo_lock);
    bo->host_lazy = false;
+   mali_prof_add(MALI_PROF_WAITS_MAP, 1);
+   /* MALI_SYNC_READ: freshness for the CPU is delivered here, when it takes a mapping, and no longer by sweeping every
+    * BO at every fence wait (below, mem_sync_bos). A mapped BO is covered by the per-wait sweep as before, so a BO the
+    * GPU writes while it stays mapped is still refreshed at the next wait; an unmapped one is not, because the CPU
+    * cannot read it. The invalidation has to happen now: the read follows the map immediately. */
+   if (k) {   /* mali_buffer.c passes a NULL kdev (a rebind before any submit): no kbase device, nothing to sync */
+      const char *rd = getenv("MALI_SYNC_READ");
+      bool lazy = !rd || rd[0] != '0';
+      uint64_t wrote = __atomic_load_n(&bo->gpu_writes, __ATOMIC_RELAXED);
+      /* An import carries no write marks (the front end cannot see whose writes it holds), so it is always refreshed
+       * on a map; a native BO only when the GPU wrote it since the last sync. A pending full sweep means an unknown
+       * write happened, which may be this BO's. */
+      bool pending = bo->imported || wrote != bo->synced_writes ||
+                     __atomic_load_n(&k->sync_all_pending, __ATOMIC_RELAXED);
+      if (lazy && pending)
+         mem_sync_one_locked(k, bo, 2);
+   }
    /* MALI_SYNC_DIRTY: the CPU may write through this mapping at any time, so the BO is dirty until it is unmapped and
     * a sync has covered it (mem_sync_bos keeps it dirty while cpu_mapped is set). */
    bo->cpu_dirty = true;
@@ -575,6 +605,17 @@ wait_ring_space(struct mali_kdev *k, size_t bytes)
       usleep(50);
    }
    return -ETIMEDOUT;
+}
+
+static bool
+kbase_debug_seqnos(struct mali_kdev *k, uint64_t *submitted, uint64_t *done)
+{
+   if (!k || pthread_mutex_trylock(&k->submit_lock))
+      return false;
+   *submitted = k->target;
+   *done = *(volatile uint64_t *)k->cqs.cpu;
+   pthread_mutex_unlock(&k->submit_lock);
+   return true;
 }
 
 static int
@@ -725,12 +766,41 @@ mem_sync_all(struct mali_kdev *k, unsigned op)
    mem_sync_bos(k, op, SYNC_ALL);
 }
 
+/* One BO, one MEM_SYNC: the device->CPU half of the switch above, run when the CPU takes a mapping (bo_lock held). */
+static bool
+mem_sync_one_locked(struct mali_kdev *k, struct kb_bo *b, unsigned op)
+{
+   struct {
+      uint64_t handle, user_addr, size;
+      uint8_t type, pad[7];
+   } ms = {b->gpu_va, (uint64_t)(uintptr_t)b->cpu, b->size, (uint8_t)op, {0}};
+   uint64_t start = mali_prof_enabled() ? mali_wait_now() : 0;
+   /* The generation this ioctl covers is the one before it runs: a write marked while it is in flight stays pending and
+    * is synced again by the next wait (kbase_bo_wrote takes bo_lock, so it cannot land between the two). */
+   uint64_t wrote = __atomic_load_n(&b->gpu_writes, __ATOMIC_RELAXED);
+   int sr = kb_ioctl_fd(kb_fd(k->ctx), _IOW(KBASE_IOCTL_TYPE, 15, ms), &ms);
+   if (sr >= 0)
+      b->synced_writes = wrote;
+   if (start) {
+      mali_prof_add(MALI_PROF_D2C_COUNT, 1);
+      mali_prof_add(MALI_PROF_D2C_BOS, 1);
+      mali_prof_add(MALI_PROF_D2C_BYTES, b->size);
+      mali_prof_add(MALI_PROF_D2C_NS, mali_wait_now() - start);
+      mali_prof_add(b->imported ? MALI_PROF_D2C_IMP_BOS : MALI_PROF_D2C_NAT_BOS, 1);
+      mali_prof_add(b->imported ? MALI_PROF_D2C_IMP_BYTES : MALI_PROF_D2C_NAT_BYTES, b->size);
+      mali_prof_add(b->cpu_mapped ? MALI_PROF_D2C_MAPPED_BOS : MALI_PROF_D2C_UNMAPPED_BOS, 1);
+   }
+   return sr >= 0;
+}
+
 static void
 mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
 {
    /* COHERENT_LOCAL BOs (arch 13, MALI_BO_COHERENT_LOCAL=1): CPU -> device MEM_SYNC before every submit (V13-NEXT2.md). */
    if (!(kb_bo_extra_flags & 0x800))
       return;
+   uint64_t prof_start = mali_prof_enabled() ? mali_wait_now() : 0;
+   uint64_t prof_bos = 0, prof_bytes = 0;
    /* M15: a device->CPU sync only has to cover BOs the GPU wrote since the last one. The front end marks every
     * GPU write (copy destinations, render targets, clears, storage descriptors) with bo_wrote, whose counter is
     * monotonic per BO: a BO also marked by a frame that is still in flight is synced again at the next wait
@@ -742,7 +812,7 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
    bool sweep_all = dev2cpu && (k->sync_all_pending || (e && e[0] == '1') || (t && t[0] == '0'));
    k->sync_all_pending = false;
    static unsigned prof_calls;
-   if (getenv("MALI_PROF") && ++prof_calls == 600) {
+   if (getenv("MALI_PROF_LEGACY") && ++prof_calls == 600) {
       unsigned n = 0;
       for (unsigned i = 0; i < k->nbos; i++) if (!k->bos[i]->host_lazy && !(k->bos[i]->flags & KB_BO_NOCOH)) { n++; fprintf(stderr, "PROF/memsync bo size %zu flags %x hot %d dmabuf %d\n", k->bos[i]->size, k->bos[i]->flags, k->bos[i]->hot, k->bos[i]->dmabuf_fd >= 0); }
       fprintf(stderr, "PROF/memsync nbos=%u non-lazy=%u\n", k->nbos, n);
@@ -769,6 +839,17 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
             if (!b->cpu_dirty && !b->cpu_mapped)
                continue;
       }
+      /* MALI_SYNC_READ: a device->CPU MEM_SYNC only helps a BO the CPU can read *now*. An unmapped BO cannot be read:
+       * a client BO or a foreign import is refreshed when it is mapped (kbase_bo_host_touch, above) or, for a dma-buf,
+       * through its own DMA_BUF_IOCTL_SYNC (kbase_bo_cache) at the read. This is what the CMF's Xwayland was paying for:
+       * 1314 unmapped imports (2.9 GB) on every fence wait, 105 times a second, all of it invisible to the process. The
+       * driver's own BOs (arena, heap, geo, sync, TLS, CS) keep the old sweep: how they are read is not knowable here.
+       * MALI_SYNC_READ=0 restores the old behaviour for an A/B. */
+      if (dev2cpu && (b->imported || b->user_mem) && !sweep_all) {
+         const char *rd = getenv("MALI_SYNC_READ");
+         if ((!rd || rd[0] != '0') && !b->cpu_mapped)
+            continue;
+      }
       uint64_t wrote = 0;
       /* Imports are not marked per submission (the front end marks BOs it renders into), so a write-counter
        * check would either skip them or claim them synced before their submission completes: sync a foreign
@@ -782,13 +863,29 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
          uint64_t handle, user_addr, size;
          uint8_t type, pad[7];
       } ms = {b->gpu_va, (uint64_t)(uintptr_t)b->cpu, b->size, (uint8_t)op, {0}};
-      int sr = kb_ioctl_fd(kb_fd(k->ctx), _IOW(KBASE_IOCTL_TYPE, 15, ms), &ms);
+       int sr = kb_ioctl_fd(kb_fd(k->ctx), _IOW(KBASE_IOCTL_TYPE, 15, ms), &ms);
+       if (prof_start) {
+          prof_bos++;
+          prof_bytes += b->size;
+       }
+       if (dev2cpu) {
+          mali_prof_add(b->imported ? MALI_PROF_D2C_IMP_BOS : MALI_PROF_D2C_NAT_BOS, 1);
+          mali_prof_add(b->imported ? MALI_PROF_D2C_IMP_BYTES : MALI_PROF_D2C_NAT_BYTES, b->size);
+          mali_prof_add(b->cpu_mapped ? MALI_PROF_D2C_MAPPED_BOS : MALI_PROF_D2C_UNMAPPED_BOS, 1);
+       }
       if (dev2cpu && !b->imported && sr >= 0)
          b->synced_writes = wrote;   /* what this ioctl covered; a concurrent submit's mark stays pending */
       else if (!dev2cpu && sr >= 0 && !b->cpu_mapped)
          b->cpu_dirty = false;   /* the CPU cannot write it now: this ioctl covered everything it wrote */
    }
    pthread_mutex_unlock(&k->bo_lock);
+   if (prof_start) {
+      enum mali_prof_counter base = dev2cpu ? MALI_PROF_D2C_COUNT : MALI_PROF_C2D_COUNT;
+      mali_prof_add(base, 1);
+      mali_prof_add(base + 1, prof_bos);
+      mali_prof_add(base + 2, prof_bytes);
+      mali_prof_add(base + 3, mali_wait_now() - prof_start);
+   }
 }
 
 static void
@@ -833,6 +930,7 @@ out:
 static int
 kbase_wait_counter(struct mali_kdev *k, const volatile uint64_t *c, uint64_t target, int timeout_ms)
 {
+   mali_prof_add(MALI_PROF_WAITS_COUNTER, 1);
    struct timespec t0;
    clock_gettime(CLOCK_MONOTONIC, &t0);
    for (unsigned spin = 0;; spin++) {
@@ -904,6 +1002,7 @@ const struct mali_backend_ops mali_backend_kbase = {
    .bo_cache = kbase_bo_cache,
    .bo_export = kbase_bo_export,
    .submit_signal = kbase_submit_signal,
+   .debug_seqnos = kbase_debug_seqnos,
    .fence_wait = kbase_fence_wait,
    .device_lost = kbase_device_lost,
    .gpu_timestamp = kbase_gpu_timestamp,

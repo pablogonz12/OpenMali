@@ -3,6 +3,7 @@
  * buffers arrive with M8. vk_queue runs in DEFERRED mode (emulated timeline semaphores), so this is
  * called from the runtime's submit thread, one submission at a time. */
 #include "mali_queue.h"
+#include "mali_wait_debug.h"
 #include "mali_fprof.h"
 #include <time.h>
 static double prof_now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec * 1e3 + t.tv_nsec / 1e6; }
@@ -408,7 +409,7 @@ hw_submit_multi(void *u, const uint64_t *cs, unsigned n, unsigned nframes)
    int r = be->submit_cs(h->dev->kdev, cs, n);
    if (h->fp.on && r == 0)
       mali_fprof_kicked(&h->fp, prof_now() - q0);
-   if (getenv("MALI_PROF")) {
+   if (getenv("MALI_PROF_LEGACY")) {
       static double acc; static unsigned cnt;
       acc += prof_now() - q0;
       if (++cnt % 200 == 0) fprintf(stderr, "PROF/hw_submit submit_cs avg %.3f ms (n=%u instr)\n", acc / cnt, n);
@@ -448,7 +449,7 @@ hw_submit_multi(void *u, const uint64_t *cs, unsigned n, unsigned nframes)
    }
    double w0 = prof_now();
    int wr = hw_wait(h, h->expected);
-   if (getenv("MALI_PROF")) { static double acc[2]; static unsigned cnt; acc[0] += prof_now() - w0; if (++cnt % 100 == 0) fprintf(stderr, "PROF/syncwait frame GPU latency avg %.3f ms (n=%u instr)\n", acc[0] / cnt, n); }
+   if (getenv("MALI_PROF_LEGACY")) { static double acc[2]; static unsigned cnt; acc[0] += prof_now() - w0; if (++cnt % 100 == 0) fprintf(stderr, "PROF/syncwait frame GPU latency avg %.3f ms (n=%u instr)\n", acc[0] / cnt, n); }
    if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk:   wait rc=%d counter=%llu expected=%llu\n", wr, (unsigned long long)*(volatile uint64_t *)h->sync.cpu, (unsigned long long)h->expected);
    return wr;
 }
@@ -656,6 +657,9 @@ static VkResult mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_subm
 static VkResult
 mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
 {
+   uint64_t prof_start = mali_prof_enabled() ? mali_wait_now() : 0;
+   struct mali_device *dev = container_of(vq->base.device, struct mali_device, vk);
+   mali_wait_heartbeat(dev, 1, 0);
    uint32_t imported = 0;
    VkResult res = mali_queue_submit_impl(vq, submit, &imported);
    if (res != VK_SUCCESS && vk_queue_is_lost(vq)) {
@@ -664,6 +668,11 @@ mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
          VkResult sr = vk_sync_signal(vkdev, submit->signals[i].sync, submit->signals[i].signal_value);
          (void)sr; /* best effort: the queue is lost already */
       }
+   }
+   if (prof_start) {
+      mali_prof_add(MALI_PROF_SUBMITS, 1);
+      mali_prof_add(MALI_PROF_SUBMIT_NS, mali_wait_now() - prof_start);
+      mali_prof_tick();
    }
    return res;
 }
@@ -762,7 +771,7 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
       mali_fprof_present(&dev->hw->fp);
    if (res != VK_SUCCESS)
       return vk_queue_set_lost(vq, "queue signal import failed: %d", res); /* GPU work is in flight, its fence is lost */
-   if (getenv("MALI_PROF")) {
+   if (getenv("MALI_PROF_LEGACY")) {
       double p3 = prof_now();
       prof_acc[0] += p1 - p0; prof_acc[1] += p2 - p1; prof_acc[2] += p3 - p2;
       if (++prof_n % 200 == 0) {
