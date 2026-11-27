@@ -1242,7 +1242,7 @@ mali_frame_submit(const struct mali_hw *hw, const struct mali_frame *f)
    if ((rc = mali_frame_build(hw, f, &cs, &n)))
       return rc;
    clock_gettime(CLOCK_MONOTONIC, &pt2);
-   if (getenv("MALI_PROF")) {
+   if (getenv("MALI_PROF_LEGACY")) {
       static double a, b; static unsigned c;
       a += (pt1.tv_sec - pt0.tv_sec) * 1e3 + (pt1.tv_nsec - pt0.tv_nsec) / 1e6;
       b += (pt2.tv_sec - pt1.tv_sec) * 1e3 + (pt2.tv_nsec - pt1.tv_nsec) / 1e6;

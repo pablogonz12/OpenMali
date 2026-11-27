@@ -716,7 +716,7 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
    bool sweep_all = dev2cpu && (k->sync_all_pending || (e && e[0] == '1') || (t && t[0] == '0'));
    k->sync_all_pending = false;
    static unsigned prof_calls;
-   if (getenv("MALI_PROF") && ++prof_calls == 600) {
+   if (getenv("MALI_PROF_LEGACY") && ++prof_calls == 600) {
       unsigned n = 0;
       for (unsigned i = 0; i < k->nbos; i++) if (!k->bos[i]->host_lazy && !(k->bos[i]->flags & KB_BO_NOCOH)) { n++; fprintf(stderr, "PROF/memsync bo size %zu flags %x hot %d dmabuf %d\n", k->bos[i]->size, k->bos[i]->flags, k->bos[i]->hot, k->bos[i]->dmabuf_fd >= 0); }
       fprintf(stderr, "PROF/memsync nbos=%u non-lazy=%u\n", k->nbos, n);
