@@ -87,6 +87,59 @@ test_resolve_region(void)
          "clipped resolve %d,%d %ux%u", r.srcOffset.x, r.srcOffset.y, r.extent.width, r.extent.height);
    area[0] = 40;
    CHECK(!mali_resolve_1x_clamp(&r, area, 64, 48, 32, 20), "out-of-bounds resolve was not skipped");
+   r.srcSubresource.baseArrayLayer = 2;
+   r.dstSubresource.baseArrayLayer = 3;
+   mali_resolve_1x_slices(&r, true, true);
+   CHECK(r.srcOffset.z == 2 && r.dstOffset.z == 3 &&
+         r.srcSubresource.baseArrayLayer == 0 && r.dstSubresource.baseArrayLayer == 0,
+         "3D slices not mapped to z offsets");
+   r.srcOffset.z = r.dstOffset.z = 0;
+   r.srcSubresource.baseArrayLayer = 2;
+   r.dstSubresource.baseArrayLayer = 3;
+   mali_resolve_1x_slices(&r, false, true);
+   CHECK(r.srcOffset.z == 0 && r.srcSubresource.baseArrayLayer == 2 &&
+         r.dstOffset.z == 3 && r.dstSubresource.baseArrayLayer == 0,
+         "2D array layer was not preserved");
+}
+
+static void
+test_resolve_view_formats(void)
+{
+   struct mali_image src = {0}, dst = {0};
+   struct mali_image_desc d = {.format = VK_FORMAT_R8G8B8A8_UNORM, .type = VK_IMAGE_TYPE_2D,
+      .extent = {16, 16, 1}, .levels = 1, .layers = 1, .samples = 1};
+   CHECK(!mali_image_layout_init(ARCH, &d, &src.lay), "source layout");
+   CHECK(!mali_image_layout_init(ARCH, &d, &dst.lay), "destination layout");
+   src.va = 0x100000;
+   dst.va = 0x200000;
+   VkImageBlit2 r = {.sType = VK_STRUCTURE_TYPE_IMAGE_BLIT_2,
+      .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+      .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+      .srcOffsets = {{0, 0, 0}, {16, 16, 1}}, .dstOffsets = {{0, 0, 0}, {16, 16, 1}}};
+   struct mali_meta_list l = {0};
+   int err = mali_meta_plan_blit_views(&l, &src, &dst, &r,
+                                       VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_B8G8R8A8_UNORM);
+   CHECK(!err && l.n == 1 && (l.j[0].push[20] & 8), "mutable BGRA view must swap channels");
+   mali_meta_list_free(&l);
+   d.format = VK_FORMAT_B8G8R8A8_UNORM;
+   CHECK(!mali_image_layout_init(ARCH, &d, &dst.lay), "BGRA destination layout");
+   err = mali_meta_plan_blit_views(&l, &src, &dst, &r,
+                                   VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM);
+   CHECK(!err && l.n == 1 && !(l.j[0].push[20] & 8), "matching views must not swap channels");
+   mali_meta_list_free(&l);
+   d.type = VK_IMAGE_TYPE_3D;
+   d.extent.depth = 4;
+   CHECK(!mali_image_layout_init(ARCH, &d, &src.lay), "3D source layout");
+   CHECK(!mali_image_layout_init(ARCH, &d, &dst.lay), "3D destination layout");
+   r.srcOffsets[0].z = 2; r.srcOffsets[1].z = 3;
+   r.dstOffsets[0].z = 3; r.dstOffsets[1].z = 4;
+   err = mali_meta_plan_blit_views(&l, &src, &dst, &r,
+                                   VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_B8G8R8A8_UNORM);
+   CHECK(!err && l.n == 1 &&
+         l.j[0].bind[0].va + l.j[0].push[0] == src.va + 2 * src.lay.plane[0].slice[0].surface_stride &&
+         l.j[0].bind[1].va + l.j[0].push[3] == dst.va + 3 * dst.lay.plane[0].slice[0].surface_stride,
+         "3D blit must select each view slice");
+   mali_meta_list_free(&l);
 }
 
 static const float k_pos[12] = {-0.5f, -0.5f, 0, 1, 0.5f, -0.5f, 0, 1, 0, 0.5f, 0, 1};
@@ -894,6 +947,7 @@ int main(int argc, char **argv)
    test_store_op();
    test_stencil_store_stride_baseline();
    test_resolve_region();
+   test_resolve_view_formats();
    fill_compiled();
    if (setup_kb())
       return 1;

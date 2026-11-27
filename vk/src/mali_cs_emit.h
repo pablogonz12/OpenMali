@@ -264,6 +264,7 @@ struct mali_frame {
    unsigned samples;                      /* 0/1 = single sampled, 4 = 4x MSAA (MALI_EXPERIMENTAL_MSAA) */
    uint64_t resolve_src, resolve_dst;     /* MSAA storeOp STORE + resolve: images for the separate resolve pass (0 = none) */
    bool resolve_1x;
+   uint32_t resolve_src_format, resolve_dst_format;
    unsigned resolve_level, resolve_layer;         /* source: the attachment view's mip level / base array layer */
    unsigned resolve_dst_level, resolve_dst_layer; /* destination: the RESOLVE view's own mip level / base array layer */
    struct mali_att colour, zs, st;

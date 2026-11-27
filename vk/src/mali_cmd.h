@@ -141,6 +141,7 @@ void mali_CmdEndTransformFeedbackEXT(VkCommandBuffer h, uint32_t first_counter_b
 void mali_cmd_mark_image_written(struct mali_cmd_buffer *cmd, VkImage i);
 bool mali_resolve_1x_clamp(VkImageResolve2 *region, const int32_t area[4],
                            uint32_t sw, uint32_t sh, uint32_t dw, uint32_t dh);
+void mali_resolve_1x_slices(VkImageResolve2 *region, bool src3d, bool dst3d);
 
 /* Install as dev->vk.command_buffer_ops (vk_common_Create/Allocate/Free/ResetCommandPool and Begin/End then work as is). */
 extern const struct vk_command_buffer_ops mali_cmd_ops;

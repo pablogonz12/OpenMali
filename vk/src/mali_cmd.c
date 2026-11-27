@@ -1329,6 +1329,8 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          f->resolve_layer = cv->vk.base_array_layer;
          f->resolve_dst_level = rv->vk.base_mip_level;
          f->resolve_dst_layer = rv->vk.base_array_layer;
+         f->resolve_src_format = cv->vk.view_format;
+         f->resolve_dst_format = rv->vk.view_format;
          f->resolve_1x = true;
          f->colour.store = true;
       }
@@ -1479,6 +1481,19 @@ mali_resolve_1x_clamp(VkImageResolve2 *r, const int32_t area[4],
    return true;
 }
 
+void
+mali_resolve_1x_slices(VkImageResolve2 *r, bool src3d, bool dst3d)
+{
+   if (src3d) {
+      r->srcOffset.z = r->srcSubresource.baseArrayLayer;
+      r->srcSubresource.baseArrayLayer = 0;
+   }
+   if (dst3d) {
+      r->dstOffset.z = r->dstSubresource.baseArrayLayer;
+      r->dstSubresource.baseArrayLayer = 0;
+   }
+}
+
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdEndRendering(VkCommandBuffer h)
 {
@@ -1491,6 +1506,7 @@ mali_CmdEndRendering(VkCommandBuffer h)
    }
    const uint64_t resolve_src = cmd->cur.resolve_src, resolve_dst = cmd->cur.resolve_dst;
    const bool resolve_1x = cmd->cur.resolve_1x;
+   const VkFormat src_format = cmd->cur.resolve_src_format, dst_format = cmd->cur.resolve_dst_format;
    VkImageResolve2 rr;
    mali_resolve_region(&cmd->cur, &rr);
    int32_t area[4];
@@ -1506,7 +1522,8 @@ mali_CmdEndRendering(VkCommandBuffer h)
       uint32_t dw = u_minify(dst->vk.extent.width, rr.dstSubresource.mipLevel);
       uint32_t dh = u_minify(dst->vk.extent.height, rr.dstSubresource.mipLevel);
       if (mali_resolve_1x_clamp(&rr, area, sw, sh, dw, dh)) {
-         if (src->vk.format == dst->vk.format) {
+         mali_resolve_1x_slices(&rr, src->vk.image_type == VK_IMAGE_TYPE_3D, dst->vk.image_type == VK_IMAGE_TYPE_3D);
+         if (src_format == dst_format) {
             VkImageCopy2 r = {.sType = VK_STRUCTURE_TYPE_IMAGE_COPY_2,
                .srcSubresource = rr.srcSubresource, .srcOffset = rr.srcOffset,
                .dstSubresource = rr.dstSubresource, .dstOffset = rr.dstOffset, .extent = rr.extent};
@@ -1516,16 +1533,18 @@ mali_CmdEndRendering(VkCommandBuffer h)
                .regionCount = 1, .pRegions = &r};
             mali_CmdCopyImage2(h, &ci);
          } else {
-            VkOffset3D end = {rr.srcOffset.x + (int32_t)rr.extent.width,
-                              rr.srcOffset.y + (int32_t)rr.extent.height, 1};
+            VkOffset3D send = {rr.srcOffset.x + (int32_t)rr.extent.width,
+                               rr.srcOffset.y + (int32_t)rr.extent.height, rr.srcOffset.z + 1};
+            VkOffset3D dend = {rr.dstOffset.x + (int32_t)rr.extent.width,
+                               rr.dstOffset.y + (int32_t)rr.extent.height, rr.dstOffset.z + 1};
             VkImageBlit2 r = {.sType = VK_STRUCTURE_TYPE_IMAGE_BLIT_2,
-               .srcSubresource = rr.srcSubresource, .srcOffsets = {rr.srcOffset, end},
-               .dstSubresource = rr.dstSubresource, .dstOffsets = {rr.dstOffset, end}};
+               .srcSubresource = rr.srcSubresource, .srcOffsets = {rr.srcOffset, send},
+               .dstSubresource = rr.dstSubresource, .dstOffsets = {rr.dstOffset, dend}};
             VkBlitImageInfo2 bi = {.sType = VK_STRUCTURE_TYPE_BLIT_IMAGE_INFO_2,
                .srcImage = (VkImage)(uintptr_t)resolve_src, .srcImageLayout = VK_IMAGE_LAYOUT_GENERAL,
                .dstImage = (VkImage)(uintptr_t)resolve_dst, .dstImageLayout = VK_IMAGE_LAYOUT_GENERAL,
                .regionCount = 1, .pRegions = &r, .filter = VK_FILTER_NEAREST};
-            mali_CmdBlitImage2(h, &bi);
+            mali_meta_blit_views(h, &bi, src_format, dst_format);
          }
       }
    } else if (resolve_src && resolve_dst) {
