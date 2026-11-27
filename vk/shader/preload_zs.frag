@@ -14,8 +14,7 @@ layout(set = 0, binding = 0, std430) readonly buffer St { uint d[]; } ss;
 #endif
 layout(push_constant) uniform P { uint zrow; uint srow; uint zfmt; uint zstride; uint sstride; } p;
 // -DOUT_SAMPLE: multisampled loadOp LOAD (zink/CEF start a 4x pass with stencilLoadOp LOAD). The pass has N samples and the fragment
-// shader runs once per sample (sample shading, DCD0 evaluate-per-sample), so each invocation reads *its own* sample plane: pad carries
-// the bytes per sample plane (the surface stride) and gl_SampleID picks it. Same model as the multisampled colour preload (preload.frag).
+// shader runs once per sample. Z and S have independent padded plane strides.
 #ifdef OUT_SAMPLE
 #define Z_SAMPLE_OFF (uint(gl_SampleID) * p.zstride)
 #define S_SAMPLE_OFF (uint(gl_SampleID) * p.sstride)

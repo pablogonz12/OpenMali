@@ -497,7 +497,7 @@ test_stencil_store_stride_baseline(void)
 {
    struct mali_env env = { .arch = ARCH, .tile_log2 = 10 };
    struct mali_frame f = {0};
-   uint8_t fbd[KB_FB_DESC_SIZE_ZS];
+   uint8_t fbd[KB_FB_DESC_SIZE_ZS], one[KB_FB_DESC_SIZE_ZS];
    uint32_t mode, stride;
    f.width = 64;
    f.height = 32;                 /* colour height; stencil height is 48 */
@@ -519,6 +519,10 @@ test_stencil_store_stride_baseline(void)
    memcpy(&mode, fbd + KB_FB_FBD_SIZE, 4);
    memcpy(&stride, fbd + KB_FB_FBD_SIZE + 15 * 4, 4);
    CHECK(((mode >> 24) & 3) == 0 && stride == 64 * 32, "1x unchanged");
+   memcpy(one, fbd, sizeof one);
+   f.st.surface_stride = 0;
+   CHECK(mali_render_pack_fbd(&env, &f, fbd, 0, 0x300000) == 0 && !memcmp(one, fbd, sizeof fbd), "1x byte equal with or without sample stride");
+   f.st.surface_stride = 64 * 48 + 256;
    f.samples = 4;
    f.has_zs = true;
    f.zs.zs_format = KB_ZS_D32F;
