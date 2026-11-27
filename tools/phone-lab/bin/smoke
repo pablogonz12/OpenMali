@@ -1,0 +1,604 @@
+#!/usr/bin/env bash
+# smoke — the product path as ONE command. Use it instead of hand-running start/launch/screenshot/pacing.
+#   smoke <phone> [--no-launch] [--app 3405340] [--expect-commit <abbrev>] [--env KEY=VALUE]... [--secs 15]
+#                 [--settle 45] [--bridge-ref] [--dry-run]
+#   smoke --rejudge <run dir>   re-decide a past run's SHELF_OK from that run's own logs and picture (no phone, no adb)
+# What it does, in order (about 4 minutes):
+#   preflight   debugging tools on, battery >= 20 %, < 43 C, owner not using the phone, vkBridge=false  -> else REFUSED (exit 5)
+#   snapshot    phone-snap <phone> smoke; stops a session that is already running
+#   start       env set (the --env lines, next session only) -> start steam --wait
+#   shelf       screenshot until the middle of the screen is not black (4 tries)
+#   driver      vulkaninfo driverName/driverInfo inside the session; --expect-commit must appear in driverInfo
+#   caps        full vulkaninfo -> M/phones/<phone>/caps-<stack>.txt, glxinfo version strings
+#   launch      launch <app> --wait; wait --settle s, two screenshots 5 s apart, game process, pacing --secs
+#               One automatic retry, and state is read before ANY input (game process up? what has focus?): an open
+#               Steam sidebar/overlay is closed with ONE documented back action (input pad b), never a blind tap on a
+#               pending launch. "launch_attempts" in the JSON says how many launches it took.
+#   engine      the game's OWN log (Player.log / Player-prev.log / output_log.txt / *.log newer than the session
+#               start) -> logs/games/engine/, moved gzip+base64+sha256 like phone-snap does (tail 2000 lines over
+#               2 MiB). Lists them in "read", quotes the first error-looking line in "engine_first_error".
+#               Bounded to ~10 s and never fatal: nothing found is "engine_log": "none".
+#   teardown    ALWAYS: quit, stop, pull logs, clear the next-session env, vkBridge back to false, verify IDLE
+# Output: one JSON line on stdout, also saved to M/phones/<phone>/smoke-latest.json and to <dir>/run.json.
+#         "env", "build_sha12" and "driver_commit" say which build ran in which session env, so runs compare.
+#         Everything else is in "dir".
+# Verdicts:  LIVE  SHELF_OK(--no-launch)  START_FAILED  SHELF_BLACK  WRONG_BUILD  NOT_OUR_DRIVER  LAUNCH_FAILED
+#            GAME_EXITED  BLACK  STATIC  INSTRUMENT_ERROR  INTERRUPTED  REFUSED  STEAM_EXITED  NOT_SHELF
+#   STEAM_EXITED = the Steam client had already logged an exit when the shelf shot was taken: the bright picture is the
+#                  DroidDeck launcher, not the Steam menu. NOT_SHELF = the client lives but the session display is not what
+#                  is in front. SHELF_OK needs both facts (a live client process at the shot, and the session's own
+#                  display in front), never brightness alone.
+#   INTERRUPTED = DroidDeck left the foreground mid-run (the owner took the phone): the app suspends the session. Not a result.
+#   BLACK = the game runs but the frames are black: its fps is NOT a game number.
+#   STATIC = the picture does not change: an error dialog or a frozen frame, not a running game.
+# The verdict is a filter, not a description: READ the jpgs named in "read" before you say what the screen showed.
+# Golden picture: when M/golden/<phone>/<screen>.png exists (set only from a run declared good, `bin/golden set`), the
+# shelf and game captures also carry "ref", "drift_pct", "mad" and "drift_verdict" (ok | PICTURE_DRIFT). A comparison
+# only: it never changes the verdict. Silent when no reference exists.
+# smoke is a 1-rep check, never a benchmark: numbers for the store still need 3 x 30 s.
+# --bridge-ref  the ONE allowed bridge reference run: flips vkBridge true for this run only and always flips it back.
+#               Allowed only after a driver-mode smoke of the same app exists for this phone.
+# Exit: 0 LIVE/SHELF_OK, 1 any other verdict, 5 REFUSED (nothing was changed), 2 usage.
+set -u
+. "$(dirname "$0")/lib.sh"
+usage() { sed -n '2,41p' "$0"; exit 2; }
+# rejudge <run dir>: re-decide a past SHELF_OK from the run's OWN evidence — steps.log (when the shelf shot was taken),
+# logs/session.log (the client's exit and the focused app, both timestamped by the session itself) and, when one exists,
+# the saved launcher reference golden/<phone>/launcher.png. No phone, no adb: it only reads the run dir.
+rejudge() {
+  local dir=${1:-}
+  [ -n "$dir" ] || { echo "usage: smoke --rejudge <run dir>" >&2; exit 2; }
+  [ -d "$dir" ] || { echo "smoke: no such run dir: $dir" >&2; exit 2; }
+  python3 - "$dir" "$M/golden" <<'PY'
+import sys, os, re, json, subprocess
+d, groot = sys.argv[1], sys.argv[2]
+was = ""
+rj = os.path.join(d, "run.json")
+if os.path.exists(rj):
+    try: was = json.load(open(rj)).get("verdict") or ""
+    except Exception: was = ""
+phone = ""
+if os.path.isdir(groot):
+    if os.path.exists(os.path.join(d, "run.json")):
+        try: phone = json.load(open(rj)).get("phone") or ""
+        except Exception: phone = ""
+shots = []
+sp = os.path.join(d, "steps.log")
+if os.path.exists(sp):
+    for i, l in enumerate(open(sp, errors="replace"), 1):
+        m = re.match(r"\[(\d\d:\d\d:\d\d)\] shelf shot (\d+): central mean=([\d.]+)", l)
+        if m: shots.append({"t": m.group(1), "n": int(m.group(2)), "mean": m.group(3), "line": i})
+shot = shots[-1] if shots else None
+slog = None
+for root, _, files in os.walk(os.path.join(d, "logs")):
+    if "session.log" in files: slog = os.path.join(root, "session.log"); break
+lines = open(slog, errors="replace").read().splitlines() if slog else []
+TS = re.compile(r"\[(\d{4}-\d\d-\d\d) (\d\d:\d\d:\d\d)\]")
+AT = re.compile(r" at (\d\d:\d\d:\d\d)\s*$")
+def ts_before(idx):   # the session's own clock, nearest timestamp at or before this line
+    for j in range(idx, max(-1, idx - 80), -1):
+        m = TS.search(lines[j])
+        if m: return m.group(2)
+        m = AT.search(lines[j])
+        if m: return m.group(1)
+    return None
+exit_ev = crash = None; focus = []
+for i, l in enumerate(lines):
+    s = l.strip()
+    m = re.match(r"^== steam exited(?: rc=(-?\d+))?", s)
+    if m: exit_ev = {"line": i + 1, "rc": m.group(1), "ts": ts_before(i), "text": s[:160]}
+    if "Target crashed" in l and crash is None: crash = {"line": i + 1, "ts": ts_before(i), "text": s[:160]}
+    m = re.match(r"^== focused app: (\S+).*? at (\d\d:\d\d:\d\d)", s)
+    if m: focus.append({"app": m.group(1), "ts": m.group(2), "line": i + 1})
+r = {"rejudge": d, "was": was, "session_log": slog}
+if shot: r["shelf_shot"] = "%s mean=%s (shot %d, steps.log:%d)" % (shot["t"], shot["mean"], shot["n"], shot["line"])
+if exit_ev: r["steam_exit"] = exit_ev
+if crash: r["crash"] = crash
+verdict, reason = was or "SHELF_OK", ""
+if was and was != "SHELF_OK":
+    reason = "the run's own verdict was %s, not SHELF_OK: nothing to rejudge" % was
+elif not shot:
+    reason = "no shelf shot in steps.log: cannot date the shot, so the shelf verdict is left as it was"
+else:
+    st = shot["t"]
+    before = [f for f in focus if f["ts"] <= st]
+    last_focus = before[-1] if before else None
+    if last_focus: r["focus_at_shot"] = last_focus
+    if exit_ev and exit_ev["ts"] and exit_ev["ts"] <= st:
+        verdict = "STEAM_EXITED"
+        reason = ("the Steam client had exited before the shelf shot: session.log:%d '%s' at %s, the shot is at %s "
+                  "(steps.log:%d) — the bright picture is the DroidDeck launcher, not the Steam menu"
+                  % (exit_ev["line"], exit_ev["text"], exit_ev["ts"], st, shot["line"]))
+    elif last_focus and last_focus["app"] == "none":
+        verdict = "NOT_SHELF"
+        reason = ("at the shelf shot (%s) the session's own focus was 'none' (session.log:%d, %s): the shelf is not "
+                  "in front, the DroidDeck launcher is" % (st, last_focus["line"], last_focus["ts"]))
+    elif crash and crash["ts"] and crash["ts"] <= st:
+        verdict = "NOT_SHELF"
+        reason = ("the session lost the Steam client before the shot: session.log:%d '%s' at %s, the shot is at %s"
+                  % (crash["line"], crash["text"], crash["ts"], st))
+    else:
+        reason = ("the Steam client was alive at the shelf shot (%s): no exit before it in session.log, "
+                  "focus %s" % (st, (last_focus["app"] + " at " + last_focus["ts"]) if last_focus else "not reported"))
+ref = os.path.join(groot, phone, "launcher.png") if phone else ""
+png = os.path.join(d, "shelf.png")
+if verdict == "SHELF_OK" and ref and os.path.exists(ref) and os.path.exists(png):
+    try:
+        p = subprocess.run([os.path.join(os.path.dirname(groot), "bin", "golden"), "cmp", phone, "launcher", png],
+                           capture_output=True, text=True)
+        out = (p.stdout or "").strip()
+        r["launcher_ref"] = ref
+        r["launcher_drift"] = out
+        m = re.search(r"drift=([\d.]+)", out)
+        if p.returncode == 0 and m:
+            verdict = "NOT_SHELF"
+            reason = ("shelf.png is near-identical to the saved launcher reference (%s: %s): this is the launcher, "
+                      "not the Steam menu" % (ref, out))
+    except Exception as e:
+        r["launcher_ref_error"] = str(e)
+r["verdict"] = verdict; r["reason"] = reason
+print(json.dumps(r, ensure_ascii=False))
+print("VERDICT %s: %s" % (verdict, reason), file=sys.stderr)
+sys.exit(0 if verdict == "SHELF_OK" or (was and was != "SHELF_OK") else 1)
+PY
+}
+[ $# -ge 1 ] || usage
+case "$1" in
+  --rejudge) rejudge "${2:-}"; exit $?;;
+esac
+name=$1; shift
+app=3405340; launch=1; expect=""; secs=15; settle=45; dry=0; bridge=0; envs=(); soak_minutes=-1; soak_label=""; pacing_scroll=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --app) app=$2; shift 2;;            --no-launch) launch=0; shift;;
+    --expect-commit) expect=$2; shift 2;; --env) envs+=("$2"); shift 2;;
+    --secs) secs=$2; shift 2;;          --settle) settle=$2; shift 2;;
+    --dry-run) dry=1; shift;;           --bridge-ref) bridge=1; shift;;
+    --soak-internal) soak_minutes=$2; shift 2;;
+    --soak-label-internal) soak_label=$2; shift 2;;
+    --pacing-scroll) pacing_scroll=$2; shift 2;;
+    --rejudge) rejudge "${2:-}"; exit $?;;
+    *) usage;;
+  esac
+done
+[[ "$pacing_scroll" =~ ^(0|[1-9][0-9]*)$ ]] || { echo "invalid pacing scroll" >&2; exit 2; }
+[[ "$soak_minutes" =~ ^(-1|0|[1-9][0-9]*)$ ]] || { echo "invalid soak duration" >&2; exit 2; }
+if ! phone_lock "$name"; then
+  python3 - "$name" "${PHONE_LOCK_REASON:-PHONE_LOCKED}" <<'PY'
+import json, sys
+print(json.dumps({"phone":sys.argv[1], "verdict":"REFUSED", "reason":sys.argv[2], "restored":True}))
+PY
+  exit 5
+fi
+phone "$name" || exit $?
+out="$CACHE/smoke/$P_NAME-$(date +%m%d-%H%M%S)"; mkdir -p "$out"
+# "newer than the session start", for the engine log. -newermt is parsed in the GUEST's timezone, so take 10 min off:
+# then a clock or tz difference between host and guest can only add files, never drop the game's log.
+ss=$(date -d '-10 min' '+%Y-%m-%d %H:%M:%S')
+R="$out/result.tsv"; : > "$R"
+set_r() { printf '%s\t%s\n' "$1" "$2" >> "$R"; }
+log()   { echo "[$(date +%H:%M:%S)] $*" | tee -a "$out/steps.log" >&2; }
+verdict=""; reason=""; started=0; launched=0; bridged=0; envset=0; changed=0; emitted=0
+launch_attempts=0; launch_pending=0; backed=0
+stack=driver; [ $bridge = 1 ] && stack=bridge
+
+emit() {
+  [ $emitted = 1 ] && return; emitted=1
+  set_r verdict "$verdict"; set_r reason "$reason"
+  python3 - "$R" "$out" "$P_NAME" "$stack" "$app" "$launch" "$P_HZ" "$M" "$dry" "$soak_minutes" "$soak_label" <<'PY'
+import sys, json, time, os, subprocess
+r, out, phone, stack, app, launch, hz, M, dry = sys.argv[1:10]
+soak_minutes, soak_label = sys.argv[10:12]
+d = {"phone": phone, "stack": stack, "panel_hz": int(hz), "app": app if launch == "1" else None,
+     "time": time.strftime("%Y-%m-%dT%H:%M:%S"), "dir": out, "not_a_benchmark": True}
+for line in open(r):
+    k, _, v = line.rstrip("\n").partition("\t")
+    try: d[k] = json.loads(v)
+    except Exception: d[k] = v
+d.setdefault("engine_log", "none")   # nothing found is a normal outcome, not a failure
+try:
+    d["fault"] = json.loads(subprocess.check_output(
+        ["python3", f"{M}/bin/fault-decode.py", f"{out}/logs"], text=True))
+except (OSError, subprocess.SubprocessError, ValueError):
+    d["fault"] = None
+d["read"] = [p for p in (f"{out}/shelf.jpg", f"{out}/g1.jpg", f"{out}/g2.jpg") if os.path.exists(p)]
+if soak_minutes != "-1":
+    d["label"] = soak_label
+    try:
+        extra = json.load(open(f"{out}/soak-data.json"))
+        d.update(extra)
+    except (OSError, ValueError):
+        pass
+    d["read"].extend(p for p in d.get("screenshots", []) if os.path.isfile(p))
+    if d.get("pacing_screenshot") and d["pacing_screenshot"] not in d["read"]:
+        d["read"].append(d["pacing_screenshot"])
+for p in (d.get("engine_files") or []):
+    if isinstance(p, str) and os.path.exists(p) and p not in d["read"]:
+        d["read"].append(p)
+s = json.dumps(d, ensure_ascii=False)
+print(s)
+if dry != "1":
+    # one small file per run dir: which build, in which session env, with how many launch attempts
+    run = {k: d.get(k) for k in ("phone", "stack", "app", "time", "dir", "verdict", "env", "build_sha12",
+                                 "driver_commit", "launch_attempts", "engine_log", "engine_first_error", "fault")}
+    run["engine_files"] = d.get("engine_files") or []
+    try: open(f"{out}/run.json", "w").write(json.dumps(run, ensure_ascii=False) + "\n")
+    except OSError: pass
+    if soak_minutes != "-1":
+        open(f"{out}/soak.json", "w").write(s + "\n")
+if dry != "1" and d.get("verdict") not in ("REFUSED", "DRY_RUN"):
+    os.makedirs(f"{M}/phones/{phone}", exist_ok=True)
+    open(f"{M}/phones/{phone}/smoke-latest.json", "w").write(s + "\n")
+PY
+}
+refuse() { verdict=REFUSED; reason=$1; emit; exit 5; }
+
+# ---------- preflight: read-only, nothing changes before this passes ----------
+st=$(ctl state 2>/dev/null)
+[ "$(echo "$st" | jget agent.commands)" = true ] || refuse "Debugging tools are OFF or the app does not answer (owner: Setup > Diagnostics > Debugging tools)"
+t=$(bat_temp); lv=$(bat_level); set_r temp_start_c "${t:-null}"; set_r battery_pct "${lv:-null}"
+awk -v t="${t:-0}" 'BEGIN{exit !(t>=43)}' && refuse "battery is ${t} C (limit 43): let it cool to 38 C"
+[ "${lv:-100}" -lt 20 ] && refuse "battery is ${lv} % (limit 20): wait for 50 %"
+if [ "${MALI_TAKE_FG:-0}" != 1 ] && b=$(owner_busy); then refuse "BUSY: the owner is using '$b' with the screen on. Do host work; do not retry in a loop."; fi
+vb=$(ctl prefs get session 2>/dev/null | jget values.vkBridge)
+[ "$vb" = false ] || refuse "not in driver mode (vkBridge=$vb). Fix: ddc $P_NAME prefs set session vkBridge false --type bool"
+# One Steam session on the LAN at a time (owner 2026-11-22): a second running Steam makes Steam offer Remote Play
+# "stream from DroidDeck" instead of Play, and uses the same licence twice. MALI_STEAM_SHARE=1 skips (owner's word only).
+# Owner 2026-11-27: the USB phones run with Wi-Fi off; a phone off the LAN cannot see or be seen by another Steam,
+# so the one-Steam rule only binds pairs where BOTH phones have Wi-Fi on.
+wifi_on() { timeout 20 "$M/bin/ddc" "$1" adb shell 'cmd wifi status 2>/dev/null | head -1' 2>/dev/null | grep -q 'Wifi is enabled'; }
+if [ "${MALI_STEAM_SHARE:-0}" != 1 ] && ! wifi_on "$P_NAME"; then log "Wi-Fi off on $P_NAME: not on the LAN, Steam may run in parallel"; MALI_STEAM_SHARE=1; fi
+if [ "${MALI_STEAM_SHARE:-0}" != 1 ]; then
+  for other in x8 cmf x4; do
+    [ "$other" = "$P_NAME" ] && continue
+    wifi_on "$other" || continue
+    ph=$(timeout 40 "$M/bin/ddc" "$other" state 2>/dev/null | python3 -c 'import sys,json
+t=sys.stdin.read(); i=t.find("{")
+try: d=json.loads(t[i:]); r=d.get("session",{}); print(r.get("phase","?"), r.get("mode","?"), "run" if r.get("running") else "idle")
+except Exception: print("? ?")' 2>/dev/null)
+    case "$ph" in *\ steam\ run) refuse "STEAM_BUSY: $other has a Steam session ($ph). One Steam at a time on the LAN; retry in <= 5 min";; esac
+  done
+fi
+if [ $bridge = 1 ]; then
+  prev="$M/phones/$P_NAME/smoke-latest.json"
+  grep -q '"stack": "driver"' "$prev" 2>/dev/null || refuse "--bridge-ref needs a driver-mode smoke of this phone first (owner rule 1)"
+fi
+if [ $dry = 1 ]; then
+  log "DRY RUN on $P_NAME ($P_SERIAL, $P_PKG, ${P_HZ} Hz): preflight passed; would run:"
+  log "  phone-snap; stop existing session; $([ ${#envs[@]} -gt 0 ] && echo "env set ${envs[*]}; ")start steam --wait"
+  log "  shelf screenshot; vulkaninfo driver proof${expect:+ (expect commit $expect)}; caps dump"
+  [ $launch = 1 ] && log "  launch $app --wait; state check before any input; one retry, one back action if a Steam UI holds focus"
+  [ $launch = 1 ] && log "  sleep $settle; 2 screenshots; game process; pacing --seconds $secs"
+  [ $launch = 1 ] && log "  engine log: find in compatdata/$app LocalLow + steamapps/common newer than '$ss' -> logs/games/engine/"
+  log "  quit; stop; logs latest; env clear next; verify IDLE + vkBridge=false"
+  verdict=DRY_RUN; emit; exit 0
+fi
+
+# ---------- teardown: always runs once a change may have been made ----------
+teardown() {
+  [ $changed = 1 ] || return
+  [ $launched = 1 ] && { log "quit $app"; timeout 90 env DROIDDECK_PACKAGE=$P_PKG "$CTL" --serial "$P_SERIAL" quit "$app" >/dev/null 2>&1; }
+  [ $launched = 1 ] && collect_engine   # after the quit (the log is complete), before the stop (the guest goes away)
+  if [ $started = 1 ]; then
+    tstop=$(adbs shell date +%H:%M:%S 2>/dev/null | tr -d '\r')   # phone clock: app.log lines after this are our own stop
+    log "stop session"; timeout 220 env DROIDDECK_PACKAGE=$P_PKG "$CTL" --serial "$P_SERIAL" stop --timeout 120 >/dev/null 2>&1
+    timeout 150 env DROIDDECK_PACKAGE=$P_PKG "$CTL" --serial "$P_SERIAL" logs latest "$out/logs" >/dev/null 2>&1
+    for z in $(find "$out/logs" -name '*.zip' 2>/dev/null); do unzip -oq "$z" -d "$out/logs" 2>/dev/null; done
+    f=$(find "$out/logs" -name session.log 2>/dev/null | head -1)
+    if [ -n "$f" ]; then
+      set_r session_log "\"$f\""
+      fe=$(grep -n -iE 'error|fatal|failed|exited after|signal' "$f" | grep -v -E 'pw_rtkit|system_bus_socket|mod\.rt|spa\.dbus|session bus' | head -1 | cut -c1-240)
+      [ -n "$fe" ] && set_r first_error "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$fe")"
+    fi
+    a=$(find "$out/logs" -name app.log 2>/dev/null | head -1)
+    if [ -n "$a" ]; then
+      # "Steam client exited after N ms" is also printed when WE stop the session: only lines from before the stop count
+      ah=$(grep -iE 'exited after|exited with status|GUEST_EXIT|ClassCastException|FATAL' "$a" | awk -v t="${tstop:-99}" '$2 < t' | tail -1 | cut -c1-240)
+      [ -n "$ah" ] && set_r app_log_last "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$ah")"
+    fi
+  fi
+  [ $envset = 1 ] && ctl env clear next >/dev/null 2>&1
+  [ $bridged = 1 ] && { log "vkBridge back to false"; ctl prefs set session vkBridge false --type bool >/dev/null 2>&1; }
+  local vb2 ph pend ok=true
+  vb2=$(ctl prefs get session 2>/dev/null | jget values.vkBridge); ph=$(ctl state 2>/dev/null | jget session.phase)
+  pend=$(ctl env list 2>/dev/null | jget pending)
+  { [ "$vb2" = false ] && [ "$ph" = IDLE ] && [ "$pend" = "[]" ]; } || ok=false
+  set_r restored $ok; set_r end_state "\"phase=$ph vkBridge=$vb2 pending_env=$pend\""; set_r temp_end_c "$(bat_temp)"
+  [ $ok = true ] || log "!! PHONE NOT RESTORED: phase=$ph vkBridge=$vb2 pending=$pend — fix this before anything else"
+}
+trap 'teardown; emit' EXIT
+gtext() { timeout "${GT:-70}" env DROIDDECK_PACKAGE=$P_PKG "$CTL" --serial "$P_SERIAL" guest -- sh -c "$1" 2>/dev/null | jget stdout.text; }
+focus_of() {  # ONE state call -> "focusedApp focusableApps,csv phase running". 769 = the Steam UI (Big Picture)
+  ctl state 2>/dev/null | python3 -c '
+import sys, json
+t = sys.stdin.read(); i = t.find("{")
+d = json.loads(t[i:]) if i >= 0 else {}
+s = d.get("session") or {}
+f = s.get("focus") or {}
+print(f.get("focusedApp"), ",".join(str(x) for x in (f.get("focusableApps") or [])), s.get("phase"), str(s.get("running")).lower())
+'
+}
+game_procs() {  # the game's own .exe in the session, highest cpu first; empty = no game process
+  gtext 'ps -eo pcpu,args 2>/dev/null | grep -i "\.exe" | grep -v -i -E "grep|steam\.exe|wineserver|services\.exe|winedevice|plugplay|explorer\.exe|rpcss|svchost|conhost|wineboot|start\.exe|tabtip|steamwebhelper" | sort -rn | head -3 | cut -c1-160'
+}
+fg_activity() {  # the full top-resumed component "pkg/.Activity": .SessionActivity = the session display, .MainActivity = the launcher home
+  adbs shell 'dumpsys activity activities 2>/dev/null | grep -m1 topResumedActivity' 2>/dev/null \
+    | awk '{for (i = NF; i > 0; i--) if ($i ~ /\//) { print $i; exit }}' | tr -d '\r'
+}
+steam_client() {  # the Steam client ITSELF in the session; empty = it exited and DroidDeck dropped to its launcher
+  gtext 'ps -eo pid,args 2>/dev/null | grep -E "(^|/| )steam( |$)|/steamwebhelper( |$)|steamwebhelper$" | grep -v -E "grep|droiddeck|compat|shortcut|steam-runtime" | head -3 | cut -c1-140'
+}
+shelf_proof() {  # is the bright picture really the shelf? prints "ok", or "<VERDICT>\t<reason>". Facts, not pixel heuristics:
+  # (a) the Steam client is a live process in the session and the session still runs (a brightness test passes on the
+  # DroidDeck launcher: cmf-1122-034018 passed with Steam gone), (b) the session's own display is in front (top-resumed
+  # activity and the session's focused app), not the launcher's home. Prefer these over any image comparison.
+  local fapp fapps phase running comp cls cli
+  read -r fapp fapps phase running < <(focus_of)
+  comp=$(fg_activity); cls=${comp#*/}; cli=$(steam_client)
+  set_r shelf_fg "\"focusedApp=${fapp:-?} focusable=[$fapps] phase=${phase:-?} running=${running:-?}\""
+  set_r shelf_activity "\"${comp:-}\""
+  set_r shelf_client "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$cli")"
+  log "shelf facts: focused=${fapp:-?} focusable=[$fapps] phase=${phase:-?} activity=${comp:-?} client=$([ -n "$cli" ] && printf '%s' "$cli" | head -1 | cut -c1-90 || echo none)"
+  [ "$running" = true ] || { printf 'STEAM_EXITED\t%s' "the session is not running any more (phase=${phase:-?}) at the shot: Steam had exited and DroidDeck dropped to its launcher, so the bright picture is the launcher, not the Steam menu"; return 1; }
+  [ -n "$cli" ] || { [ "$fapp" = 769 ] && [ "$running" = true ] \
+    && log "shelf facts: no steam line in ps, but the session's compositor reports the Steam UI (769) focused while running" \
+    || { printf 'STEAM_EXITED\t%s' "no Steam client process in the session (ps: no steam / steamwebhelper) and the session reports no Steam UI focused either (focusedApp=${fapp:-?} phase=${phase:-?}) at the shot: the client had exited, so the bright picture is the DroidDeck launcher, not the Steam menu"; return 1; }; }
+  case $cls in
+    *MainActivity*|*Home*|*Launcher*) printf 'NOT_SHELF\t%s' "the top-resumed activity is the launcher's (${comp:-?}), not the session display: the Steam menu is not in front"; return 1;;
+  esac
+  [ "$fapp" = None ] && [ -z "$(printf '%s' "$fapps" | tr -d '[]" ')" ] \
+    && { printf 'NOT_SHELF\t%s' "the session reports no focused app (focusedApp=None focusable=[]): nothing of the session's is in front"; return 1; }
+  echo ok
+}
+back_action() {  # the ONE documented back action (BPM: gamepad B = back). Refused unless it is the right thing:
+  # nothing while a launch is pending (that is how the 02:46 run lost its launch to a sidebar), nothing twice,
+  # and nothing when the focused app is not the Steam UI.
+  [ "$1" = 769 ] || { log "input: not sent (focused app is '${1:-none}', not the Steam UI 769)"; return 1; }
+  [ $launch_pending = 0 ] || { log "input: not sent (a launch is pending)"; return 1; }
+  [ $backed = 0 ] || { log "input: not sent (the one back action was already used)"; return 1; }
+  backed=1; log "a Steam UI holds focus over the running game: ONE documented back action (input pad b = BPM back)"
+  set_r back_action '"input pad b"'
+  tctl 60 input pad b > "$out/back.json" 2>&1
+}
+shot() {  # shot <name> -> png + 420 px jpg; prints "mean sd" (0-255) of the central 40 % of the frame
+  local p="$out/$1.png"
+  [ "$(fg_pkg)" = "$P_PKG" ] || { echo "NA NA"; return 1; }
+  timeout 40 env DROIDDECK_PACKAGE=$P_PKG "$CTL" --serial "$P_SERIAL" screenshot "$p" >/dev/null 2>&1 \
+    || timeout 20 "$ADB" -s "$P_SERIAL" exec-out screencap -p > "$p" 2>/dev/null
+  [ -s "$p" ] || { echo "NA NA"; return 1; }
+  "$M/bin/img" jpg "$p" "$out/$1.jpg" 2>/dev/null
+  "$M/bin/img" stats "$p" 2>/dev/null || echo "NA NA"
+}
+golden_check() {  # <screen> <png>: how far this picture is from the stored reference. Never changes the verdict.
+  # Silent when no reference exists: references come only from a run the owner/orchestrator declared good (bin/golden set).
+  local scr=$1 png=$2 ref="$M/golden/$P_NAME/$1.png" line rc=0 dp mad gv
+  [ -s "$png" ] && [ -s "$ref" ] || return 0
+  line=$("$M/bin/golden" cmp "$P_NAME" "$scr" "$png" 2>>"$out/steps.log") || rc=$?
+  case $line in drift=*) ;; *) log "golden $scr: no comparison (golden rc=$rc)"; return 0;; esac
+  dp=$(printf '%s\n' $line | sed -n 's/^drift=//p'); mad=$(printf '%s\n' $line | sed -n 's/^mad=//p')
+  case $dp in ''|NA) log "golden $scr: no comparison (drift=$dp)"; return 0;; esac
+  if [ $rc = 0 ]; then gv=ok; else gv=PICTURE_DRIFT; fi
+  set_r ref "\"golden/$P_NAME/$scr.png\""
+  set_r drift_pct "$dp"
+  set_r mad "$mad"
+  set_r drift_verdict "\"$gv\""
+  log "golden $scr: drift=${dp} % mad=${mad} ref=golden/$P_NAME/$scr.png -> $gv (comparison only: the verdict is unchanged)"
+}
+pull_engine() {  # <guest path> <bytes>: gzip+base64 over the guest channel (256 KiB), sha256 verified host-side
+  local g=$1 sz=$2 name k json payload got=0
+  name=$(basename "$g")
+  for k in 0 2000 500 250; do
+    if [ $k = 0 ]; then
+      [ "$sz" -le 2097152 ] || continue          # over 2 MiB: tail it instead
+      payload="cat '$g'"
+    else
+      payload="tail -n $k '$g'"
+    fi
+    json=$(timeout 45 env DROIDDECK_PACKAGE=$P_PKG "$CTL" --serial "$P_SERIAL" guest -- sh -c "$payload | gzip -c | base64 -w0" 2>/dev/null)
+    [ "$(echo "$json" | jget stdout.truncated)" = true ] && { log "engine log: $name does not fit the channel at $([ $k = 0 ] && echo full || echo "tail $k"), trying smaller"; continue; }
+    printf '%s' "$(echo "$json" | jget stdout.text)" | base64 -d 2>/dev/null | gunzip -c > "$out/logs/games/engine/$name" 2>/dev/null
+    [ -s "$out/logs/games/engine/$name" ] && { got=1; break; }
+  done
+  [ $got = 1 ] || { log "engine log: $name NOT captured"; return 1; }
+  local b sh; b=$(wc -c < "$out/logs/games/engine/$name"); sh=$(sha256sum "$out/logs/games/engine/$name" | cut -d' ' -f1)
+  printf '%s  %s\n' "$sh" "$name" >> "$out/logs/games/engine/sha256.txt"
+  log "engine log: $name $b bytes sha256=${sh:0:16}$([ $k != 0 ] && echo " (tail -n $k of $sz bytes)")"
+}
+collect_engine() {  # the game's OWN log. ONE bounded guest find, at most 3 pulls, < 20 s, never fatal.
+  [ $started = 1 ] && [ $launched = 1 ] || return 0
+  local dir="$out/logs/games/engine" found i=0 g sz deadline
+  mkdir -p "$dir"
+  found=$(GT=25 gtext "{ find /root/.local/share/Steam/steamapps/compatdata/$app/pfx/drive_c/users/steamuser/AppData/LocalLow -maxdepth 6 -type f \\( -name '*.log' -o -name 'output_log.txt' \\) -newermt '$ss' -printf '%s\t%p\n' 2>/dev/null; find /root/.local/share/Steam/steamapps/common -maxdepth 4 -type f \\( -name '*.log' -o -name 'output_log.txt' \\) -newermt '$ss' -printf '%s\t%p\n' 2>/dev/null ; } | sort -rn | head -6")
+  log "engine log: $(printf '%s' "$found" | grep -c . ) candidate(s) newer than '$ss' in the game's dirs"
+  deadline=$(( $(date +%s) + 20 ))
+  while IFS=$'\t' read -r sz g; do
+    [ -n "${g:-}" ] || continue
+    i=$((i+1)); [ $i -le 3 ] || { log "engine log: 3 files is the cap, the rest is skipped"; break; }
+    [ "$(date +%s)" -lt "$deadline" ] || { log "engine log: time budget reached, skipping $g"; break; }
+    pull_engine "$g" "${sz:-0}"
+  done <<< "$found"
+  if [ -s "$dir/sha256.txt" ]; then
+    set_r engine_log '"ok"'
+    set_r engine_files "$(python3 -c 'import json,sys,os; d=sys.argv[1]; print(json.dumps([os.path.join(d,f) for f in sorted(os.listdir(d)) if f != "sha256.txt"]))' "$dir")"
+    set_r engine_sha256 "\"$dir/sha256.txt\""
+    local ee; ee=$(grep -h -m1 -iE 'error|exception|failed|d3d11|shader' "$dir"/*.log "$dir"/output_log.txt 2>/dev/null | head -1 | cut -c1-240)
+    [ -n "$ee" ] && set_r engine_first_error "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$ee")"
+  else
+    log "engine log: none found (no *.log or output_log.txt newer than $ss in the game's dirs)"
+    set_r engine_log '"none"'
+  fi
+}
+bail() { verdict=$1; reason=$2; log "VERDICT $1: $2"; exit 1; }
+
+# ---------- run ----------
+changed=1
+"$M/bin/phone-snap" "$P_NAME" smoke > "$out/snap.txt" 2>&1; set_r snapshot "\"$(grep -m1 '^SNAP=' "$out/snap.txt" | cut -d= -f2)\""
+if [ "$(echo "$st" | jget session.running)" = true ]; then
+  m=$(echo "$st" | jget session.mode); log "stopping the session that was already running (mode $m)"; set_r stopped_existing "\"$m\""
+  tctl 220 stop --timeout 120 >/dev/null 2>&1
+fi
+if [ $bridge = 1 ]; then log "BRIDGE REFERENCE RUN: vkBridge true for this run only"; MALI_BRIDGE_REF=1 ctl prefs set session vkBridge true --type bool >/dev/null 2>&1; bridged=1; fi
+# "env" = the session env this run used: the persistent lines the app injects plus our --env lines, so two runs of the
+# same build can be told apart later. Written even when --env is not given.
+sirenv=$(ctl env list 2>/dev/null)
+if [ ${#envs[@]} -gt 0 ]; then log "env set ${envs[*]}"; ctl env set "${envs[@]}" >/dev/null 2>&1; envset=1; fi
+set_r env "$(printf '%s' "$sirenv" | python3 -c '
+import json, re, sys
+out = list(sys.argv[1:])
+t = sys.stdin.read(); i = t.find("{")
+try: d = json.loads(t[i:]) if i >= 0 else {}
+except Exception: d = {}
+def walk(o):
+    if isinstance(o, dict):
+        for v in o.values(): walk(v)
+    elif isinstance(o, list):
+        for v in o: walk(v)
+    elif isinstance(o, str) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", o): out.append(o)
+walk(d)
+seen = []
+for v in out:
+    if v not in seen: seen.append(v)
+print(json.dumps(seen))' "${envs[@]}")"
+
+log "start steam --wait"; started=1; t0=$(date +%s)
+if ! tctl 420 start steam --wait --timeout 300 > "$out/start.json" 2>&1; then
+  if grep -q SUSPENDED "$out/start.json" || [ "$(fg_pkg)" != "$P_PKG" ]; then
+    bail INTERRUPTED "DroidDeck left the foreground during the start (fg=$(fg_pkg); the app suspends its session then). Not a driver result: run again when the phone is free."
+  fi
+  bail START_FAILED "$(jget error.code < "$out/start.json") $(jget error.message < "$out/start.json" | cut -c1-200) — see first_error / app_log_last, then logs/"
+fi
+set_r start_s $(( $(date +%s) - t0 ))
+
+mean=NA; bad=""
+for i in 1 2 3 4; do
+  sleep 15; [ "$(fg_pkg)" = "$P_PKG" ] || bail INTERRUPTED "DroidDeck left the foreground before the shelf shot (fg=$(fg_pkg)). Not a driver result."
+  read -r mean sd < <(shot shelf)
+  log "shelf shot $i: central mean=$mean sd=$sd"
+  if [ "$mean" != NA ] && awk -v m="$mean" 'BEGIN{exit !(m>=3)}'; then
+    proof=$(shelf_proof)
+    case $proof in
+      ok) bad=""; break;;
+      *)  bad=${proof#*$'\t'}
+          log "shelf shot $i is NOT the shelf (${proof%%$'\t'*}): a bright launcher passes a brightness test; READ shelf.jpg"
+          [ "${proof%%$'\t'*}" = STEAM_EXITED ] && bail STEAM_EXITED "$bad"
+          mean=NA;;
+    esac
+  fi
+done
+set_r shelf_mean "${mean/NA/null}"
+[ "$mean" = NA ] && [ -n "${bad:-}" ] && bail NOT_SHELF "$bad"
+{ [ "$mean" != NA ] && awk -v m="$mean" 'BEGIN{exit !(m>=3)}'; } || bail SHELF_BLACK "Steam started but the middle of the screen stayed black for 60 s (mean=$mean)"
+golden_check shelf "$out/shelf.png"
+
+drv=$(gtext 'vulkaninfo --summary 2>/dev/null | grep -E "driverName|driverInfo|deviceName" | head -6')
+printf '%s\n' "$drv" > "$out/driver.txt"
+set_r driver_lines "$(python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.argv[1].splitlines() if l.strip()]))' "$drv")"
+# which build actually ran: the sha12 the driver reports (mali-open <sha12>), the commit deploy stashed it from
+build_sha12=$(grep -oE 'mali-open [0-9a-f]{7,40}' "$out/driver.txt" 2>/dev/null | head -1 | awk '{print substr($2,1,12)}')
+if [ -z "$build_sha12" ]; then build_sha12=$(printf '%s' "$expect" | grep -oE '^[0-9a-f]{7,40}' | head -c 12); fi
+[ -n "$build_sha12" ] || build_sha12=unknown
+driver_commit=$(sed -E 's/.* from [^@]+@([0-9a-f]{7,40}).*/\1/' "$DEPLOY/$build_sha12/CHECK.txt" 2>/dev/null | head -1)
+set_r build_sha12 "\"$build_sha12\""; set_r driver_commit "\"${driver_commit:-}\""
+log "build $build_sha12 (driver commit ${driver_commit:-unknown}): runs compare on this, not on the date"
+ours=0; echo "$drv" | grep -q 'mali-own' && ours=1; set_r our_driver $([ $ours = 1 ] && echo true || echo false)
+if [ $bridge = 0 ] && echo "$drv" | grep -q driverName && [ $ours = 0 ]; then bail NOT_OUR_DRIVER "driver mode, but the session reports: $(echo "$drv" | grep -m1 driverName | tr -s ' ')"; fi
+if [ -n "$expect" ] && ! echo "$drv" | grep -q "$expect"; then bail WRONG_BUILD "driverInfo does not contain '$expect': $(echo "$drv" | grep -m1 driverInfo | tr -s ' ') — deploy from $DEPLOY first"; fi
+[ $bridge = 1 ] && [ $ours = 1 ] && set_r note '"--bridge-ref had no effect: the session still runs mali-own. This is NOT a bridge number."'
+GT=90 gtext 'vulkaninfo 2>/dev/null | gzip -c | base64 -w0' | base64 -d 2>/dev/null | gunzip -c > "$out/vulkaninfo.txt" 2>/dev/null
+if [ -s "$out/vulkaninfo.txt" ]; then mkdir -p "$M/phones/$P_NAME"; cp "$out/vulkaninfo.txt" "$M/phones/$P_NAME/caps-$stack.txt"; set_r caps "\"$M/phones/$P_NAME/caps-$stack.txt\""; fi
+gl=$(gtext 'DISPLAY=:1 glxinfo -B 2>/dev/null | grep -E "OpenGL (core profile |ES profile )?version string|Max core profile version" | head -5')
+set_r gl "$(python3 -c 'import json,sys; print(json.dumps([" ".join(l.split()) for l in sys.argv[1].splitlines() if l.strip()]))' "$gl")"
+
+if [ "$soak_minutes" != -1 ]; then
+  log "soak: ${soak_minutes} minutes; caller must READ every screenshot"
+  python3 "$M/bin/soak-run.py" "$P_NAME" "$out" "$soak_minutes" "$pacing_scroll"
+  rc=$?
+  case $rc in
+    0) verdict=GPU_STABLE; reason="no sampled GPU-loss marker; READ screenshots including pre-pacing.jpg";;
+    3) verdict=GPU_LOST; reason="GPU loss marker during soak; see soak-data.json";;
+    4) verdict=INTERRUPTED; reason="soak instrumentation or foreground check failed; see timeline.tsv";;
+    *) verdict=INSTRUMENT_ERROR; reason="soak helper failed; see timeline.tsv";;
+  esac
+  [ "$rc" = 0 ] && exit 0 || exit 1
+fi
+if [ $launch = 0 ]; then verdict=SHELF_OK; reason="the Steam client was alive and its display was in front at the shelf shot (shelf_proof ok); READ shelf.jpg"; exit 0; fi
+
+log "launch $app --wait"; launched=1; lrc=1
+while :; do
+  # State BEFORE every launch/input: an app that already has focus needs no launch, and a Steam UI that holds focus
+  # (the BPM sidebar opened by a stray tap) must be closed by the documented back action, not by tapping again.
+  read -r fapp fapps phase running < <(focus_of)
+  if [ "$fapp" = "$app" ]; then log "app $app already has focus (phase=$phase)"; lrc=0; set_r launch_ok true; break; fi
+  launch_attempts=$((launch_attempts+1)); set_r launch_attempts $launch_attempts
+  lto=180; [ $launch_attempts -ge 2 ] && lto=120
+  log "launch attempt $launch_attempts: phase=$phase focused=$fapp focusable=[$fapps] timeout=${lto}s"
+  launch_pending=1
+  tctl 260 launch "$app" --wait --timeout "$lto" > "$out/launch.json" 2>&1; lrc=$?
+  launch_pending=0
+  set_r launch_ok $([ $lrc = 0 ] && echo true || echo false)
+  [ $lrc = 0 ] && break
+  # It failed. Read the state again and choose; never send a blind tap (that is what opened the sidebar at 02:46).
+  read -r fapp fapps phase running < <(focus_of); gp=$(game_procs)
+  log "launch attempt $launch_attempts failed: $(jget error.message < "$out/launch.json" | cut -c1-160) | phase=$phase focused=$fapp focusable=[$fapps] game_proc=$([ -n "$gp" ] && echo up || echo none)"
+  [ $launch_attempts -ge 2 ] && { log "no further attempt: one automatic retry is the limit"; break; }
+  if [ -z "$gp" ]; then
+    log "no input sent: no game process yet — only the launch itself is worth retrying"
+  elif echo ",$fapps," | grep -q ",$app,"; then
+    log "no input sent: app $app is focusable ([$fapps]) — a focus wait is the answer, not a tap"
+    tctl 60 wait focused "$app" --timeout 20 > "$out/wait-focus.json" 2>&1 \
+      && { log "app $app took focus while we waited"; lrc=0; set_r launch_ok true; break; }
+  else
+    # game process up, but a Steam UI keeps focus: the sidebar/overlay is open over it
+    if back_action "$fapp"; then
+      log "wait focused $app (30 s)"; tctl 60 wait focused "$app" --timeout 30 > "$out/wait-focus.json" 2>&1 \
+        && { log "app $app took focus after the back action"; lrc=0; set_r launch_ok true; break; }
+    fi
+  fi
+  sleep 3
+done
+[ $lrc = 0 ] || log "launch $app failed after $launch_attempts attempt(s)"
+log "settle ${settle}s"; sleep "$settle"
+[ "$(fg_pkg)" = "$P_PKG" ] || bail INTERRUPTED "DroidDeck left the foreground before the game shots (fg=$(fg_pkg)). Not a driver result."
+read -r m1 s1 < <(shot g1); sleep 5; read -r m2 s2 < <(shot g2)
+set_r game_mean "${m2/NA/null}"; set_r game_sd "${s2/NA/null}"
+diff=null
+if [ -s "$out/g1.png" ] && [ -s "$out/g2.png" ]; then
+  # ignore the top 10 % (gamescope HUD digits change every frame)
+  diff=$("$M/bin/img" diffpct "$out/g1.png" "$out/g2.png" 2>/dev/null); case $diff in NA|"") diff=null;; esac
+fi
+set_r changed_pct "$diff"
+golden_check game "$out/g2.png"
+proc=$(gtext 'ps -eo pcpu,args 2>/dev/null | grep -i "\.exe" | grep -v -i -E "grep|steam\.exe|wineserver|services\.exe|winedevice|plugplay|explorer\.exe|rpcss|svchost|conhost|wineboot|start\.exe|tabtip|steamwebhelper" | sort -rn | head -3 | cut -c1-160')
+set_r game_proc "$(python3 -c 'import json,sys; print(json.dumps([" ".join(l.split()) for l in sys.argv[1].splitlines() if l.strip()]))' "$proc")"
+log "pacing --seconds $secs"
+tctl $((secs+60)) pacing --seconds "$secs" > "$out/pacing.json" 2>&1
+read -r fps frames offc < <(python3 - "$out/pacing.json" <<'PY'
+import sys, json
+t = open(sys.argv[1]).read(); i = t.find("{")
+try: d = json.loads(t[i:])
+except Exception: d = {}
+def find(o, pred):
+    if isinstance(o, dict):
+        for k, v in o.items():
+            if pred(k) and isinstance(v, (int, float)): return v
+        for v in o.values():
+            r = find(v, pred)
+            if r is not None: return r
+    if isinstance(o, list):
+        for v in o:
+            r = find(v, pred)
+            if r is not None: return r
+    return None
+f = find(d, lambda k: k == "fpsOnScreen"); n = find(d, lambda k: k == "frames"); o = find(d, lambda k: "offcadence" in k.lower())
+print(*(("null" if x is None else x) for x in (f, n, o)))
+PY
+)
+set_r displayed_fps "${fps:-null}"; set_r frames "${frames:-null}"; set_r off_cadence_pct "${offc:-null}"
+
+if [ $lrc != 0 ]; then bail LAUNCH_FAILED "$(jget error.message < "$out/launch.json" | cut -c1-200) (after $launch_attempts attempt(s); see back_action / steps.log)"; fi
+if [ -z "$proc" ]; then bail GAME_EXITED "no game .exe in the session ${settle}s after launch; READ g2.jpg (an error dialog?) and the game's log"; fi
+if [ "$m2" != NA ] && awk -v m="$m2" -v s="$s2" 'BEGIN{exit !(m<3 && s<3)}'; then bail BLACK "game process alive, frames black (central mean=$m2 sd=$s2): displayed_fps=$fps is NOT a game number"; fi
+if [ "$diff" != null ] && awk -v d="$diff" 'BEGIN{exit !(d<0.1)}'; then bail STATIC "picture changed by ${diff} % in 5 s: a dialog or a frozen frame, not a running game; READ g2.jpg"; fi
+if [ "${fps:-null}" != null ] && awk -v f="$fps" -v h="$P_HZ" 'BEGIN{exit !(f>h+2)}'; then bail INSTRUMENT_ERROR "displayed_fps=$fps > panel ${P_HZ}+2"; fi
+verdict=LIVE; reason="game process alive, picture changes (${diff} % in 5 s), displayed_fps=$fps over ${secs}s (1 rep: not a benchmark); READ g2.jpg"
+exit 0

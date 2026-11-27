@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# phone-restore <phone> [snapdir|latest] [--apply] — put prefs and session env back to a snapshot.
+# Without --apply it only prints the plan. Restores: our prefs keys (typed) and the env lists. It never touches
+# app-managed prefs, never wipes app data, and only REPORTS a changed localconfig.vdf or ICD (commands printed).
+# Always leaves driver mode: if the snapshot had vkBridge=true the plan says so and --apply keeps it false.
+set -u
+. "$(dirname "$0")/lib.sh"
+[ $# -ge 1 ] || { sed -n '2,5p' "$0"; exit 2; }
+phone "$1" || exit $?
+snap="$M/phones/$P_NAME/snaps/latest"; apply=0
+for a in "${@:2}"; do case "$a" in --apply) apply=1;; latest) ;; *) snap=$a;; esac; done
+[ -f "$snap/prefs-session.json" ] || die "no snapshot at $snap (run phone-snap $P_NAME first)"
+cur=$(mktemp -d); trap 'rm -rf "$cur"' EXIT
+ctl prefs get session > "$cur/prefs.json" 2>/dev/null; ctl env list > "$cur/env.json" 2>/dev/null; ctl state > "$cur/state.json" 2>/dev/null
+python3 - "$snap" "$cur" > "$cur/plan.txt" <<'PY'
+import json, sys, shlex
+snap, cur = sys.argv[1], sys.argv[2]
+def load(p):
+    t = open(p).read(); i = t.find("{")
+    try: return json.loads(t[i:])
+    except Exception: return {}
+OURS = ("vkBridge","vkBridgeSafe","linuxDriver","androidDriver","gpuDriverMode","venus","fexPreset","clientCpus","gameCpus",
+        "gameThreadHints","gpuClockPin","compositorFpsLimit","logs","gameDebugLogsEnabled","detailedGraphicsLogs","shaderPrecache")
+def ours(k): return k in OURS or k.startswith(("componentMode.","resolutionCap."))
+sp, cp = load(f"{snap}/prefs-session.json").get("values", {}), load(f"{cur}/prefs.json").get("values", {})
+def typ(v): return "bool" if isinstance(v,bool) else "int" if isinstance(v,int) else "float" if isinstance(v,float) else "string" if isinstance(v,str) else None
+def val(v): return ("true" if v else "false") if isinstance(v,bool) else str(v)
+for k in sorted(set(sp)|set(cp)):
+    a, b = sp.get(k, None), cp.get(k, None)
+    if a == b: continue
+    if not ours(k): print(f"# NOTE app-managed pref differs, not restored: {k}: {b!r} (was {a!r})"); continue
+    if k == "vkBridge" and a is True:
+        print("# NOTE snapshot had vkBridge=true (bridge). Driver only: keeping false."); continue
+    if k not in sp: print(f"CMD prefs set session {k} --type remove"); continue
+    t = typ(a)
+    if t is None: print(f"# NOTE cannot restore non-scalar pref {k}"); continue
+    print("CMD prefs set session " + shlex.quote(k) + " " + shlex.quote(val(a)) + f" --type {t}")
+se, ce = load(f"{snap}/env.json"), load(f"{cur}/env.json")
+def lines(x): return [e if isinstance(e,str) else "=".join(str(v) for v in (e.get("key",e.get("name","")), e.get("value",""))) for e in (x or [])]
+for name, flag, scope in (("pending","","next"), ("persistent","--persistent","persistent")):
+    a, b = lines(se.get(name)), lines(ce.get(name))
+    if a == b: continue
+    print(f"WIPE env clear {scope}")
+    if a: print("CMD env set " + (flag + " " if flag else "") + " ".join(shlex.quote(l) for l in a))
+PY
+if [ -f "$snap/localconfig.vdf" ]; then
+  echo "# NOTE a localconfig.vdf snapshot exists: $snap/localconfig.vdf — compare it by hand; restore only while the Steam client is down." >> "$cur/plan.txt"
+fi
+[ -f "$snap/icd-sha256.txt" ] && echo "# NOTE ICD shas at snapshot time: $snap/icd-sha256.txt (stock backups stay on the phone as *.stock-*)" >> "$cur/plan.txt"
+if ! grep -q -e '^CMD' -e '^WIPE' "$cur/plan.txt"; then cat "$cur/plan.txt"; echo "RESTORE: nothing to do — prefs and env match $snap"; exit 0; fi
+cat "$cur/plan.txt"
+[ $apply = 1 ] || { echo "PLAN ONLY — re-run with --apply"; exit 1; }
+[ "$(jget session.running < "$cur/state.json")" = true ] && echo "note: a session is running; prefs/env apply to the NEXT session"
+rc=0
+while IFS= read -r line; do
+  case "$line" in
+    CMD\ *)  eval "ctl ${line#CMD }" >/dev/null 2>&1 || { echo "FAILED: ${line#CMD }"; rc=1; } ;;
+    WIPE\ *) eval "ctl ${line#WIPE }" >/dev/null 2>&1 || { echo "FAILED: ${line#WIPE }"; rc=1; } ;;
+  esac
+done < "$cur/plan.txt"
+vb=$(ctl prefs get session 2>/dev/null | jget values.vkBridge)
+echo "RESTORE: applied rc=$rc, vkBridge now $vb (must be false)"; [ "$vb" = false ] || rc=1
+exit $rc

@@ -1,0 +1,233 @@
+#!/usr/bin/env python3
+"""golden - a stored reference picture per phone and per workload screen, and how far a new capture is from it.
+  golden set <phone> <screen> <png> [--force] [--note s]   store a reference (refuses when one exists, unless --force)
+  golden cmp <phone> <screen> <png> [--pct N] [--fuzz N] [--width N]
+                                                print "drift=<pct> mad=<x>"; exit 1 when drift > threshold
+  golden list                                   the stored references, their threshold and where they came from
+  golden rm <phone> <screen>                    forget a reference (the next `set` must be deliberate again)
+References live in M/golden/<phone>/<screen>.png (+ .json: source png, sha256, who and when set it, note).
+Only the owner or the orchestrator declares a run good and then runs `set`; smoke NEVER sets a reference, so a
+regression can never become the new reference. Phone screens are "shelf" (Steam, --no-launch) and "game".
+The comparison is not a plain pixel diff: both frames are downscaled to 420 px wide, the top 10 % of the frame
+(gamescope HUD digits, which change every frame) is dropped, and a pixel counts as differing only when one channel
+differs by more than --fuzz (0-255, default 8 = the 3 % cut img diffpct uses). "drift" is the percentage of differing
+pixels in the lower 90 %, "mad" is the mean absolute difference of those pixels (0-255). Threshold: 8.0 % by default,
+per phone via the optional 5th "golden_pct" column of M/phones.conf (absent = 8.0), or --pct / $GOLDEN_PCT.
+A verdict of PICTURE_DRIFT is a warning, never a replacement for smoke's LIVE/BLACK/STATIC."""
+import sys, os, json, hashlib, getpass, time
+
+M = os.environ.get("M", os.environ.get("MALI_LAB_ROOT", os.path.join(os.path.expanduser("~"), ".local/share/mali-phone-lab")))
+ROOT = os.path.join(M, "golden")
+W = 420          # px wide, the same downscale `img jpg` uses
+LOWER = 0.10     # drop the top 10 %: HUD digits
+DEFAULT_PCT = 8.0
+DEFAULT_FUZZ = 8  # 0-255, one channel (img diffpct: > 3 % of 255)
+SCREENS = ("shelf", "game")
+
+
+def die(msg, code=2):
+    print(f"golden: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def refpath(phone, screen):
+    return os.path.join(ROOT, phone, screen + ".png")
+
+
+def meta_path(phone, screen):
+    return os.path.join(ROOT, phone, screen + ".json")
+
+
+def sha(p):
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for b in iter(lambda: f.read(1 << 20), b""):
+            h.update(b)
+    return h.hexdigest()
+
+
+def parse_phone(name):
+    """the phone's golden_pct column (5th field), 8.0 when the column is absent or empty"""
+    try:
+        with open(os.path.join(M, "phones.conf")) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                fields = [x.strip() for x in line.split("|")]
+                if fields[0] != name:
+                    continue
+                if len(fields) >= 5 and fields[4]:
+                    try:
+                        return float(fields[4])
+                    except ValueError:
+                        die(f"phones.conf: golden_pct for {name} is '{fields[4]}', not a number")
+                return DEFAULT_PCT
+    except OSError:
+        pass
+    return DEFAULT_PCT
+
+
+def threshold(name, override):
+    if override is not None:
+        return float(override)
+    if os.environ.get("GOLDEN_PCT"):
+        try:
+            return float(os.environ["GOLDEN_PCT"])
+        except ValueError:
+            die("$GOLDEN_PCT is not a number")
+    return parse_phone(name)
+
+
+def load(p, width):
+    from PIL import Image
+    im = Image.open(p).convert("RGB")
+    w = max(1, int(width))
+    h = max(1, round(im.size[1] * w / im.size[0]))
+    return im.resize((w, h), Image.BILINEAR)
+
+
+def compare(pa, pb, width, fuzz):
+    """-> (drift_pct, mad) over the lower 90 % of both frames at `width` px wide"""
+    from PIL import ImageChops, ImageStat
+    a, b = load(pa, width), load(pb, width)
+    if a.size != b.size:                      # different aspect: compare the common area, note it
+        print("golden: aspect differs, comparing the common area", file=sys.stderr)
+        w = min(a.size[0], b.size[0]); h = min(a.size[1], b.size[1])
+        a = a.crop((0, 0, w, h)); b = b.crop((0, 0, w, h))
+    w, h = a.size
+    box = (0, int(h * LOWER), w, h)
+    a = a.crop(box); b = b.crop(box)
+    d = ImageChops.difference(a, b)
+    r, g, bl = d.split()
+    m = ImageChops.lighter(ImageChops.lighter(r, g), bl)
+    n = sum(m.histogram()[int(fuzz) + 1:])
+    total = m.size[0] * m.size[1]
+    mad = sum(ImageStat.Stat(d).mean) / 3.0
+    return 100.0 * n / total, mad
+
+
+def cmd_set(argv):
+    force = "--force" in argv
+    note = ""
+    args = []
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--force":
+            i += 1
+        elif argv[i] == "--note" and i + 1 < len(argv):
+            note = argv[i + 1]; i += 2
+        else:
+            args.append(argv[i]); i += 1
+    if len(args) != 3:
+        print(__doc__); sys.exit(2)
+    phone, screen, png = args
+    if not os.path.isfile(png):
+        die(f"no such png: {png}", 2)
+    rp = refpath(phone, screen)
+    if os.path.exists(rp) and not force:
+        die(f"a reference exists: {os.path.relpath(rp, M)} — a regression must not become the new reference. "
+            f"Re-run with --force only if the owner/orchestrator declared this run good.", 1)
+    os.makedirs(os.path.dirname(rp), exist_ok=True)
+    from PIL import Image
+    load(png, W)                     # fail here, not later, when the png is unreadable
+    with open(png, "rb") as f:
+        data = f.read()
+    open(rp, "wb").write(data)
+    meta = {"phone": phone, "screen": screen, "source": os.path.abspath(png),
+            "sha256": hashlib.sha256(data).hexdigest(), "set": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "by": os.environ.get("GOLDEN_BY") or getpass.getuser(), "note": note}
+    open(meta_path(phone, screen), "w").write(json.dumps(meta) + "\n")
+    im = Image.open(rp)
+    print(f"set {os.path.relpath(rp, M)} from {png} ({im.size[0]}x{im.size[1]}, sha256={meta['sha256'][:16]})")
+    return 0
+
+
+def cmd_cmp(argv):
+    pct = fuzz = width = None
+    args = []
+    i = 0
+    while i < len(argv):
+        if argv[i] in ("--pct", "--fuzz", "--width") and i + 1 < len(argv):
+            if argv[i] == "--pct": pct = argv[i + 1]
+            elif argv[i] == "--fuzz": fuzz = argv[i + 1]
+            else: width = argv[i + 1]
+            i += 2
+        else:
+            args.append(argv[i]); i += 1
+    if len(args) != 3:
+        print(__doc__); sys.exit(2)
+    phone, screen, png = args
+    rp = refpath(phone, screen)
+    if not os.path.isfile(rp):
+        die(f"no reference {os.path.relpath(rp, M)} (set one only from a run declared good)", 3)
+    if not os.path.isfile(png):
+        die(f"no such png: {png}", 2)
+    try:
+        p, mad = compare(rp, png, width or W, DEFAULT_FUZZ if fuzz is None else fuzz)
+    except Exception as e:
+        print(f"drift=NA mad=NA"); print(f"golden: cannot compare: {e}", file=sys.stderr); sys.exit(1)
+    t = threshold(phone, pct)
+    print(f"drift={p:.3f} mad={mad:.2f}")
+    print(f"threshold={t:.1f} ref={os.path.relpath(rp, M)}", file=sys.stderr)
+    return 1 if p > t else 0
+
+
+def cmd_list(argv):
+    from PIL import Image
+    if not os.path.isdir(ROOT):
+        print(f"no references yet ({os.path.relpath(ROOT, M)} is empty)")
+        return 0
+    n = 0
+    for phone in sorted(os.listdir(ROOT)):
+        d = os.path.join(ROOT, phone)
+        if not os.path.isdir(d):
+            continue
+        for f in sorted(os.listdir(d)):
+            if not f.endswith(".png"):
+                continue
+            screen = f[:-4]
+            try:
+                meta = json.load(open(meta_path(phone, screen)))
+            except Exception:
+                meta = {}
+            im = Image.open(os.path.join(d, f))
+            t = threshold(phone, None)
+            print(f"{phone:4} {screen:6} {t:5.1f} %  {im.size[0]}x{im.size[1]}  "
+                  f"set {meta.get('set', '?')} by {meta.get('by', '?')} from {meta.get('source', '?')}"
+                  f"{'  note: ' + meta['note'] if meta.get('note') else ''}")
+            n += 1
+    if not n:
+        print(f"no references yet ({os.path.relpath(ROOT, M)} is empty)")
+    return 0
+
+
+def cmd_rm(argv):
+    if len(argv) != 2:
+        print(__doc__); sys.exit(2)
+    phone, screen = argv
+    rp = refpath(phone, screen)
+    if not os.path.isfile(rp):
+        die(f"no reference {os.path.relpath(rp, M)}", 3)
+    os.remove(rp)
+    try:
+        os.remove(meta_path(phone, screen))
+    except OSError:
+        pass
+    print(f"removed {os.path.relpath(rp, M)}")
+    return 0
+
+
+def main():
+    if len(sys.argv) < 2:
+        print(__doc__); sys.exit(2)
+    c, a = sys.argv[1], sys.argv[2:]
+    if c == "set": return cmd_set(a)
+    if c == "cmp": return cmd_cmp(a)
+    if c == "list": return cmd_list(a)
+    if c == "rm": return cmd_rm(a)
+    print(__doc__); sys.exit(2)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

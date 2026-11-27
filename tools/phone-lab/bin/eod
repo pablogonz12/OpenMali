@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# eod — end-of-session ritual. The phones are the owner's daily devices: nothing we started may be left behind.
+#   eod          report only          eod --fix    also stop sessions, clear next-session env, gc clean worktrees
+# Checks per phone: no session running, no pending env, vkBridge=false, ledger entries listed.
+# Host: unpushed/dirty lane worktrees, /tmp, then prints the board. Ends with EOD: CLEAN or EOD: NOT CLEAN + the list.
+set -u
+. "$(dirname "$0")/lib.sh"
+fix=0; [ "${1:-}" = --fix ] && fix=1; bad=()
+for n in $(phones); do
+  if ! phone "$n" 2>/dev/null; then echo "$n: OFFLINE — cannot verify"; bad+=("$n offline"); continue; fi
+  st=$(ctl state 2>/dev/null); run=$(echo "$st" | jget session.running); ph=$(echo "$st" | jget session.phase)
+  if [ "$run" = true ]; then
+    if [ $fix = 1 ] && ! owner_busy >/dev/null; then tctl 220 stop --timeout 120 >/dev/null 2>&1; run=$(ctl state 2>/dev/null | jget session.running); fi
+    [ "$run" = true ] && bad+=("$n: a session is still running (phase $ph)")
+  fi
+  env=$(ctl env list 2>/dev/null); pend=$(echo "$env" | jget pending)
+  if [ "$pend" != "[]" ] && [ -n "$pend" ]; then
+    [ $fix = 1 ] && { ctl env clear next >/dev/null 2>&1; pend=$(ctl env list 2>/dev/null | jget pending); }
+    [ "$pend" != "[]" ] && bad+=("$n: next-session env not empty: $pend")
+  fi
+  vb=$(ctl prefs get session 2>/dev/null | jget values.vkBridge)
+  [ "$vb" = false ] || bad+=("$n: vkBridge=$vb (must be false: driver only)")
+  act=$(grep -c 'state: ACTIVE' "$M/phones/$n/ledger.md" 2>/dev/null); act=${act:-0}
+  echo "$n: running=$run pending_env=$pend persistent_env=$(echo "$env" | jget persistent) vkBridge=$vb ledger_active=$act temp=$(bat_temp)C"
+done
+echo "--- lane worktrees"
+"$M/bin/lane-wt" list | tee /tmp/.eod-wt.$$ | grep -E 'UNPUSHED|dirty=[1-9]' && bad+=("lane worktrees with unpushed or uncommitted work (above): commit + publish, or save a patch")
+rm -f /tmp/.eod-wt.$$
+[ $fix = 1 ] && "$M/bin/lane-wt" gc --apply | tail -1
+use=$(df -P /tmp | awk 'NR==2{print $5+0}'); [ "$use" -gt 85 ] && bad+=("/tmp ${use}% full")
+echo "--- board"; "$M/bin/board" --gate
+if [ ${#bad[@]} -eq 0 ]; then echo "EOD: CLEAN"; else echo "EOD: NOT CLEAN"; for b in "${bad[@]}"; do echo "- $b"; done; exit 1; fi

@@ -1,0 +1,118 @@
+#!/bin/bash
+# menubench <phone> [menubench.py args…] — the Steam Big Picture menu benchmark, under our guards.
+#   Wraps $MALI_MENUBENCH (menubench.py) so that it runs through this fleet's rules,
+#   never by hand: the phone is resolved with `phone <name>`, and the run is REFUSED unless debugging tools are on,
+#   battery >= 20 %, the owner is not using the phone, no farm host is active and the session pref vkBridge is false
+#   (driver only: this tool never runs the bridge).
+#   The scenario the bridge rows were taken with is:  --profile uncapped --run 8 --step-ms 150 --secs 30 --reps 3
+#   ("lr8x@150ms+shelf/3" in menubench.py). menubench restarts the session per rep, so it picks up the one-shot env set
+#   with `ddc <phone> env set …` (e.g. MALI_EXPERIMENTAL_TF=1); it never sets env itself.
+#   fps comes from the session's frame-time trace (menubench.py parse_ft) and the on-screen rate from `droiddeckctl pacing`.
+#     - With a stack that writes no `FT <pid> …` events (our driver without the bridge trace) the render fps is `null`
+#       and only the pacing number is real: say so, do not compare it with the bridge rows.
+#   Safety: the uinput injector it starts over raw adb gets oom_score_adj=-1000 by the app's session service; after it
+#   starts this wrapper sets it to 0 when the shell owns the process, and kills it in a trap on exit.
+#   Raw output: $CACHE/menubench/<phone>-<stamp>/menubench.out ; last line: one summary JSON object.
+# Exit: 0 ok, 5 REFUSED (nothing was changed), 75 more reps pending (run the same command again), 2 usage.
+set -u
+[ $# -ge 1 ] || { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+. "$(dirname "$0")/lib.sh"
+P_ARG=$1; shift
+case $P_ARG in -h|--help|help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;; esac
+# menubench.py resolves its own device through farmlib, which calls a bare `adb` from PATH (we have none: $ADB only).
+export PATH="$(dirname "$ADB"):$PATH"
+phone "$P_ARG" || exit 3
+# menubench.py resolves its own device from ~/.config/mali-farm/devices.toml: map our name to its alias.
+ALIAS=$(python3 - "$P_NAME" <<'PY'
+import sys, tomllib, os
+want = sys.argv[1]
+devs = tomllib.load(open(os.path.expanduser("~/.config/mali-farm/devices.toml"), "rb")).get("device", [])
+for d in devs:
+    a = d["alias"]
+    if a == want or a.endswith("-" + want) or a == "poco-" + want:
+        print(a); break
+PY
+)
+[ -n "$ALIAS" ] || die "no menubench alias for '$P_NAME' in ~/.config/mali-farm/devices.toml" 3
+MB=${MALI_MENUBENCH:?set MALI_MENUBENCH to the benchmark executable}
+[ -x "$MB" ] || die "no menubench at $MB" 2
+STAMP=$(date +%Y%m%d-%H%M%S)
+OUT=$CACHE/menubench/$P_NAME-$STAMP
+mkdir -p "$OUT" || die "cannot create $OUT" 2
+
+summ() {  # summ <outcome> <fps-json> <evidence>
+  jq -cn --arg phone "$P_NAME" --arg stack driver --arg build "$(build)" --arg outcome "$1" \
+     --arg json "$2" --arg ev "$3" --arg out "$OUT" --arg alias "$ALIAS" --arg serial "$P_SERIAL" \
+     --arg scenario "lr8x@150ms+shelf/3" --arg tmp "$(bat_temp)" --arg bat "$(bat_level)" \
+     '{phone:$phone,stack:$stack,build:$build,outcome:$outcome,alias:$alias,serial:$serial,scenario:$scenario,
+       reps:($json|fromjson),battery_pct:($bat|tonumber? // null),temp_c:($tmp|tonumber? // null),dir:$out,evidence:$ev}'
+}
+build() { jq -r '.driver_lines[]? // empty' "$M/phones/$P_NAME/smoke-latest.json" 2>/dev/null | sed -n 's/.*driverInfo *= *\([^,]*\).*/\1/p' | head -1; }
+refuse() {  # refuse <reason>
+  jq -cn --arg phone "$P_NAME" --arg reason "$1" --arg serial "$P_SERIAL" \
+    '{phone:$phone,stack:"driver",verdict:"REFUSED",reason:$reason,serial:$serial,changed:false}' && exit 5
+}
+
+# ---- preflight (WORKER.md §1 + this brief) ---------------------------------
+busy=$(owner_busy) && refuse "the owner is using the phone (foreground ${busy})"
+bat=$(bat_level); case $bat in ''|*[!0-9]*) refuse "cannot read the battery level" ;; esac
+[ "$bat" -ge 20 ] || refuse "battery ${bat} % < 20 %"
+fs=$(farm_state)
+for t in $fs; do
+  [ "${t#*=}" = "active" ] && refuse "a farm host is active (${fs}) — stop it before benchmarking"
+done
+vb=$(tctl 60 prefs get session 2>/dev/null | jget values.vkBridge)
+[ "$vb" = "true" ] && refuse "the session pref vkBridge is true: this tool measures our driver only"
+injectors() { adbs shell 'ps -A -o PID,NAME 2>/dev/null | grep -i "[u]input"' 2>/dev/null | tr -d '\r'; }
+cleanup() {  # never leave the injector behind
+  local p
+  for p in $(injectors | awk '{print $1}'); do timeout 10 adbs shell "kill $p" >/dev/null 2>&1; done
+}
+trap cleanup EXIT INT TERM
+
+echo "phone=$P_NAME alias=$ALIAS serial=$P_SERIAL pkg=$P_PKG bat=${bat}% temp=$(bat_temp)C farm=\"$fs\" vkBridge=$vb" >&2
+echo "out=$OUT" >&2
+(
+  # menubench.py inherits this env: ADB, the serial (it also resolves devices.toml itself) and our package
+  set -a
+  ADB="$ADB" ANDROID_SERIAL="$P_SERIAL" ADB_SERIAL="$P_SERIAL" DROIDDECK_PACKAGE="$P_PKG" \
+  MALI_ORCH="$M" DROIDDECK_CTL="$CTL"
+  set +a
+  exec "$MB" "$ALIAS" "$@"
+) > "$OUT/menubench.out" 2>&1 &
+mb=$!
+# the first rep starts the injector a few seconds in: relax its OOM score while menubench runs
+( for i in $(seq 1 120); do
+    p=$(injectors | awk '{print $1}' | head -1)
+    if [ -n "$p" ]; then
+      oom=$(timeout 10 adbs shell "cat /proc/$p/oom_score_adj" 2>/dev/null | tr -d '\r')
+      if [ "$oom" != "0" ]; then
+        timeout 10 adbs shell "echo 0 > /proc/$p/oom_score_adj" >/dev/null 2>&1
+        echo "injector pid=$p oom_score_adj ${oom:->read} -> $(timeout 10 adbs shell "cat /proc/$p/oom_score_adj" 2>/dev/null | tr -d '\r')" >&2
+      fi
+      break
+    fi
+    sleep 1
+  done ) &
+wait $mb; rc=$?
+tail -40 "$OUT/menubench.out" >&2
+# ---- summary: per-rep fps from whatever menubench printed ------------------
+reps=$(python3 - "$OUT/menubench.out" <<'PY'
+import json, re, sys
+t = open(sys.argv[1], errors="replace").read()
+rows = []
+# menubench.py prints one JSON object per rep (rows also land in results/menubench.jsonl)
+for m in re.finditer(r'\{[^{}]*"avg_fps"[^{}]*\}', t):
+    try: d = json.loads(m.group(0))
+    except Exception: continue
+    rows.append({k: d.get(k) for k in ("rep", "profile", "avg_fps", "median_fps", "low1_fps", "p99_ms", "p999_ms", "screen_fps", "frames", "scenario")})
+if not rows:
+    for m in re.finditer(r'avg_fps["\s:=]+([0-9.]+)', t):
+        rows.append({"avg_fps": float(m.group(1))})
+print(json.dumps(rows))
+PY
+)
+if [ $rc -eq 0 ]; then summ ok "$reps" "menubench exit 0"; else
+  [ $rc -eq 75 ] && { summ partial "$reps" "more reps pending (exit 75): run the same command again"; exit 75; }
+  summ failed "$reps" "menubench exit $rc (see $OUT/menubench.out)"; exit 1
+fi

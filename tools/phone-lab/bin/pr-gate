@@ -1,0 +1,229 @@
+#!/usr/bin/env python3
+"""pr-gate — the merge gate for every open PR, in one call.
+
+  pr-gate            the 16 newest open PRs + a one-line backlog summary
+  pr-gate --all      every open PR
+  pr-gate --green    only the GREEN ones (merge candidates)
+  pr-gate 283 289    only these
+  pr-gate -R owner/repo
+
+GREEN = base main, mergeable, lint+check green on the head sha, CodeRabbit green on the head sha,
+0 unresolved threads, and every CodeRabbit BODY finding answered.
+
+CodeRabbit writes findings into its review body instead of a thread ("Outside diff range
+comments (N)", "Duplicate comments (N)", "Actionable comments posted: N" with fewer inline
+threads than N). Those are findings too: a resolved thread cannot cover them, and the `thr`
+column never sees them. So `body` shows `unanswered/total` for the CodeRabbit review(s) on the
+current head (the newest one when the head has no review), and `CR-body-N` blocks the gate.
+A body finding counts as ANSWERED only when a LATER comment or review by a non-bot author
+quotes its `path:line` (the file's basename followed by a line number inside the finding's
+range). A bot's own text, the PR description and a resolved thread do not answer it: the reply
+must carry the path and the line. `nit` counts nitpick + minor + additional comments
+(informational, never blocking). A body finding is skipped when a later CodeRabbit review on
+the PR no longer lists it, so re-reviews are the way to retire a stale finding.
+Device proof cannot be machine-checked: `dev` only says whether the PR body
+has a device section. A GREEN PR that touches present/WSI/allocation still needs that proof.
+"""
+import json, subprocess, sys, re, os
+
+
+# ---- CodeRabbit body findings -------------------------------------------------------------
+# Markers proven live 2026-11-21 (PRs 284/313/323/329, merged PR 160):
+#   **Actionable comments posted: 14**                    inline threads posted
+#   > **⚠️ Outside diff range comments (1)**               findings only in the body
+#   > **⚠️ Duplicate comments (N)**                        same shape
+#   <summary><picture>…</picture> Minor comments: 19</summary>     informational
+#   <summary><picture>…</picture> Nitpick comments: 1</summary>    informational
+#   <summary><picture>…</picture> Additional comments: 1</summary> informational
+# A finding block inside an outside/duplicate section ends at its `<!-- cr-comment:v1:HASH -->`.
+RE_ACT = re.compile(r'Actionable comments posted:\s*(\d+)')
+RE_SEC = re.compile(r'^[>\s]*\*\*[^*\n]*?(Outside diff range comments|Duplicate comments)\s*\((\d+)\)\s*\*\*'
+                    r'|<summary>(?:<picture>(?:.*?)</picture>\s*)?(Outside diff range comments|'
+                    r'Duplicate comments|Minor comments|Nitpick comments|Additional comments)'
+                    r'\s*[:(]\s*(\d+)\s*\)?</summary>', re.M)
+RE_LOC = re.compile(r'(?m)^[>\s]*`([^`\n]+?):(\d+)(?:-(\d+))?`[ \t]*$')
+RE_HASH = re.compile(r'<!--\s*cr-comment:v1:[0-9a-f]+\s*-->')
+RE_FILE = re.compile(r'<summary>([^\s<>][^<\n]*?):\s*(\d+)</summary>')
+RE_LINE = re.compile(r'(?m)^[>\s]*`(\d+(?:-\d+)?)`')
+BOT = re.compile(r'(?i)(\[bot\]$|coderabbit|codex|github-actions|netlify|vercel)')
+
+
+def cr_parse(body):
+    """-> (outside+duplicate findings, nitpick+minor entries, actionable N, declared dict)"""
+    out = {"blocking": [], "nit": [], "actionable": None, "declared": {}, "unlocated": 0, "dups": 0}
+    if not body:
+        return out
+    m = RE_ACT.search(body)
+    if m:
+        out["actionable"] = int(m.group(1))
+    secs = [(x.start(), x.end(), x.group(1) or x.group(3), int(x.group(2) or x.group(4)))
+            for x in RE_SEC.finditer(body)]
+    for i, (s, e, kind, n) in enumerate(secs):
+        end = secs[i + 1][0] if i + 1 < len(secs) else len(body)
+        region, got = body[e:end], []
+        out["declared"][kind] = out["declared"].get(kind, 0) + n
+        if kind.startswith(("Outside", "Duplicate")):
+            cuts = [x.start() for x in RE_HASH.finditer(region)]
+            for j, c in enumerate(cuts):
+                mm = RE_LOC.search(region[cuts[j - 1] if j else 0:c])
+                if mm:
+                    a, b = int(mm.group(2)), int(mm.group(3) or mm.group(2))
+                    got.append({"path": mm.group(1), "line": a, "end": b,
+                                "q": f"{mm.group(1)}:{mm.group(2)}"})
+            if not got:                       # older bodies: one <details> per finding
+                for piece in re.split(r'(?m)^[>\s]*<details><summary><strong>', region)[1:]:
+                    mm = RE_LOC.search(piece)
+                    if mm:
+                        a, b = int(mm.group(2)), int(mm.group(3) or mm.group(2))
+                        got.append({"path": mm.group(1), "line": a, "end": b,
+                                    "q": f"{mm.group(1)}:{mm.group(2)}"})
+            out["blocking"] += got
+            if kind.startswith("Duplicate"):
+                out["dups"] += len(got)
+            out["unlocated"] += max(0, n - len(got))
+        else:                                 # minor / nitpick / additional: informational
+            cur = None
+            for line in region.splitlines():
+                fm = RE_FILE.search(line)
+                if fm:
+                    cur = fm.group(1).strip()
+                    continue
+                lm = RE_LINE.match(line)
+                if lm and cur:
+                    a = lm.group(1).split("-")
+                    out["nit"].append({"path": cur, "line": int(a[0]), "end": int(a[-1]),
+                                       "q": f"{cur}:{lm.group(1)}"})
+    return out
+
+
+def cr_quotes(text, f):
+    """True when `text` quotes the finding: basename plus a line number in its range."""
+    base = f["path"].rsplit("/", 1)[-1]
+    for m in re.finditer(re.escape(base), text):
+        for nm in re.finditer(r'\d+', text[m.end():m.end() + 80]):
+            if f["line"] - 2 <= int(nm.group()) <= f["end"] + 2:
+                return True
+    return not not re.search(re.escape(f["path"]) + r':\d+', text)
+
+repo = os.environ.get("MALI_GITHUB_REPO", "pablogonz12/OpenMali")
+args = sys.argv[1:]
+if "-R" in args:
+    i = args.index("-R"); repo = args[i + 1]; del args[i:i + 2]
+show_all = "--all" in args
+only = {int(a) for a in args if a.isdigit()}
+owner, name = repo.split("/")
+
+Q = """query($o:String!,$n:String!,$c:String){repository(owner:$o,name:$n){
+ pullRequests(states:OPEN,first:50,after:$c,orderBy:{field:CREATED_AT,direction:ASC}){pageInfo{hasNextPage endCursor} nodes{
+  number title updatedAt baseRefName headRefName headRefOid mergeable isDraft body
+  reviewThreads(first:100){nodes{isResolved comments(last:20){nodes{author{login} body createdAt pullRequestReview{databaseId}}}}}
+  reviews(last:30){nodes{databaseId author{login} submittedAt commit{oid} body}}
+  comments(last:50){nodes{author{login} body createdAt}}
+  commits(last:1){nodes{commit{statusCheckRollup{contexts(first:40){nodes{
+    __typename ... on CheckRun{name conclusion status} ... on StatusContext{context state}}}}}}}
+ }}}}"""
+import time, datetime
+def fetch():
+    out, cur = [], None
+    while True:
+        cmd = ["gh", "api", "graphql", "-f", "query=" + Q, "-f", "o=" + owner, "-f", "n=" + name]
+        if cur: cmd += ["-f", "c=" + cur]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+        if r.returncode:
+            sys.exit("gh failed: " + r.stderr.strip()[:300])
+        d = json.loads(r.stdout)["data"]["repository"]["pullRequests"]
+        out += d["nodes"]
+        if not d["pageInfo"]["hasNextPage"]: return out
+        cur = d["pageInfo"]["endCursor"]
+prs = fetch()
+only_green = "--green" in args
+newest = {p["number"] for p in sorted(prs, key=lambda p: -p["number"])[:16]}
+shown = lambda p: (p["number"] in only) if only else (show_all or only_green or p["number"] in newest)
+if any(p["mergeable"] == "UNKNOWN" and shown(p) for p in prs):   # GitHub computes mergeability lazily
+    time.sleep(4); prs = fetch()
+hidden = 0
+
+print(f"{'PR':>4} {'head':8} {'base':6} {'lint':5} {'check':5} {'CR@head':8} {'thr':>3} {'body':>5} {'nit':>3} {'merge':6} dev  verdict  title")
+green = []
+tally = {}
+for p in prs:
+    ctx = {}
+    roll = (p["commits"]["nodes"][0]["commit"].get("statusCheckRollup") or {}).get("contexts", {}).get("nodes", [])
+    for c in roll:
+        if c["__typename"] == "CheckRun":
+            ctx[c["name"]] = c.get("conclusion") or c.get("status") or "?"
+        else:
+            ctx[c["context"]] = c.get("state") or "?"
+    short = lambda v: {"SUCCESS": "ok", "FAILURE": "FAIL", "SKIPPED": "skip", None: "none"}.get(v, (v or "none").lower()[:5])
+    lint, check, cr = ctx.get("lint"), ctx.get("check"), ctx.get("CodeRabbit")
+    head = p["headRefOid"]
+    cr_shas = [x["commit"]["oid"] for x in p["reviews"]["nodes"]
+               if (x.get("author") or {}).get("login", "").startswith("coderabbit") and x.get("commit")]
+    cr_on_head = cr == "SUCCESS" or head in cr_shas
+    cr_txt = "ok" if cr == "SUCCESS" else ("rev'd" if head in cr_shas else ("stale" if cr_shas else short(cr)))
+    open_thr = sum(1 for t in p["reviewThreads"]["nodes"] if not t["isResolved"])
+    # ---- CodeRabbit body findings: the review's own body, not its threads ----
+    thr_nodes = p["reviewThreads"]["nodes"]
+    cr_revs = [x for x in p["reviews"]["nodes"]
+               if (x.get("author") or {}).get("login", "").startswith("coderabbit") and x.get("commit")]
+    # an empty CodeRabbit review body is a thread reply, not a review: only summaries carry findings
+    cr_bodies = [x for x in cr_revs if (x.get("body") or "").strip()]
+    pick = [x for x in cr_bodies if x["commit"]["oid"] == head]
+    if not pick and cr_bodies:
+        pick = [max(cr_bodies, key=lambda x: x.get("submittedAt") or "")]
+    picked_ids = {x.get("databaseId") for x in pick if x.get("databaseId")}
+    parsed = [cr_parse(x.get("body") or "") for x in pick]
+    found, seen = [], set()
+    for pv in parsed:
+        for f in pv["blocking"]:
+            if (f["path"], f["line"]) not in seen:
+                seen.add((f["path"], f["line"])); found.append(f)
+    inline = sum(1 for t in thr_nodes for c in t["comments"]["nodes"]
+                 if (c.get("pullRequestReview") or {}).get("databaseId") in picked_ids
+                 and BOT.search((c.get("author") or {}).get("login") or ""))
+    dups = sum(x["dups"] for x in parsed)
+    act = sum(x["actionable"] or 0 for x in parsed)
+    unloc = sum(x["unlocated"] for x in parsed)
+    # actionable comments CodeRabbit counted but never posted as a thread: unquoted, so unanswered
+    excess = max(0, act - inline - dups)
+    body_tot = len(found) + excess + unloc
+    body_miss = body_tot
+    if body_tot:
+        cutoff = max((x.get("submittedAt") or "") for x in pick) if pick else ""
+        later = [c.get("body") or "" for t in thr_nodes for c in t["comments"]["nodes"]
+                 if not BOT.search((c.get("author") or {}).get("login") or "")
+                 and (c.get("createdAt") or "") > cutoff]
+        later += [x.get("body") or "" for x in p["reviews"]["nodes"]
+                  if not BOT.search((x.get("author") or {}).get("login") or "")
+                  and (x.get("submittedAt") or "") > cutoff]
+        later += [c.get("body") or "" for c in (p.get("comments") or {}).get("nodes", [])
+                  if not BOT.search((c.get("author") or {}).get("login") or "")
+                  and (c.get("createdAt") or "") > cutoff]
+        blob = "\n".join(later)
+        body_miss = excess + unloc + sum(1 for f in found if not cr_quotes(blob, f))
+    nit = len({x["q"] for pv in parsed for x in pv["nit"]})
+    dev = "yes" if re.search(r"(?i)device[- ](run|verif|evidence|proof|check)|on[- ]device", p.get("body") or "") else "no"
+    why = []
+    if p["baseRefName"] != "main": why.append("base!=main")
+    if p["isDraft"]: why.append("draft")
+    if p["mergeable"] != "MERGEABLE": why.append(p["mergeable"].lower())
+    if lint != "SUCCESS": why.append("lint")
+    if check != "SUCCESS": why.append("check")
+    if not cr_on_head: why.append("CR-not-on-head")
+    if open_thr: why.append(f"{open_thr}thr")
+    if body_miss: why.append(f"CR-body-{body_miss}")
+    verdict = "GREEN" if not why else ",".join(why)
+    if not why: green.append(p["number"])
+    for k in why:
+        kk = re.sub(r"-?\d+$", "", re.sub(r"^\d+", "", k))
+        tally[kk] = tally.get(kk, 0) + 1
+    if not shown(p) or (only_green and why):
+        hidden += 1
+        continue
+    print(f"{p['number']:>4} {head[:8]} {p['baseRefName'][:6]:6} {short(lint):5} {short(check):5} {cr_txt:8} "
+          f"{open_thr:>3} {f'{body_miss}/{body_tot}' if body_tot else '-':>5} {nit:>3} "
+          f"{p['mergeable'][:6].lower():6} {dev:4} {verdict:8} {p['title'][:60]}")
+if hidden: print(f"({hidden} more open PRs not shown: pr-gate --all)")
+print("backlog blockers: " + ", ".join(f"{k}={v}" for k, v in sorted(tally.items(), key=lambda kv: -kv[1])))
+print(f"\nopen={len(prs)} green={green or 'none'}  (GREEN + device proof for WSI/present/alloc => merge with `gh pr merge N --merge`; "
+      f"re-run pr-gate first, a new push invalidates the review)")

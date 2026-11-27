@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# phone-snap <phone> [label] — read-only snapshot of everything we are allowed to change on a phone.
+# Writes M/phones/<phone>/snaps/<time>-<label>/ and points M/phones/<phone>/snaps/latest at it.
+#   state.json  prefs-session.json  env.json  meta.txt
+#   icd-sha256.txt + localconfig.vdf   only while a session is running (the guest is not readable otherwise)
+# Take one BEFORE the first change of a lane; hand the directory to phone-restore when the lane ends.
+set -u
+. "$(dirname "$0")/lib.sh"
+[ $# -ge 1 ] || { sed -n '2,6p' "$0"; exit 2; }
+phone "$1" || exit $?
+d="$M/phones/$P_NAME/snaps/$(date +%m%d-%H%M%S)-${2:-snap}"; mkdir -p "$d"
+ctl state              > "$d/state.json" 2>/dev/null
+ctl prefs get session  > "$d/prefs-session.json" 2>/dev/null
+ctl env list           > "$d/env.json" 2>/dev/null
+running=$(jget session.running < "$d/state.json"); guest=$(jget agent.guest < "$d/state.json")
+{ echo "phone=$P_NAME time=$(date -Is) fg=$(fg_pkg) temp=$(bat_temp)C bat=$(bat_level)%"
+  echo "running=$running guest=$guest mode=$(jget session.mode < "$d/state.json") phase=$(jget session.phase < "$d/state.json")"
+  echo "vkBridge=$(jget values.vkBridge < "$d/prefs-session.json") linuxDriver=$(jget values.linuxDriver < "$d/prefs-session.json")"; } > "$d/meta.txt"
+if [ "$running" = true ] && [ "$guest" = true ]; then
+  timeout 60 env DROIDDECK_PACKAGE=$P_PKG "$CTL" --serial "$P_SERIAL" guest -- sh -c \
+    "sha256sum /usr/lib/aarch64-linux-gnu/libvulkan_*.so /data/user/0/$P_PKG/files/linux_vulkan_drivers/*/*.so 2>/dev/null" \
+    > "$d/icd-sha256.raw" 2>/dev/null
+  jget stdout.text < "$d/icd-sha256.raw" > "$d/icd-sha256.txt" 2>/dev/null; [ -s "$d/icd-sha256.txt" ] || cp "$d/icd-sha256.raw" "$d/icd-sha256.txt"
+  # the guest channel truncates at 256 KiB, so the vdf travels gzip+base64 and is verified by sha256
+  timeout 60 env DROIDDECK_PACKAGE=$P_PKG "$CTL" --serial "$P_SERIAL" guest -- sh -c \
+    'f=$(ls /root/.local/share/Steam/userdata/*/config/localconfig.vdf 2>/dev/null | head -1); [ -n "$f" ] && { sha256sum "$f"; gzip -c "$f" | base64 -w0; }' \
+    > "$d/localconfig.raw" 2>/dev/null
+  python3 - "$d" >> "$d/meta.txt" <<'PY'
+import sys, json, base64, gzip, hashlib
+d = sys.argv[1]; t = open(f"{d}/localconfig.raw").read(); i = t.find("{")
+try:
+    o = json.loads(t[i:])["stdout"]; first, _, b64 = o["text"].partition("\n")
+    assert not o.get("truncated"), "truncated"
+    data = gzip.decompress(base64.b64decode(b64)); want, path = first.split()[0], first.split()[-1]
+    assert hashlib.sha256(data).hexdigest() == want, "sha mismatch"
+    open(f"{d}/localconfig.vdf", "wb").write(data)
+    print(f"vdf=captured {len(data)} bytes sha256={want[:16]} from {path}")
+except Exception as e:
+    print(f"vdf=NOT captured ({e})")
+PY
+  rm -f "$d/icd-sha256.raw" "$d/localconfig.raw"
+else
+  echo "icd/vdf=NOT captured (no running session with a guest agent)" >> "$d/meta.txt"
+fi
+ln -sfn "$d" "$M/phones/$P_NAME/snaps/latest"
+cat "$d/meta.txt"; echo "SNAP=$d"

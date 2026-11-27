@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# import <phone> <pair.zip> [--select]
+# Locked, snapshotted import with a 90-second watchdog; never retries.
+# IMPORT_HUNG sends BACK once and captures a screenshot; caller must read it.
+set -u
+. "$(dirname "$0")/lib.sh"
+export M CACHE
+case ${1:-} in ""|--help|-h) sed -n '2,4p' "$0"; exit 0;; esac
+[ "$#" -ge 2 ] && [ "$#" -le 3 ] && { [ "$#" = 2 ] || [ "$3" = --select ]; } || { echo "usage: import <phone> <pair.zip> [--select]" >&2; exit 2; }
+name=$1
+phone_lock "$name" || exit 4
+phone "$name" || exit $?
+st=$(ctl state 2>/dev/null)
+[ "$(printf '%s' "$st" | jget agent.commands)" = true ] || die "debugging tools unavailable" 5
+[ "$(printf '%s' "$st" | jget session.phase)" = IDLE ] || die "session is not IDLE" 5
+if b=$(owner_busy); then die "BUSY: owner is using $b" 5; fi
+t=$(bat_temp); lv=$(bat_level)
+[ -n "$t" ] && [ -n "$lv" ] || die "battery telemetry unavailable" 5
+awk -v t="$t" 'BEGIN {exit !(t<43)}' || die "battery too hot" 5
+[ "$lv" -ge 20 ] || die "battery below 20%" 5
+[ "$(ctl prefs get session 2>/dev/null | jget values.vkBridge)" = false ] || die "vkBridge is not false" 5
+exec python3 "$(dirname "$0")/import-run.py" "$@"

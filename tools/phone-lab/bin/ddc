@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# ddc — the ONLY way to call droiddeckctl or adb on a fleet phone. It fills in serial + package and blocks the
+# mistakes that cost us hours on 2026-11-20.
+#   ddc <phone> <droiddeckctl args…>      e.g.  ddc x8 state | ddc cmf start steam --wait | ddc x4 pacing --seconds 30
+#   ddc <phone> adb <adb args…>           e.g.  ddc x8 adb shell getprop ro.boot.bootreason
+# Guards (exit 4, nothing is sent to the phone):
+#   prefs set   needs the file AND --type:  ddc x8 prefs set session vkBridge false --type bool
+#   vkBridge true is refused unless MALI_BRIDGE_REF=1 (driver only; use `smoke --bridge-ref`, which restores it itself)
+#   env clear persistent|all is refused unless MALI_ENV_WIPE=1 (it deletes DD_DRM_STANDIN, which driver mode needs)
+#   screenshot  only while DroidDeck is the foreground app
+#   start/launch/run  refused while the owner is using another app with the screen on, unless MALI_TAKE_FG=1
+set -u
+. "$(dirname "$0")/lib.sh"
+[ $# -ge 2 ] || { sed -n '2,12p' "$0"; exit 2; }
+case "$2" in
+  start|run|launch|stop)
+    if [ "${MALI_LOCK_HELD:-}" != "$1" ]; then phone_lock "$1" || exit 4; fi;;
+esac
+phone "$1" || exit $?
+shift
+if [ "$1" = adb ]; then shift; exec "$ADB" -s "$P_SERIAL" "$@"; fi
+refuse() { echo "REFUSED: $1" >&2; exit 4; }
+case "$1 ${2:-}" in
+  "prefs set")
+    pos=(); typ=""; a=("${@:3}"); i=0
+    while [ $i -lt ${#a[@]} ]; do
+      if [ "${a[$i]}" = --type ]; then typ=${a[$((i+1))]:-}; i=$((i+2)); else pos+=("${a[$i]}"); i=$((i+1)); fi
+    done
+    [ -n "$typ" ] || refuse "prefs set needs --type (bool|int|long|float|string|remove). A wrong type makes the app throw ClassCastException at session start."
+    need=3; [ "$typ" = remove ] && need=2
+    [ ${#pos[@]} -ge $need ] || refuse "prefs set needs the FILE first: ddc $P_NAME prefs set session <key> <value> --type <type>"
+    if [ "${pos[1]}" = vkBridge ]; then
+      [ "$typ" = bool ] || refuse "vkBridge is a Boolean: --type bool"
+      [ "${pos[2]:-}" = true ] && [ "${MALI_BRIDGE_REF:-0}" != 1 ] && refuse "driver only. Bridge is one labelled reference run: use  smoke $P_NAME --bridge-ref"
+    fi ;;
+  "env clear")
+    case "${3:-}" in persistent|all) [ "${MALI_ENV_WIPE:-0}" = 1 ] || refuse "'env clear ${3}' deletes DD_DRM_STANDIN (driver mode needs it). Use 'env clear next'." ;; esac ;;
+  "screenshot "*)
+    fg=$(fg_pkg); [ "$fg" = "$P_PKG" ] || refuse "foreground is '$fg', not DroidDeck: never capture the owner's other apps" ;;
+  "start "*|"launch "*|"run "*)
+    if [ "${MALI_TAKE_FG:-0}" != 1 ] && b=$(owner_busy); then refuse "BUSY: the owner is using '$b' with the screen on. Do host work; do not retry in a loop."; fi ;;
+esac
+ctl "$@"

@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# deploy <phone> <sha12> [--apply] — put one stashed build on a phone, in EVERY ICD the session can select.
+# Source is always $DEPLOY/<sha12>/ (made by stash-artefact): never vk/out, which the next build overwrites.
+# Needs a running session whose guest answers:  ddc <phone> start steam --wait   (X4: without --wait, then ~40 s)
+# Without --apply it prints the plan (the ICD paths it found and the command per path) and changes nothing.
+# With --apply it runs MediaDeck/tools/driver-loop.sh deploy once per path (that tool keeps the stock backup),
+# then re-reads the sha256 of every path inside the guest. Ends with DEPLOY: OK or DEPLOY: FAILED.
+# After it: stop the session and prove it from a clean start:  smoke <phone> --expect-commit <abbrev commit>
+set -u
+. "$(dirname "$0")/lib.sh"
+LOOP=${LOOP:-${MALI_DRIVER_LOOP:-driver-loop.sh}}
+[ $# -ge 2 ] || { sed -n '2,9p' "$0"; exit 2; }
+phone "$1" || exit $?
+src="$DEPLOY/$2"; apply=0; [ "${3:-}" = --apply ] && apply=1
+so="$src/libvulkan_mali.so"
+[ -f "$so" ] || die "no stashed build $src (run stash-artefact; known: $(ls "$DEPLOY" 2>/dev/null | tr '\n' ' '))"
+sha=$(sha256sum "$so" | cut -d' ' -f1)
+[ "${sha:0:12}" = "$2" ] || die "$so has sha256 $sha: it does not match its directory name"
+grep -q "^$sha  libvulkan_mali.so" "$src/MANIFEST.sha256" || die "$so does not match MANIFEST.sha256"
+commit=$(sed -E 's/.* from [^@]+@([0-9a-f]+) .*/\1/' "$src/CHECK.txt" 2>/dev/null)
+gtext() { tctl 70 guest -- sh -c "$1" 2>/dev/null | jget stdout.text; }
+# The guest must answer. READY is not required: on a phone where Steam never reaches READY (X4) the guest is up
+# during STARTING_STEAM:  ddc <phone> start steam   (no --wait), wait ~40 s, then deploy.
+[ "$(gtext 'echo guest-ok' | tr -d '\n')" = guest-ok ] || die "the guest does not answer (phase $(ctl state 2>/dev/null | jget session.phase)): start a session first — ddc $P_NAME start steam --wait, or without --wait and 40 s of patience" 3
+ld=$(ctl prefs get session 2>/dev/null | jget values.linuxDriver)
+paths=$(gtext '
+for j in $(echo "$VK_ICD_FILENAMES:$VK_DRIVER_FILES" | tr ":" " "); do
+  [ -f "$j" ] || continue
+  lp=$(grep -o "\"library_path\"[^,}]*" "$j" | cut -d\" -f4 | tr -d "\\\\")
+  case "$lp" in /*) echo "$lp";; ?*) echo "/usr/lib/aarch64-linux-gnu/$lp";; esac
+done
+[ -n "'"$ld"'" ] && ls /data/user/0/'"$P_PKG"'/files/linux_vulkan_drivers/'"$ld"'/libvulkan_*.so 2>/dev/null
+ls /usr/lib/aarch64-linux-gnu/libvulkan_panfrost.so 2>/dev/null' | grep '^/' | sort -u)
+[ -n "$paths" ] || die "found no ICD path in the guest: read the session env (VK_ICD_FILENAMES) by hand and report it" 3
+echo "build   $sha  (integration@$commit)  from $src"
+echo "phone   $P_NAME  linuxDriver='${ld}'"
+rc=0
+for p in $paths; do
+  cur=$(gtext "sha256sum '$p' 2>/dev/null | cut -d' ' -f1" | tr -d '\n')
+  [ -n "$cur" ] || { echo "skip    $p (not a file in the guest)"; continue; }
+  if [ "$cur" = "$sha" ]; then echo "same    $p"; continue; fi
+  echo "replace $p   (now ${cur:0:12})"
+  echo "        DROIDDECK_PACKAGE=$P_PKG $LOOP $P_SERIAL --package $P_PKG deploy $so --icd $p"
+  if [ $apply = 1 ]; then
+    # driver-loop's own vulkaninfo check uses a temp icd.json the loader rejects (no file_format_version): its exit
+    # code is only a note. The sha256 read back from the guest decides; the real proof is  smoke --expect-commit.
+    DROIDDECK_PACKAGE=$P_PKG timeout 300 "$LOOP" "$P_SERIAL" --package "$P_PKG" deploy "$so" --icd "$p" > "$CACHE/deploy-$P_NAME.log" 2>&1 || echo "        note: driver-loop exited non-zero (its self-check; see $CACHE/deploy-$P_NAME.log)"
+    now=$(gtext "sha256sum '$p' 2>/dev/null | cut -d' ' -f1" | tr -d '\n')
+    [ "$now" = "$sha" ] && echo "        verified ${now:0:12}" || { echo "        NOT verified: guest has ${now:0:12}"; rc=1; }
+  fi
+done
+[ $apply = 1 ] || { echo "PLAN ONLY — re-run with --apply"; exit 1; }
+[ $rc = 0 ] && echo "DEPLOY: OK $sha on $P_NAME — now: ddc $P_NAME stop; smoke $P_NAME --expect-commit ${commit:0:7}" || echo "DEPLOY: FAILED on $P_NAME (log $CACHE/deploy-$P_NAME.log)"
+exit $rc

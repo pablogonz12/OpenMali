@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# board — the generated half of the record. Run it instead of hand-writing fleet/build/PR facts into STATE.md.
+# Prints (and saves to M/BOARD.md): fleet, last smoke per phone, the fleet build, PR flow, host hygiene, and the
+# WAVE GATE: "OPEN" or "CLEANUP-ONLY" with the reasons. Read-only. ~40 s.
+#   board            everything          board --gate     only the gate line(s)
+set -u
+. "$(dirname "$0")/lib.sh"
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+gate=(); {
+echo "# BOARD — generated $(date '+%F %H:%M') by bin/board. Do not edit; re-run."
+echo; echo '## Fleet'; echo '```'; timeout 150 "$M/bin/fleet" 2>&1 | sed -n '1,/== host ==/p' | grep -v '== host =='; echo '```'
+echo; echo '## Last smoke per phone (bin/smoke)'
+for n in $(phones); do
+  f="$M/phones/$n/smoke-latest.json"
+  if [ -f "$f" ]; then python3 - "$f" "$n" <<'PY'
+import json, sys, time, datetime
+d = json.load(open(sys.argv[1])); n = sys.argv[2]
+age = (time.time() - datetime.datetime.fromisoformat(d["time"]).timestamp()) / 3600
+print(f"- {n}: **{d.get('verdict')}** stack={d.get('stack')} app={d.get('app')} fps={d.get('displayed_fps')} "
+      f"restored={d.get('restored')} age={age:.1f}h driver={[l for l in d.get('driver_lines', []) if 'driverInfo' in l][:1]} — {str(d.get('reason'))[:110]}")
+PY
+  else echo "- $n: no smoke run yet"; fi
+done
+echo; echo '## Fleet build'
+line=$(cd "$REPO" && timeout 120 ./tools/build-artefact.sh --check 2>&1 | tail -1)
+echo "- repo: \`$(git -C "$REPO" rev-parse --abbrev-ref HEAD)@$(git -C "$REPO" rev-parse --short HEAD)\`, origin/integration \`$(git -C "$REPO" rev-parse --short origin/integration 2>/dev/null)\`, origin/main \`$(git -C "$REPO" rev-parse --short origin/main 2>/dev/null)\`"
+echo "- check: \`${line:0:200}\`"
+echo "- stashed (deploy ONLY from these directories, $DEPLOY):"; "$M/bin/stash-artefact" --list | head -4 | sed 's/^/    - /'
+echo "- commits in integration that are not in main: $(git -C "$REPO" rev-list --count origin/main..integration 2>/dev/null)"
+echo; echo '## PR flow'
+(cd "$REPO" && gh pr list --state all --limit 500 --json number,state,baseRefName,headRefName,createdAt,mergedAt,closedAt 2>/dev/null) > "$tmp/prs.json"
+git -C "$REPO" for-each-ref refs/remotes/origin --sort=-committerdate --format='%(refname:short) %(committerdate:unix)' > "$tmp/refs.txt"
+python3 - "$tmp/prs.json" "$tmp/refs.txt" "$REPO" "$M/branches-triaged.txt" > "$tmp/pr.txt" <<'PY'
+import json, sys, time, datetime, subprocess
+try: prs = json.load(open(sys.argv[1]))
+except Exception: prs = []
+now = time.time()
+def ts(s): return datetime.datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp() if s else 0
+op = [p for p in prs if p["state"] == "OPEN"]
+day = lambda k: sum(1 for p in prs if p.get(k) and now - ts(p[k]) < 86400)
+opened, merged = day("createdAt"), day("mergedAt")
+closed = sum(1 for p in prs if p["state"] == "CLOSED" and now - ts(p.get("closedAt")) < 86400)
+offmain = [p for p in op if p["baseRefName"] != "main"]
+heads = {p["headRefName"] for p in prs}
+orphans = []
+for l in open(sys.argv[2]):
+    name, t = l.split(); b = name.split("/", 1)[1] if "/" in name else name
+    if "/" not in name: continue                      # origin/HEAD shows up as plain "origin"
+    if now - int(t) < 3 * 86400 and b not in heads and b not in ("main", "integration", "HEAD", "bench/charts"): orphans.append(b)
+# a branch is only an orphan if its tip is neither in main nor inside the head of an open PR
+openheads = {p["headRefName"] for p in op}
+def covered(b):
+    out = subprocess.run(["git", "-C", sys.argv[3], "for-each-ref", "--contains", f"origin/{b}", "--format=%(refname:short)",
+                          "refs/remotes/origin"], capture_output=True, text=True).stdout.split()
+    names = {n.split("/", 1)[1] for n in out if "/" in n} - {b}
+    return "main" in names or bool(names & openheads)
+orphans = [b for b in orphans if not covered(b)]
+tri = {}
+try:
+    for l in open(sys.argv[4]):
+        if l.strip() and not l.startswith("#"):
+            f = [x.strip() for x in l.split("|")]; tri[f[0]] = f[1] if len(f) > 1 else "?"
+except OSError: pass
+triaged = [b for b in orphans if b in tri]; orphans = [b for b in orphans if b not in tri]
+wip = sum(1 for b in triaged if tri[b].startswith("WIP"))
+print(f"- open: **{len(op)}** (base main {len(op) - len(offmain)}, base other {len(offmain)} — those can never pass the gate)")
+print(f"- last 24 h: opened {opened}, merged {merged}, closed {closed} → net **{opened - merged - closed:+d}**")
+print(f"- branches pushed in the last 3 days whose commits are in no PR, not in main and not triaged ({len(orphans)}): {', '.join(orphans[:40]) or 'none'}")
+print(f"- triaged branches (M/branches-triaged.txt): {len(triaged)}, of which WIP experiments {wip}")
+print(f"GATE net={opened - merged - closed} orphans={len(orphans)} offmain={len(offmain)}")
+PY
+grep -v '^GATE' "$tmp/pr.txt"
+echo; echo '## Host'
+wt=$(git -C "$REPO" worktree list | wc -l); tmpuse=$(df -P /tmp | awk 'NR==2{print $5+0}'); farm=$(farm_state)
+echo "- worktrees: $wt (lane dirs: $(ls "$LANES" 2>/dev/null | wc -l)); /tmp tmpfs ${tmpuse}% used; farm: $farm"
+echo "- ledger entries still ACTIVE: $(cat "$M"/phones/*/ledger.md 2>/dev/null | grep -c 'state: ACTIVE')"
+} > "$tmp/board.md"
+
+# ---------- wave gate ----------
+case " $farm " in *"=active "*|*"=activating "*) gate+=("the farm is RUNNING on a host ($farm): stop it there (systemctl --user disable --now mali-farm.service) before any phone work");; esac
+while read -r n; do
+  f="$M/phones/$n/smoke-latest.json"
+  [ -f "$f" ] && grep -q '"restored": false' "$f" && gate+=("phone $n was NOT restored by its last smoke")
+done < <(phones | tr ' ' '\n' | grep .)
+grep -q 'stack=bridge' "$tmp/board.md" && gate+=("a phone is on bridge (driver only): set vkBridge false")
+g=$(grep '^GATE' "$tmp/pr.txt" 2>/dev/null)
+net=$(echo "$g" | sed -E 's/.*net=(-?[0-9]+).*/\1/'); orph=$(echo "$g" | sed -E 's/.*orphans=([0-9]+).*/\1/')
+[ "${net:-0}" -gt 0 ] 2>/dev/null && gate+=("PR flow is net +$net in 24 h: merge or close before opening more")
+[ "${orph:-0}" -gt 3 ] 2>/dev/null && gate+=("$orph pushed branches have no PR: open the PR, or delete the branch")
+[ "$tmpuse" -gt 85 ] && gate+=("/tmp is ${tmpuse}% full: lane-wt gc --apply")
+{ echo; echo '## Wave gate'
+  if [ ${#gate[@]} -eq 0 ]; then echo "**OPEN** — a normal wave may be dispatched."
+  else echo "**CLEANUP-ONLY** — the next wave may only contain lanes that remove these reasons (plus one product-path lane per phone):"; for r in "${gate[@]}"; do echo "- $r"; done; fi
+} >> "$tmp/board.md"
+cp "$tmp/board.md" "$M/BOARD.md"
+if [ "${1:-}" = --gate ]; then sed -n '/^## Wave gate/,$p' "$tmp/board.md"; else cat "$tmp/board.md"; fi

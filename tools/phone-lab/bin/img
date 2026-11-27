@@ -1,0 +1,35 @@
+#!/usr/bin/env python3
+"""img - the image helper of smoke/fleet (Pillow only; ImageMagick is not installed on every host).
+  img jpg <png> <jpg>        420 px wide jpg for reading
+  img stats <png>            "mean sd" (0-255, one decimal) of the central 40 % x 40 %, grey
+  img mean <png>             grey mean of the whole picture, 0-255
+  img diffpct <a> <b>        % of pixels that differ by more than 3 % in the lower 90 % (HUD digits ignored)
+Prints NA (exit 1) when a file cannot be read."""
+import sys
+from PIL import Image, ImageChops, ImageStat
+def grey(p): return Image.open(p).convert("RGB").convert("L")
+try:
+    c, a = sys.argv[1], sys.argv[2:]
+    if c == "jpg":
+        im = Image.open(a[0]).convert("RGB"); w, h = im.size
+        im.resize((420, max(1, round(h * 420 / w)))).save(a[1], quality=85)
+    elif c == "stats":
+        im = grey(a[0]); w, h = im.size
+        st = ImageStat.Stat(im.crop((int(w * .3), int(h * .3), int(w * .7), int(h * .7))))
+        print(f"{int(st.mean[0]*10)/10} {int(st.stddev[0]*10)/10}")
+    elif c == "mean":
+        print(f"{ImageStat.Stat(grey(a[0])).mean[0]:.1f}")
+    elif c == "diffpct":
+        x, y = Image.open(a[0]).convert("RGB"), Image.open(a[1]).convert("RGB")
+        if x.size != y.size: print("100.000"); sys.exit(0)
+        w, h = x.size; box = (0, int(h * .1), w, h)
+        d = ImageChops.difference(x.crop(box), y.crop(box))
+        r, g, b = d.split(); m = ImageChops.lighter(ImageChops.lighter(r, g), b)
+        n = sum(m.histogram()[8:])          # > 3 % of 255
+        print(f"{100.0 * n / (m.size[0] * m.size[1]):.3f}")
+    else:
+        print(__doc__); sys.exit(2)
+except (IndexError,):
+    print(__doc__); sys.exit(2)
+except Exception:
+    print("NA"); sys.exit(1)
