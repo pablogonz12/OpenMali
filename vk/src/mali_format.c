@@ -227,7 +227,10 @@ mali_format_get(unsigned arch, VkFormat f, struct mali_fmt *o)
    /* Linear tiling: single-level 2D, no compressed formats. Our layout is linear for both tilings by default, so same bits minus compressed. */
    o->linear = o->compressed ? 0 : (img & ~(VkFormatFeatureFlags)0);
    if (mali_bc_is_bc(f)) {
-      /* R4-M7: BC is emulated (decode to a shadow image, mali_bc.h), whatever the sampler tables say */
+      /* R4-M7: BC is emulated (decode to a shadow image, mali_bc.h), whatever the sampler tables say. MALI_NO_BC=1 (debug) removes the
+       * formats entirely, so wined3d's own DXT/BPTC decompression is reachable: the phone-side falsifier for the BC path. */
+      if (mali_bc_disabled())
+         return false;
       o->optimal = mali_bc_optimal_features(f);
       o->linear = 0;
       o->buffer = 0;

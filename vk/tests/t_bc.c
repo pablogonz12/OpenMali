@@ -358,7 +358,165 @@ static void t_ref(void)
    }
 }
 
-/* ---------- 3. real SPIR-V on the host GPU ---------- */
+/* ---------- 2b. uploads: buffer gaps, sub-regions, layers (RUNG 2, character textures) ---------- */
+
+/* Mesa's vk_image_buffer_copy_layout, written independently of the driver helper: bufferRowLength / bufferImageHeight are in texels and are
+ * rounded up to whole blocks. This is the oracle for mali_bc_buffer_geometry(). */
+static void
+ref_geom(uint32_t rl, uint32_t ih, VkExtent3D e, uint32_t bw, uint32_t bh, uint32_t bs, uint32_t *row, uint64_t *slice, uint32_t *ex, uint32_t *ey)
+{
+   const uint32_t r = rl ? rl : e.width, h = ih ? ih : e.height;
+   *ex = (e.width + bw - 1) / bw;
+   *ey = (e.height + bh - 1) / bh;
+   *row = (r + bw - 1) / bw * bs;
+   *slice = (uint64_t)((h + bh - 1) / bh) * *row;
+}
+
+static void t_bufgeom(void)
+{
+   static const VkExtent3D ext[] = { { 4, 4, 1 }, { 5, 3, 1 }, { 32, 24, 1 }, { 64, 1, 1 }, { 13, 9, 1 }, { 4096, 4096, 1 } };
+   static const uint32_t rls[] = { 0, 3, 4, 5, 16, 33, 4096, 4100 };
+   static const uint32_t ihs[] = { 0, 1, 3, 8, 24, 25 };
+   unsigned n = 0;
+   for (unsigned e = 0; e < 6; e++)
+      for (unsigned r = 0; r < 8; r++)
+         for (unsigned h = 0; h < 6; h++) {
+            if (rls[r] && rls[r] < ext[e].width) continue;   /* VU: bufferRowLength >= imageExtent.width */
+            if (ihs[h] && ihs[h] < ext[e].height) continue;
+            struct mali_bc_bufgeom bg;
+            uint32_t row, ex, ey;
+            uint64_t slice;
+            CHECK(mali_bc_buffer_geometry(rls[r], ihs[h], ext[e], 4, 4, 16, &bg) == 0, "geom refused");
+            ref_geom(rls[r], ihs[h], ext[e], 4, 4, 16, &row, &slice, &ex, &ey);
+            CHECK(bg.row == row && bg.slice == slice && bg.ex == ex && bg.ey == ey,
+                  "%ux%u rl %u ih %u: row %u/%u slice %llu/%llu ex %u/%u ey %u/%u", ext[e].width, ext[e].height, rls[r], ihs[h], bg.row, row,
+                  (unsigned long long)bg.slice, (unsigned long long)slice, bg.ex, ex, bg.ey, ey);
+            if (!rls[r] && !ihs[h]) {   /* tight: the whole level, exactly the compressed level size */
+               struct mali_bc_layout l;
+               if (mali_bc_layout_init(VK_FORMAT_BC7_UNORM_BLOCK, VK_IMAGE_TYPE_2D, ext[e], 1, 1, &l) == 0)
+                  CHECK(bg.slice == l.comp.lv[0].size, "%ux%u tight slice %llu comp size %llu", ext[e].width, ext[e].height,
+                        (unsigned long long)bg.slice, (unsigned long long)l.comp.lv[0].size);
+            }
+            n++;
+         }
+   CHECK(n > 100, "bufgeom matrix %u", n);
+}
+
+/* One image->image upload through a staging buffer that has gaps (bufferRowLength / bufferImageHeight != 0), a sub-region and three layers:
+ * the bytes must land exactly where the level expects them, the decode must cover exactly the uploaded blocks, and every block outside the
+ * uploaded region must still hold its previous decode. */
+static void t_upload(void)
+{
+   static const struct { uint32_t fl, fh; } gap[] = { { 0, 0 }, { 8, 4 }, { 4, 8 }, { 0, 4 }, { 4, 0 } };
+   for (int i = 0; i < 16; i++) {
+      VkFormat f = g_all[i];
+      struct img src = mk_img(f, VK_IMAGE_TYPE_2D, (VkExtent3D){ 32, 24, 1 }, 3, 3, 400 + i);
+      struct img dst = mk_img(f, VK_IMAGE_TYPE_2D, (VkExtent3D){ 32, 24, 1 }, 3, 3, 500 + i);
+      const struct mali_bc_layout *l = &src.lay;
+      const uint32_t bs = l->fmt->block_bytes, bpt = l->fmt->shadow_bpt;
+      memset(dst.mem + l->comp.base, 0x11, l->comp.size);
+      uint8_t *snap = malloc(l->shadow.size);
+      memcpy(snap, dst.mem + l->shadow.base, l->shadow.size);
+      unsigned geom_bad = 0, land_bad = 0, dec_bad = 0, keep_bad = 0;
+      for (unsigned g = 0; g < sizeof gap / sizeof gap[0]; g++)
+         for (uint32_t a = 0; a < 3; a++)
+            for (uint32_t v = 0; v < 3; v++) {
+               const struct mali_bc_level *c = &l->comp.lv[v], *s = &l->shadow.lv[v];
+               /* sub-region: level 1 writes blocks (1,0)..(2,2) + the rest of the block row; other levels the whole one */
+               VkOffset3D o = v == 1 ? (VkOffset3D){ 4, 0, 0 } : (VkOffset3D){ 0, 0, 0 };
+               VkExtent3D e = v == 1 ? (VkExtent3D){ (c->w > 12 ? 8u : c->w - 4u), c->h, 1 } : (VkExtent3D){ c->w, c->h, 1 };
+               struct mali_bc_bufgeom bg, rf;
+               uint32_t row, ex, ey;
+               uint64_t slice;
+               geom_bad += mali_bc_buffer_geometry(e.width + gap[g].fl, e.height + gap[g].fh, e, 4, 4, bs, &bg) != 0;
+               ref_geom(e.width + gap[g].fl, e.height + gap[g].fh, e, 4, 4, bs, &row, &slice, &ex, &ey);
+               const uint64_t off = 2ull * bs;   /* non-zero, block aligned bufferOffset */
+               const size_t need = (size_t)(off + slice);
+               uint8_t *stg = malloc(need);
+               memset(stg, 0x5a, need);
+               const uint32_t bx0 = (uint32_t)o.x / 4, by0 = (uint32_t)o.y / 4;
+               for (uint32_t by = 0; by < ey; by++)
+                  for (uint32_t bx = 0; bx < ex; bx++)
+                     memcpy(stg + off + (uint64_t)by * row + (uint64_t)bx * bs,
+                            src.mem + l->comp.base + a * l->comp.array_stride + c->off + (uint64_t)(by0 + by) * c->row + (uint64_t)(bx0 + bx) * bs, bs);
+               /* the driver's copy: image region <- staging, with the helper's geometry */
+               for (uint32_t by = 0; by < bg.ey; by++)
+                  for (uint32_t bx = 0; bx < bg.ex; bx++) {
+                     uint8_t *d = dst.mem + l->comp.base + a * l->comp.array_stride + c->off + (uint64_t)(by0 + by) * c->row + (uint64_t)(bx0 + bx) * bs;
+                     memcpy(d, stg + off + (uint64_t)by * bg.row + (uint64_t)bx * bs, bs);
+                  }
+               free(stg);
+               struct mali_bc_list jl = { 0 };
+               CHECK(mali_bc_plan_decode(&jl, l, (uint64_t)(uintptr_t)dst.mem, v, a, 1, o, e) == 0 && jl.n == 1, "%s upload plan", l->fmt->name);
+               run_ref(&jl);
+               mali_bc_list_free(&jl);
+               /* landed: the region bytes equal the source's, the same block rows outside it are still 0x11 */
+               for (uint32_t by = 0; by < c->bh; by++)
+                  for (uint32_t bx = 0; bx < c->bw; bx++) {
+                     const bool in = by >= by0 && by < by0 + bg.ey && bx >= bx0 && bx < bx0 + bg.ex;
+                     const uint8_t *d = dst.mem + l->comp.base + a * l->comp.array_stride + c->off + (uint64_t)by * c->row + (uint64_t)bx * bs;
+                     const uint8_t *sp = src.mem + l->comp.base + a * l->comp.array_stride + c->off + (uint64_t)by * c->row + (uint64_t)bx * bs;
+                     land_bad += in ? memcmp(d, sp, bs) != 0 : memcmp(d, (uint8_t[16]){ 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11 }, bs) != 0;
+                  }
+               /* decoded: the region matches Mesa's decode of the block it now holds (plan_decode rounds to blocks, clamped to the level) */
+               const uint32_t rx0 = bx0 * 4, ry0 = by0 * 4;
+               const uint32_t rx1 = rx0 + bg.ex * 4 > c->w ? c->w : rx0 + bg.ex * 4;
+               const uint32_t ry1 = ry0 + bg.ey * 4 > c->h ? c->h : ry0 + bg.ey * 4;
+               struct img dr = dst;
+               dec_bad += verify(&dr, rx0, ry0, rx1, ry1, v, a, 1);
+               /* outside: the previous decode of every other block of this level is untouched */
+               for (uint32_t by = 0; by < c->bh; by++)
+                  for (uint32_t bx = 0; bx < c->bw; bx++) {
+                     if (by >= by0 && by < by0 + bg.ey && bx >= bx0 && bx < bx0 + bg.ex) continue;
+                     const uint8_t *now = dst.mem + l->shadow.base + a * l->shadow.array_stride + s->off + (uint64_t)by * 4 * s->row + (uint64_t)bx * 4 * bpt;
+                     const uint8_t *was = snap + a * l->shadow.array_stride + s->off + (uint64_t)by * 4 * s->row + (uint64_t)bx * 4 * bpt;
+                     for (unsigned r = 0; r < 4; r++)
+                        keep_bad += memcmp(now + (uint64_t)r * s->row, was + (uint64_t)r * s->row, 4 * bpt) != 0;
+                  }
+               memset(dst.mem + l->comp.base + a * l->comp.array_stride + c->off, 0x11, c->size);
+               memcpy(dst.mem + l->shadow.base, snap, l->shadow.size);   /* next case starts from the same clean state */
+            }
+      CHECK(geom_bad == 0, "%s upload geometry: %u refusals", l->fmt->name, geom_bad);
+      CHECK(land_bad == 0, "%s upload: %u blocks in the wrong place", l->fmt->name, land_bad);
+      CHECK(dec_bad == 0, "%s upload: %u texels of the uploaded region wrong", l->fmt->name, dec_bad);
+      CHECK(keep_bad == 0, "%s upload: %u decoded blocks outside the region were clobbered", l->fmt->name, keep_bad);
+      free(snap);
+      free(src.mem);
+      free(dst.mem);
+   }
+}
+
+/* ---------- 2c. BC image -> BC image copy across layers ---------- */
+
+static void t_imgcopy(void)
+{
+   for (int i = 0; i < 16; i++) {
+      VkFormat f = g_all[i];
+      struct img im = mk_img(f, VK_IMAGE_TYPE_2D, (VkExtent3D){ 32, 24, 1 }, 2, 3, 600 + i);
+      const struct mali_bc_layout *l = &im.lay;
+      const uint32_t bs = l->fmt->block_bytes, bpt = l->fmt->shadow_bpt;
+      const struct mali_bc_level *c = &l->comp.lv[0], *s = &l->shadow.lv[0];
+      /* vkCmdCopyImage layer 0 -> layer 2, a block rect at (1,1), width 2 blocks: source bytes by the copy plan's own strides */
+      const uint32_t bx0 = 1, by0 = 1, ex = 2, ey = 2;
+      unsigned bad = 0;
+      for (uint32_t by = 0; by < ey; by++)
+         for (uint32_t bx = 0; bx < ex; bx++)
+            memcpy(im.mem + l->comp.base + 2 * l->comp.array_stride + c->off + (uint64_t)(by0 + by) * c->row + (uint64_t)(bx0 + bx) * bs,
+                   im.mem + l->comp.base + 0 * l->comp.array_stride + c->off + (uint64_t)(by0 + by) * c->row + (uint64_t)(bx0 + bx) * bs, bs);
+      /* 2 blocks x 2 blocks = 8x8 texels, block aligned, inside 32x24 level 0 */
+      struct mali_bc_list jl = { 0 };
+      CHECK(mali_bc_plan_decode(&jl, l, (uint64_t)(uintptr_t)im.mem, 0, 2, 1, (VkOffset3D){ bx0 * 4, by0 * 4, 0 }, (VkExtent3D){ ex * 4, ey * 4, 1 }) == 0,
+            "%s imgcpy plan", l->fmt->name);
+      run_ref(&jl);
+      mali_bc_list_free(&jl);
+      bad += verify(&im, bx0 * 4, by0 * 4, (bx0 + ex) * 4, (by0 + ey) * 4, 0, 2, 1);
+      /* layer 0's shadow is stale by design (nothing wrote it now) but layer 1's must be exactly as mk_img left it */
+      (void)bs; (void)bpt; (void)s;
+      CHECK(bad == 0, "%s image copy layer 2: %u texels wrong", l->fmt->name, bad);
+      free(im.mem);
+   }
+}
+
 #include <vulkan/vulkan_core.h>
 static int g_gpu_ran;
 struct gpu {
@@ -645,6 +803,9 @@ int main(int argc, char **argv)
    printf("t_bc: layout\n");    t_layout();
    printf("t_bc: planner\n");   t_planner();
    printf("t_bc: reference vs Mesa decoders\n"); t_ref();
+   printf("t_bc: buffer geometry (gaps, sub-regions)\n"); t_bufgeom();
+   printf("t_bc: uploads: layers, mips, gaps, sub-regions\n"); t_upload();
+   printf("t_bc: image copy across layers\n"); t_imgcopy();
    if (!no_gpu) { printf("t_bc: shaders on the host GPU\n"); t_gpu(); }
    printf("t_bc: shader compile (v11, v13)\n"); t_compile();
    if (gold && !g_fail) {

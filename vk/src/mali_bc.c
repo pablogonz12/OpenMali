@@ -49,6 +49,32 @@ mali_bc_format(VkFormat f)
 bool mali_bc_is_bc(VkFormat f) { return f >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && f <= VK_FORMAT_BC7_SRGB_BLOCK; }
 bool mali_bc_is_etc2(VkFormat f) { return f >= VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK && f <= VK_FORMAT_EAC_R11G11_SNORM_BLOCK; }
 
+bool
+mali_bc_disabled(void)
+{
+   static int off = -1;   /* the env is read once: the answer must not change while a device exists */
+   if (off < 0) {
+      const char *v = getenv("MALI_NO_BC");
+      off = v && *v && *v != '0';
+   }
+   return off != 0;
+}
+
+int
+mali_bc_buffer_geometry(uint32_t buffer_row_length, uint32_t buffer_image_height, VkExtent3D extent, uint32_t bw, uint32_t bh, uint32_t bs,
+                        struct mali_bc_bufgeom *out)
+{
+   if (!bw || !bh || !bs || !extent.width || !extent.height)
+      return -EINVAL;
+   const uint32_t rl = buffer_row_length ? buffer_row_length : extent.width;
+   const uint32_t ih = buffer_image_height ? buffer_image_height : extent.height;
+   out->ex = (extent.width + bw - 1) / bw;
+   out->ey = (extent.height + bh - 1) / bh;
+   out->row = (rl + bw - 1) / bw * bs;
+   out->slice = (uint64_t)((ih + bh - 1) / bh) * out->row;
+   return out->row && out->slice ? 0 : -EINVAL;
+}
+
 VkFormatFeatureFlags
 mali_bc_optimal_features(VkFormat f)
 {
