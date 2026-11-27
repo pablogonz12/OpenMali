@@ -625,7 +625,7 @@ preload_compile(unsigned slot)   /* one of PRE_SLOT_* (the enum kinds are slots 
    lay.nsets = 1;
    unsigned nb = slot == MALI_PRELOAD_ZS || slot == PRE_SLOT_ZS_MS ? 2 : 1;
    lay.set[0] = (struct mali_lset){ nb, nb, 0, b, NULL };
-   lay.push_size = 16;
+   lay.push_size = 20;
    struct mali_compile_opts o = { 0 };
    o.arch = g_dev.arch;
    if (!g_pre_vs.ok) {
@@ -720,7 +720,7 @@ mali_meta_preload(struct mali_meta_mem *mem, enum mali_preload_kind kind, const 
    d->gfx.push_base[0] = 40;
    d->gfx.push_base[1] = g_dev.arch == 13 ? 24 : 0;
    d->gfx.depth_func = 7;   /* ALWAYS */
-   uint32_t pc[4] = { src->row[0], src->row[1], src->arg, src->bpp };
+   uint32_t pc[5] = { src->row[0], src->row[1], src->arg, src->bpp, 0 };
    if (kind == MALI_PRELOAD_COLOUR) {
       pc[0] = src->row[0];
       pc[1] = src->arg;
@@ -730,6 +730,7 @@ mali_meta_preload(struct mali_meta_mem *mem, enum mali_preload_kind kind, const 
       if (kind == MALI_PRELOAD_S)
          pc[1] = src->row[0];   /* stencil-only variant reads its row from the srow word */
       pc[3] = msaa ? src->sample_stride : 0;   /* pad: bytes per sample plane, selected by gl_SampleID */
+      pc[4] = msaa ? src->stencil_sample_stride : 0;
    }
    if (msaa) {
       d->gfx.samples = src->samples;   /* the draw runs in the multisampled pass... */
