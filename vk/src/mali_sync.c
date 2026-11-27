@@ -318,7 +318,7 @@ mali_sync_wait(struct vk_device *vk, struct vk_sync *sync, uint64_t wait_value,
       if (r == 0)
          { result = VK_SUCCESS; goto done; }
       if (r == -EIO)
-         { result = vk_device_set_lost(vk, "GPU fault while waiting on a fence"); goto done; }
+         { mali_wait_event("device_lost site=mali_sync.c:321 GPU fault while waiting on a fence"); result = vk_device_set_lost(vk, "GPU fault while waiting on a fence"); goto done; }
       if (r != -ETIMEDOUT)
          { result = vk_errorf(vk, VK_ERROR_UNKNOWN, "fence wait failed: %d", r); goto done; }
       if (vk_device_is_lost(vk))

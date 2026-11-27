@@ -39,10 +39,8 @@ void mali_queue_setup(struct mali_device *dev); /* after vk_queue_init */
  * VkDevices (ANGLE's Chromium GPU process) then builds a command buffer of the older device with the newer device's
  * arena: the newer device's kbase context is handed the older device's attachment VAs, which exist only in the older
  * context, and the GPU raises a CS TRANSLATION_FAULT (notes/x8-cef-fault.md "ANGLE-Vulkan submit failure").
- * mali_cmd_submit binds the command buffer's own device for its submission and restores the previous one after. */
+ * mali_cmd_submit therefore builds and submits through the command buffer's own seam; nothing is rebound. */
 struct mali_hw *mali_queue_hw_of_device(struct vk_device *vkdev);   /* NULL when the device has no seam yet */
-struct mali_hw *mali_queue_bind_for(struct mali_hw *want);          /* previous binding, NULL if none */
-void mali_queue_bind_restore(struct mali_hw *prev);
 
 /* A dup of the last submission's sync_file (-1 if there is none): the X11 shared-memory present has no CPU-visible
  * semaphore to wait (binary semaphores are not observable through vk_sync_wait in this driver), so it waits this

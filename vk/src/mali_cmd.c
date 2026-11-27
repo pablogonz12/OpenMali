@@ -1904,36 +1904,43 @@ mali_cmd_submit(struct vk_command_buffer *vk)
    struct mali_cmd_buffer *cmd = mali_cmd_buffer_from_vk(vk);
    if (!g_hw_set)
       return VK_ERROR_FEATURE_NOT_PRESENT;
-   /* Build and submit through the command buffer's OWN device. The hardware seam is process-wide and the last device
-    * created owns it; two live devices (ANGLE's Chromium GPU process) otherwise record this buffer's attachment VAs
-    * into a stream built with the other device's arena, which the GPU kills with a CS TRANSLATION_FAULT in the other
-    * device's kbase context. */
-   struct mali_hw *own = mali_queue_hw_of_device(vk->base.device);
-   struct mali_hw *prev = own ? mali_queue_bind_for(own) : NULL;
+   /* This command buffer's OWN device. The process-wide seam (g_hw) is a copy of whichever device was created last,
+    * and using it here built a buffer of the older device with the newer device's arena and kicked it on the newer
+    * queue: that kbase context then read the older device's attachment VA and faulted (notes/x8-cef-fault.md).
+    * Nothing here rebinds process state any more: mali_frame_build() takes the seam as a parameter, so the submit
+    * path needs no global at all and two devices submit concurrently. */
+   const struct mali_hw *hw = mali_queue_hw_of_device(vk->base.device);
+   if (hw) {
+      if (hw->user != g_hw.user)
+         mali_wait_event("cross-device submit: command buffer of dev=%p submitted while dev=%p is the default",
+                         hw->user, g_hw.user);
+   } else {
+      hw = &g_hw;
+   }
    uint64_t *all = NULL;
    unsigned nall = 0, capall = 0, counted = 0;
    VkResult res = VK_SUCCESS;
-   if (g_hw.job_begin)
-      g_hw.job_begin(g_hw.user);   /* once per command buffer: all its frames form one submission */
+   if (hw->job_begin)
+      hw->job_begin(hw->user);   /* once per command buffer: all its frames form one submission */
    /* M15: hand the GPU-write marks to the backend before the submission that performs them, so the fence wait
     * for it CSYNCs exactly these BOs. An unplaced write (wrote_full) asks for one full sweep. */
-   if (g_hw.bo_wrote) {
+   if (hw->bo_wrote) {
       for (unsigned i = 0; i < cmd->nwrote; i++)
-         g_hw.bo_wrote(g_hw.user, &cmd->wrote[i]->bo);
+         hw->bo_wrote(hw->user, &cmd->wrote[i]->bo);
       if (cmd->wrote_full)
-         g_hw.bo_wrote(g_hw.user, NULL);
+         hw->bo_wrote(hw->user, NULL);
    }
    for (unsigned i = 0; i < cmd->nframes; i++) {
       struct mali_frame fr = cmd->frames[i];
       /* any_ind / any_ind_cpu / poly_cpu are accumulated at record time (mali_frame_note_rec): no second pass over the frame's records */
       bool ind = fr.any_ind, ind_cpu = fr.any_ind_cpu, poly_cpu = fr.poly_cpu;
-      if ((ind_cpu || poly_cpu) && g_hw.drain) {
+      if ((ind_cpu || poly_cpu) && hw->drain) {
          /* CPU-read indirect args and polygon-mode index contents: every earlier frame (also those of this command buffer) must have retired.
           * A GPU-read indirect draw is NOT in this set: the command stream loads it after the producing job, so a drain here would serialize
           * exactly the GPU-driven case this exists for. */
          if (nall) {
             kb_wmb();
-            int sres = g_hw.submit_multi(g_hw.user, all, nall, counted);
+            int sres = hw->submit_multi(hw->user, all, nall, counted);
             if (sres) {
                mali_wait_event("device_lost site=mali_cmd.c:1894 rc=%d errno=%d (%s) frames=%u instrs=%u drain=1",
                                sres, errno, strerror(errno), counted, nall);
@@ -1943,11 +1950,11 @@ mali_cmd_submit(struct vk_command_buffer *vk)
             }
             nall = counted = 0;
          }
-         g_hw.drain(g_hw.user);
+         hw->drain(hw->user);
          if (getenv("MALI_PIPE_DBG"))
             fprintf(stderr, "mali_vk: drained before frame %u/%u (CPU-read indirect arguments)\n", i, cmd->nframes);
       }
-      if (ind && g_hw.soft) {
+      if (ind && hw->soft) {
          /* MALI_SOFT=1: the rasteriser rejects an indirect draw on the frame record, and expansion below would
           * erase that origin before it ever sees it. Reject here, while the record still says "indirect". */
          res = VK_ERROR_FEATURE_NOT_PRESENT;
@@ -1959,7 +1966,7 @@ mali_cmd_submit(struct vk_command_buffer *vk)
       }
       uint64_t *cs = NULL;
       unsigned n = 0;
-      int rc = mali_frame_build(&g_hw, &fr, &cs, &n);
+      int rc = mali_frame_build(hw, &fr, &cs, &n);
       if (ind)
          free(fr.draws);
       if (rc) {
@@ -1982,7 +1989,7 @@ mali_cmd_submit(struct vk_command_buffer *vk)
       if (nall + n > capall) {
          capall = (nall + n) * 2;
          all = realloc(all, capall * sizeof *all);
-         if (!all) { free(cs); mali_queue_bind_restore(prev); return VK_ERROR_OUT_OF_HOST_MEMORY; }
+         if (!all) { free(cs); return VK_ERROR_OUT_OF_HOST_MEMORY; }
       }
       memcpy(all + nall, cs, n * sizeof *all);
       nall += n;
@@ -1991,7 +1998,7 @@ mali_cmd_submit(struct vk_command_buffer *vk)
    }
    if (res == VK_SUCCESS && nall) {
       kb_wmb();
-      int sres = g_hw.submit_multi(g_hw.user, all, nall, counted);
+      int sres = hw->submit_multi(hw->user, all, nall, counted);
       if (sres) {
          mali_wait_event("device_lost site=mali_cmd.c:1949 rc=%d errno=%d (%s) frames=%u instrs=%u",
                          sres, errno, strerror(errno), counted, nall);
@@ -2002,6 +2009,5 @@ mali_cmd_submit(struct vk_command_buffer *vk)
       /* frames of this command buffer were built (arena consumed) but never submitted: nothing to retire */
    }
    free(all);
-   mali_queue_bind_restore(prev);
-   return res;
+      return res;
 }
