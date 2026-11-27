@@ -373,6 +373,18 @@ edge_is_top_left(float ex, float ey)
    return ey > 0.0f || (ey == 0.0f && ex > 0.0f);
 }
 
+/* Always evaluate shared endpoints in the same order, so reversed edges are exact
+ * negatives even when floating-point evaluation rounds. Use framebuffer-space
+ * values before normalizing by the (different) triangle areas. */
+static double
+edge_value(float ax, float ay, float bx, float by, float px, float py)
+{
+   if (ax > bx || (ax == bx && ay > by))
+      return -edge_value(bx, by, ax, ay, px, py);
+   return ((double)bx - ax) * ((double)py - ay) -
+          ((double)by - ay) * ((double)px - ax);
+}
+
 /* ---- one triangle: viewport, cull, scissor, depth, fragment, blend, store ---- */
 struct rctx {
    const struct mali_frame *f;
@@ -454,25 +466,19 @@ raster_tri(struct rctx *c, const float clip[3][4], const float vary[3][MALI_SOFT
    for (unsigned y = (unsigned)y0; y < ye; y++) {
       for (unsigned x = (unsigned)x0; x < xe; x++) {
          const float px = (float)x + 0.5f, py = (float)y + 0.5f;
-         float w0 = ((sx[2] - sx[1]) * (py - sy[1]) - (sy[2] - sy[1]) * (px - sx[1])) * s;
-         float w1 = ((sx[0] - sx[2]) * (py - sy[2]) - (sy[0] - sy[2]) * (px - sx[2])) * s;
-         float w2 = ((sx[1] - sx[0]) * (py - sy[0]) - (sy[1] - sy[0]) * (px - sx[0])) * s;
-         w0 *= iarea; w1 *= iarea; w2 *= iarea;
-         /* A weight this close to zero is "on the edge", whether the rounding gave it 0 or a few ulps either side:
-          * the two triangles of a shared edge evaluate that edge from different base vertices, so one can see -1e-8
-          * where the other sees exactly 0 - rejecting the first on its sign and the second on the top-left rule left
-          * the sample covered by neither (CR thread, vk/src/mali_soft.c:468). Every on-edge sample then goes through
-          * the top-left rule below, which is complementary for the two windings, so exactly one triangle keeps it. */
-         const float weps = 1e-6f;
-         if (w0 < -weps || w1 < -weps || w2 < -weps)
+         const double e0 = edge_value(sx[1], sy[1], sx[2], sy[2], px, py) * s;
+         const double e1 = edge_value(sx[2], sy[2], sx[0], sy[0], px, py) * s;
+         const double e2 = edge_value(sx[0], sy[0], sx[1], sy[1], px, py) * s;
+         if (e0 < 0 || e1 < 0 || e2 < 0)
             continue;
          /* Vulkan's fill rule: a sample exactly on an edge is covered only when that edge is a top or left edge, so
           * two triangles sharing a diagonal cover the seam exactly once instead of both (with blending that is a
           * line along every shared edge; with the depth test on the second write usually hid it). */
-         if ((fabsf(w0) <= weps && !edge_is_top_left((sx[2] - sx[1]) * s, (sy[2] - sy[1]) * s)) ||
-             (fabsf(w1) <= weps && !edge_is_top_left((sx[0] - sx[2]) * s, (sy[0] - sy[2]) * s)) ||
-             (fabsf(w2) <= weps && !edge_is_top_left((sx[1] - sx[0]) * s, (sy[1] - sy[0]) * s)))
+         if ((e0 == 0 && !edge_is_top_left((sx[2] - sx[1]) * s, (sy[2] - sy[1]) * s)) ||
+             (e1 == 0 && !edge_is_top_left((sx[0] - sx[2]) * s, (sy[0] - sy[2]) * s)) ||
+             (e2 == 0 && !edge_is_top_left((sx[1] - sx[0]) * s, (sy[1] - sy[0]) * s)))
             continue;
+         const float w0 = (float)(e0 * iarea), w1 = (float)(e1 * iarea), w2 = (float)(e2 * iarea);
          const float zn = w0 * sz[0] + w1 * sz[1] + w2 * sz[2];   /* NDC depth, clipped against [0, 1] */
          if (depth_clip && (zn < 0.0f || zn > 1.0f))
             continue;
