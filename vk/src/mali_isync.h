@@ -62,10 +62,27 @@ enum mali_isync_action mali_isync_plan_consumer(const struct mali_isync_dev *d, 
 
 /* One submit. fds[] are the shared dma-bufs it references (producer: written by it, consumer: imported by it).
  * Producer runs after the submit's fence exists and waits it (CPU_WAIT) or attaches it (FENCE). */
-enum mali_isync_action mali_isync_producer(struct mali_isync_dev *d, const struct mali_backend_ops *be,
-                                          struct mali_kdev *kdev, const int *fds, unsigned nfds, bool unlisted,
-                                          int fence_fd);
-void mali_isync_consumer(struct mali_isync_dev *d, const struct mali_backend_ops *be, struct mali_kdev *kdev,
-                         const int *fds, unsigned nfds);
+enum mali_isync_action mali_isync_producer_ex(struct mali_isync_dev *d, const struct mali_backend_ops *be,
+                                             struct mali_kdev *kdev, const int *fds, unsigned nfds, bool unlisted,
+                                             int fence_fd, int *wait_rc);
+/* dir is MALI_DMA_BUF_SYNC_READ (this submit reads the buffer) or MALI_DMA_BUF_SYNC_WRITE (it writes it: the
+ * export then also returns the current readers' fences). Returns 0, or -errno: the caller must not submit. */
+int mali_isync_consumer_ex(struct mali_isync_dev *d, const struct mali_backend_ops *be, struct mali_kdev *kdev,
+                           const int *fds, unsigned nfds, unsigned dir);
+
+/* Convenience forms without the status out-params (tests, callers that cannot act on a failure). */
+static inline enum mali_isync_action
+mali_isync_producer(struct mali_isync_dev *d, const struct mali_backend_ops *be, struct mali_kdev *kdev,
+                    const int *fds, unsigned nfds, bool unlisted, int fence_fd)
+{
+   return mali_isync_producer_ex(d, be, kdev, fds, nfds, unlisted, fence_fd, NULL);
+}
+
+static inline void
+mali_isync_consumer(struct mali_isync_dev *d, const struct mali_backend_ops *be, struct mali_kdev *kdev,
+                    const int *fds, unsigned nfds)
+{
+   (void)mali_isync_consumer_ex(d, be, kdev, fds, nfds, MALI_DMA_BUF_SYNC_READ);
+}
 
 #endif

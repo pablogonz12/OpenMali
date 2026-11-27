@@ -625,35 +625,87 @@ mali_present_fence_ok(struct mali_device *dev)
 #define MALI_ISYNC_MAX_BOS 16
 
 /* The dma-bufs this submission references that are shared outside a swapchain (mali_isync.h).
- *   fd[]  - every shared dma-buf the submission WRITES (the producer side: attach this submit's fence to it).
- *   imp[] - every imported dma-buf it writes OR reads through a bound descriptor set (sampled/storage/input
- *           attachment, UBO/SSBO, vertex/index buffer) or a copy/blit source: the consumer side, which waits the
- *           producer's fences first. O(number of imported BOs bound), whatever the frame's own buffer count is,
- *           because mali_cmd_mark_read keeps only imported ones.
- * unlisted: a command buffer could not name all its writes (wrote_full) or the list is full - then the fence cannot
- * be attached to every shared buffer and the submit takes the CPU wait instead. */
+ *   fd[]   - every shared dma-buf the submission WRITES (the producer side: attach this submit's fence to it).
+ *   impw[] - imported dma-bufs it WRITES: the consumer side, and the export must ask for WRITE, which is the fence
+ *            of the current readers and writers (a plain READ export would not wait an app that is still reading it).
+ *   impr[] - imported dma-bufs it only READS through a bound descriptor set (sampled/input attachment, UBO/SSBO,
+ *            vertex/index buffer) or a copy/blit source: the consumer side, exported with READ (wait the producer).
+ *            O(number of imported BOs bound), whatever the frame's own buffer count is, because mali_cmd_mark_read
+ *            keeps only imported ones.
+ * A list that runs over MALI_ISYNC_MAX_BOS is not dropped: the dependency is waited on the spot (submit_shared_wait),
+ * before any GPU work is submitted. d/be/kdev/err carry what that needs.
+ * unlisted: a command buffer could not name all its writes (wrote_full) or the write list is full - then the fence
+ * cannot be attached to every shared buffer and the submit takes the CPU wait instead. */
 struct mali_isync_submit {
    int fd[MALI_ISYNC_MAX_BOS];      /* every shared dma-buf written (exported or imported) */
    unsigned n;
-   int imp[MALI_ISYNC_MAX_BOS];     /* the imported ones: somebody else's, read or written here */
-   unsigned nimp;
+   int impw[MALI_ISYNC_MAX_BOS];    /* imported and written here */
+   unsigned nimpw;
+   int impr[MALI_ISYNC_MAX_BOS];    /* imported, read-only here */
+   unsigned nimpr;
    bool unlisted;
+   /* what an over-cap dependency must be waited with, and the first failure */
+   struct mali_isync_dev *d;
+   const struct mali_backend_ops *be;
+   struct mali_kdev *kdev;
+   int err;
 };
 
+/* Wait one imported dma-buf now (it did not fit a list): same CPU wait the batched path does, before the submit. */
 static void
-submit_shared_add_imp(struct mali_isync_submit *out, int fd)
+submit_shared_wait(struct mali_isync_submit *out, int fd, unsigned dir)
 {
-   for (unsigned q = 0; q < out->nimp; q++)
-      if (out->imp[q] == fd)
-         return;
-   if (out->nimp < MALI_ISYNC_MAX_BOS)
-      out->imp[out->nimp++] = fd;
+   if (out->err || !out->d)
+      return;
+   int r = mali_isync_consumer_ex(out->d, out->be, out->kdev, &fd, 1, dir);
+   if (r < 0)
+      out->err = r;
+}
+
+static bool
+submit_shared_find(const int *l, unsigned n, int fd)
+{
+   for (unsigned q = 0; q < n; q++)
+      if (l[q] == fd)
+         return true;
+   return false;
+}
+
+/* an imported dma-buf this submit writes goes to impw only: the WRITE export already waits its readers */
+static void
+submit_shared_add_impw(struct mali_isync_submit *out, int fd)
+{
+   if (submit_shared_find(out->impw, out->nimpw, fd))
+      return;
+   for (unsigned q = 0; q < out->nimpr; q++)
+      if (out->impr[q] == fd) {
+         out->impr[q] = out->impr[--out->nimpr];   /* read-only entry superseded by the write */
+         break;
+      }
+   if (out->nimpw < MALI_ISYNC_MAX_BOS)
+      out->impw[out->nimpw++] = fd;
+   else
+      submit_shared_wait(out, fd, MALI_DMA_BUF_SYNC_WRITE);
+}
+
+static void
+submit_shared_add_impr(struct mali_isync_submit *out, int fd)
+{
+   if (submit_shared_find(out->impw, out->nimpw, fd) || submit_shared_find(out->impr, out->nimpr, fd))
+      return;
+   if (out->nimpr < MALI_ISYNC_MAX_BOS)
+      out->impr[out->nimpr++] = fd;
+   else
+      submit_shared_wait(out, fd, MALI_DMA_BUF_SYNC_READ);
 }
 
 static void
 submit_shared_collect(struct vk_queue_submit *submit, struct mali_isync_submit *out)
 {
-   memset(out, 0, sizeof *out);
+   /* the caller has already zeroed it and set d/be/kdev: only the lists start empty */
+   out->n = out->nimpw = out->nimpr = 0;
+   out->unlisted = false;
+   out->err = 0;
    for (uint32_t i = 0; i < submit->command_buffer_count; i++) {
       struct mali_cmd_buffer *cmd = mali_cmd_buffer_from_vk(submit->command_buffers[i]);
       if (cmd->wrote_full)
@@ -664,26 +716,21 @@ submit_shared_collect(struct vk_queue_submit *submit, struct mali_isync_submit *
             continue;
          if (m->isync != MALI_ISYNC_BO_EXPORTED && m->isync != MALI_ISYNC_BO_IMPORTED)
             continue;
-         bool dup = false, idup = false;
-         for (unsigned q = 0; q < out->n; q++)
-            dup |= out->fd[q] == m->bo.dmabuf_fd;
-         if (dup) {
-            for (unsigned q = 0; q < out->nimp; q++)
-               idup |= out->imp[q] == m->bo.dmabuf_fd;
-         } else if (out->n < MALI_ISYNC_MAX_BOS) {
-            out->fd[out->n++] = m->bo.dmabuf_fd;
-         } else {
-            out->unlisted = true;
+         if (!submit_shared_find(out->fd, out->n, m->bo.dmabuf_fd)) {
+            if (out->n < MALI_ISYNC_MAX_BOS)
+               out->fd[out->n++] = m->bo.dmabuf_fd;
+            else
+               out->unlisted = true;
          }
-         if (m->isync == MALI_ISYNC_BO_IMPORTED && !idup)
-            submit_shared_add_imp(out, m->bo.dmabuf_fd);
+         if (m->isync == MALI_ISYNC_BO_IMPORTED)
+            submit_shared_add_impw(out, m->bo.dmabuf_fd);
       }
       /* The consumer side proper: imported dma-bufs this command buffer only reads (descriptors, attachments,
        * copy/blit sources). Without this a reader that never waits would still race the producer's frame. */
       for (unsigned j = 0; j < cmd->nread; j++) {
          struct mali_memory *m = cmd->read[j];
          if (m && m->bo.dmabuf_fd >= 0)
-            submit_shared_add_imp(out, m->bo.dmabuf_fd);
+            submit_shared_add_impr(out, m->bo.dmabuf_fd);
       }
    }
 }
@@ -747,10 +794,25 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
     * (mali_isync.c). On a kernel without the sync-file ioctls (5.10, ENOTTY) this is a no-op and the producer's
     * side CPU wait is what covers it. */
    struct mali_isync_submit shared;
+   memset(&shared, 0, sizeof shared);
+   shared.d = &dev->isync;
+   shared.be = be;
+   shared.kdev = dev->kdev;
    submit_shared_collect(submit, &shared);
    enum mali_isync_action isync = mali_isync_plan_producer(&dev->isync, shared.n, shared.unlisted);
-   if (shared.nimp)
-      mali_isync_consumer(&dev->isync, be, dev->kdev, shared.imp, shared.nimp);
+   /* No GPU work has been submitted yet, so a dependency that cannot be waited fails the submission cleanly (the
+    * caller's signals are not signalled, as for any vkQueueSubmit error). */
+   if (shared.err)
+      return vk_error(vq, shared.err == -ENOMEM || shared.err == -EMFILE ? VK_ERROR_OUT_OF_HOST_MEMORY
+                                                                       : VK_ERROR_DEVICE_LOST);
+   int isync_rc = 0;
+   if (shared.nimpw)
+      isync_rc = mali_isync_consumer_ex(&dev->isync, be, dev->kdev, shared.impw, shared.nimpw, MALI_DMA_BUF_SYNC_WRITE);
+   if (isync_rc == 0 && shared.nimpr)
+      isync_rc = mali_isync_consumer_ex(&dev->isync, be, dev->kdev, shared.impr, shared.nimpr, MALI_DMA_BUF_SYNC_READ);
+   if (isync_rc < 0)
+      return vk_error(vq, isync_rc == -ENOMEM || isync_rc == -EMFILE ? VK_ERROR_OUT_OF_HOST_MEMORY
+                                                                   : VK_ERROR_DEVICE_LOST);
    if (submit->command_buffer_count && be->host_sync)
       be->host_sync(dev->kdev);
    /* Recorded frames: each is built, submitted and retired in order (mali_cmd_submit -> hw_submit). */
@@ -806,9 +868,17 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
    }
    /* Implicit sync, producer side: attach this submission's fence as a write fence to every shared dma-buf it
     * writes, or (5.10) wait the submission out before returning (mali_isync.c). */
+   int isync_wait = 0;
    if (isync != MALI_ISYNC_NONE)
-      mali_isync_producer(&dev->isync, be, dev->kdev, shared.fd, shared.n, shared.unlisted, fd);
+      mali_isync_producer_ex(&dev->isync, be, dev->kdev, shared.fd, shared.n, shared.unlisted, fd, &isync_wait);
    close(fd);
+   if (isync_wait < 0) {
+      /* 5.10 path: the submit's own fence was the only thing keeping a consumer out of these buffers and waiting it
+       * failed (GPU fault). The work is in flight but its writes are not known to be finished: report DEVICE_LOST
+       * instead of VK_SUCCESS, as the submit_signal failure path above does. */
+      if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: isync fallback wait failed: %d\n", isync_wait);
+      return vk_queue_set_lost(vq, "isync fallback wait failed: %d", isync_wait);
+   }
    /* M15: vk_common's present submit has no command buffers, the image acquire semaphores as waits and the render
     * semaphore as signal (an app's fence-only submit has no waits, so it is not counted). */
    if (dev->hw && dev->hw->fp.on && submit->command_buffer_count == 0 && submit->wait_count > 0 && submit->signal_count > 0)
