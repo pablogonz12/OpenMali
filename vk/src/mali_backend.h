@@ -115,7 +115,14 @@ struct mali_backend_ops {
     * monotonic per BO, so a mark made for a frame that is still in flight is never lost. NULL = the front end
     * cannot enumerate the writes: the next device->CPU sync must sweep every BO (conservative fallback). */
    void (*bo_wrote)(struct mali_kdev *kdev, struct mali_bo *bo);
+   /* The CPU is about to reach this BO through a fresh mapping (vkMapMemory): it may write from now on, so the
+    * next CPU->device MEM_SYNC must cover it and a later submit may skip it. */
    void (*bo_host_touch)(struct mali_kdev *kdev, struct mali_bo *bo);
+   /* The mapping is gone (vkUnmapMemory): the bytes written so far still need the next sync, so the BO stays dirty;
+    * only "the CPU can write at any moment" ends here. */
+   void (*bo_host_unmap)(struct mali_kdev *kdev, struct mali_bo *bo);
+   /* The CPU wrote a range the front end flushed explicitly (vkFlushMappedMemoryRanges): dirty without a new map. */
+   void (*bo_host_dirty)(struct mali_kdev *kdev, struct mali_bo *bo);
    int (*submit_cs)(struct mali_kdev *kdev, const uint64_t *cs, unsigned ninstr);
    /* Wait until *counter_cpu >= target (a CQS word the CS increments). 0, -ETIMEDOUT, -EIO (GPU fault). */
    int (*wait_counter)(struct mali_kdev *kdev, const volatile uint64_t *counter_cpu, uint64_t target, int timeout_ms);

@@ -92,6 +92,9 @@ struct kb_bo {
 	bool imported;   /* driver-level: a foreign dma-buf (kb_bo_import_dmabuf from outside), not one we allocated and exported */
 	bool hot;        /* driver-level: CPU rewrites it every frame (synced on every CS submit, others once per queue submit) */
 	bool host_lazy;  /* driver-level: CPU never touched yet (skip MEM_SYNC until bo_host_touch) */
+	bool cpu_dirty;  /* driver-level: the CPU may have written it since the last CPU->device MEM_SYNC (MALI_SYNC_DIRTY) */
+	bool cpu_mapped; /* driver-level: the CPU holds a mapping now (vkMapMemory .. vkUnmapMemory): it may write at any time */
+	bool user_mem;   /* driver-level: a VkDeviceMemory BO (MALI_BO_HOSTLAZY|EXPORT): the only kind MALI_SYNC_DIRTY covers */
 	uint64_t gpu_writes;   /* driver-level: GPU-write marks (kb_bo_wrote) since allocation */
 	uint64_t synced_writes; /* driver-level: gpu_writes value the last device->CPU MEM_SYNC covered */
 };

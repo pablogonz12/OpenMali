@@ -309,6 +309,10 @@ int mali_frame_submit(const struct mali_hw *hw, const struct mali_frame *f);
 /* polygonMode LINE (mode 1: 6 indices per triangle) / POINT (mode 2: 3) from the assembled triangles of a list (8) / strip (10) / fan (12); see mali_cs_emit.c. out: 6 * n entries. */
 size_t mali_poly_assemble(unsigned mode, unsigned prim, const uint32_t *restart, const uint32_t *v, uint32_t n, uint32_t *out);
 
+/* mali_render.c: the tile the FBD declares (log2 of its area) and the FBD Bound Min/Max box (the render area rounded
+ * outward to whole tiles, MALI_BBOX32 = 1: 32 px, 2: the whole attachment). */
+unsigned mali_fbd_tile_log2(const struct mali_env *env, const struct mali_frame *f);
+void mali_fbd_bounds(const struct mali_env *env, const struct mali_frame *f, uint32_t *out /* 4: minx,miny,maxx,maxy */);
 /* mali_render.c: framebuffer descriptor (v11 and v13) and per-frame blocks. out: 256 B (KB_FB_DESC_SIZE_ZS), 64-aligned. */
 int mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uint8_t *out, uint64_t tiler_ctx_va,
                          uint64_t sample_locations_va);

@@ -311,10 +311,16 @@ mali_MapMemory(VkDevice _device, VkDeviceMemory _mem, VkDeviceSize offset, VkDev
 VKAPI_ATTR void VKAPI_CALL
 mali_UnmapMemory(VkDevice _device, VkDeviceMemory _mem)
 {
+   VK_FROM_HANDLE(mali_device, dev, _device);
    VK_FROM_HANDLE(mali_memory, mem, _mem);
 
-   if (mem)
-      mem->mapped = false;
+   if (!mem)
+      return;
+   mem->mapped = false;
+   /* MALI_SYNC_DIRTY: the BO stays dirty (the GPU has not seen these writes yet), but the CPU can no longer write it
+    * behind the driver's back, so the sync that covers those bytes may clear the flag. */
+   if (mali_device_pdev(dev)->backend->bo_host_unmap)
+      mali_device_pdev(dev)->backend->bo_host_unmap(dev->kdev, &mem->bo);
 }
 
 static void
@@ -323,6 +329,11 @@ range_cache(struct mali_device *dev, const VkMappedMemoryRange *r, bool invalida
    VK_FROM_HANDLE(mali_memory, mem, r->memory);
    if (!(mem->bo.flags & MALI_BO_CACHED))
       return;
+   /* MALI_SYNC_DIRTY: an explicit flush says "the CPU wrote this range", so the next CPU->device MEM_SYNC must cover the
+    * whole BO even when no mapping is open (the app can flush after vkUnmapMemory). Cheap: the flag is only cleared by
+    * that sync anyway. */
+   if (!invalidate && mali_device_pdev(dev)->backend->bo_host_dirty)
+      mali_device_pdev(dev)->backend->bo_host_dirty(dev->kdev, &mem->bo);
 
    uint64_t off = r->offset, len = vk_device_memory_range(&mem->vk, r->offset, r->size);
    /* Whole cache lines: round the start down and the end up (the spec makes offset and size
