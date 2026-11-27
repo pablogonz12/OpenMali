@@ -1874,6 +1874,7 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
    if (start) {
       mali_prof_add(MALI_PROF_PRESENTS, 1);
       mali_prof_add(MALI_PROF_PRESENT_NS, mali_wait_now() - start);
+      mali_prof_tick();   /* a present-only client (a compositor) ticks here, not only in the submit path */
    }
    return result;
 }

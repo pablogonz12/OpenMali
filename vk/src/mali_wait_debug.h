@@ -15,6 +15,7 @@ enum mali_prof_counter {
 int mali_prof_enabled(void);
 void mali_prof_add(enum mali_prof_counter counter, uint64_t value);
 void mali_prof_tick(void);
+void mali_prof_final(void);
 int mali_wait_debug(void);
 void mali_wait_log(const char *what, const void *sync, const char *state,
                    uint64_t ms, uint64_t value);

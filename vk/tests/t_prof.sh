@@ -43,3 +43,12 @@ MALI_BACKEND=fake MALI_FAKE_GPU=v11 MALI_FAKE_SLOW_US=1000 \
 [ "$rc" -eq 137 ] || { echo "expected SIGKILL (137), got $rc"; exit 1; }
 lines=$(cat "$dir"/k-*.log | grep -c '^mali_prof: submits=' || true)
 [ "$lines" -ge 2 ] || { echo "only $lines profiling line(s) survived SIGKILL"; cat "$dir"/k-*.log; exit 1; }
+
+# 4. nothing of ours may outlive the device or the library: a Steam client creates a probe device, destroys it and
+#    dlcloses the ICD (cmf-1127-233734: the detached ticker segfaulted it at start, rc=139). Two rounds, then 2 s of
+#    idling with the library unloaded; the binary fails if a round has no device and dies if a thread is still ours.
+MALI_BACKEND=fake MALI_FAKE_GPU=v11 MALI_PROF="$dir/u" timeout 120 "$out/t_prof_unload" \
+   --direct "$out/libvulkan_mali.so" --rounds 2 >/dev/null || { echo "t_prof_unload failed"; exit 1; }
+# The probe device still leaves its own sink: the final line is written at vkDestroyDevice, not at some later tick.
+n=$(cat "$dir"/u-t_prof_unload-*.log | grep -c '^mali_prof: ' || true)
+[ "$n" -ge 2 ] || { echo "no per-process sink after dlclose ($n line(s))"; cat "$dir"/u-*.log; exit 1; }

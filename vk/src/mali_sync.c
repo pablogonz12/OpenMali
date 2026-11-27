@@ -146,23 +146,6 @@ prof_puts(const char *buf, size_t len)
    }
 }
 
-void mali_prof_tick(void);
-
-/* The ticker: the per-second line used to be produced only from mali_queue_submit, so a process that submitted
- * through any other path (or one that entered a long frame) never ticked, and gamescope's two lines were all it ever
- * wrote. Every 200 ms a thread now checks the clock and writes the 1 s line itself, whoever is submitting. */
-static void *
-prof_ticker(void *arg)
-{
-   (void)arg;
-   struct timespec tick = { .tv_sec = 0, .tv_nsec = 200 * 1000 * 1000 };
-   for (;;) {
-      nanosleep(&tick, NULL);
-      mali_prof_tick();
-   }
-   return NULL;
-}
-
 static void
 prof_init(void)
 {
@@ -185,11 +168,6 @@ prof_init(void)
                     comm, (long)getpid(), MALI_GIT_SHA);
    if (n > 0)
       prof_puts(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
-   pthread_t thread;
-   if (pthread_create(&thread, NULL, prof_ticker, NULL) == 0)
-      pthread_detach(thread);
-   else
-      fprintf(stderr, "mali_vk: MALI_PROF ticker thread failed\n");
 }
 
 int
@@ -206,16 +184,19 @@ mali_prof_add(enum mali_prof_counter counter, uint64_t value)
       atomic_fetch_add_explicit(&prof_values[counter], value, memory_order_relaxed);
 }
 
-void
-mali_prof_tick(void)
+/* One line per second of submission, written where the driver is already executing. There is deliberately no timer
+ * thread: a Steam client creates a device only to probe it, destroys it and dlcloses the ICD, and a thread of ours
+ * still running in that unloaded library segfaulted the client at start (cmf-1127-233734). Entries that tick:
+ * vkQueueSubmit (mali_queue.c), vkQueuePresentKHR (mali_wsi.c), mali_wait_heartbeat (below) and the final line at
+ * vkDestroyDevice. */
+static void
+prof_emit(int force)
 {
-   if (!mali_prof_enabled())
-      return;
    uint64_t now = mali_wait_now();
-   if (now - atomic_load(&prof_last) < 1000000000ull)
+   if (!force && now - atomic_load(&prof_last) < 1000000000ull)
       return;
    pthread_mutex_lock(&prof_lock);
-   if (now - atomic_load(&prof_last) >= 1000000000ull) {
+   if (force || now - atomic_load(&prof_last) >= 1000000000ull) {
       uint64_t v[MALI_PROF_COUNTERS];
       int moved = 0;
       for (unsigned i = 0; i < MALI_PROF_COUNTERS; i++) {
@@ -239,6 +220,22 @@ mali_prof_tick(void)
       }
    }
    pthread_mutex_unlock(&prof_lock);
+}
+
+void
+mali_prof_tick(void)
+{
+   if (mali_prof_enabled())
+      prof_emit(0);
+}
+
+/* The last, partial second before the device goes away: a probe device that submits once and is destroyed in the same
+ * second must still leave its line. */
+void
+mali_prof_final(void)
+{
+   if (mali_prof_enabled())
+      prof_emit(1);
 }
 
 static void
@@ -335,6 +332,7 @@ mali_wait_count(int change)
 void
 mali_wait_heartbeat(struct mali_device *dev, int submit, int present)
 {
+   mali_prof_tick();   /* the profiling sink ticks wherever the driver runs; MALI_WAIT_DBG is independent of it */
    if (!mali_wait_debug())
       return;
    if (submit) atomic_fetch_add(&wait_submits, 1);
