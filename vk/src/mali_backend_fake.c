@@ -88,6 +88,9 @@ struct mali_kdev {
    pthread_cond_t slow_cv;
    pthread_t slow_thr;
    bool slow_started, slow_stop;
+   /* Implicit sync (mali_isync.c): the fake models both kernels. Default is the Poco X4's 5.10 (ENOTTY: no implicit
+    * fences on dma-bufs); MALI_FAKE_DMABUF_SYNC=1 models a kernel that has the ioctls, and counts the calls. */
+   unsigned long isync_imports, isync_exports;
 };
 
 struct slow_ev {
@@ -394,6 +397,34 @@ fake_bo_export(struct mali_kdev *k, const struct mali_bo *bo)
    return fd < 0 ? -errno : fd;
 }
 
+/* Implicit-sync seam (mali_isync.c). 5.10 by default, like the X4; MALI_FAKE_DMABUF_SYNC=1 for a kernel with the ioctls. */
+static int
+fake_dmabuf_import_sync_file(struct mali_kdev *k, int dmabuf_fd, uint32_t flags, int sync_fd)
+{
+   const char *e = getenv("MALI_FAKE_DMABUF_SYNC");
+   if (!e || !e[0] || !strcmp(e, "0"))
+      return -ENOTTY;
+   pthread_mutex_lock(&k->lock);
+   k->isync_imports++;
+   pthread_mutex_unlock(&k->lock);
+   (void)dmabuf_fd; (void)flags; (void)sync_fd;
+   return 0;
+}
+
+static int
+fake_dmabuf_export_sync_file(struct mali_kdev *k, int dmabuf_fd, uint32_t flags, int *sync_fd)
+{
+   const char *e = getenv("MALI_FAKE_DMABUF_SYNC");
+   if (!e || !e[0] || !strcmp(e, "0"))
+      return -ENOTTY;
+   pthread_mutex_lock(&k->lock);
+   k->isync_exports++;
+   pthread_mutex_unlock(&k->lock);
+   (void)dmabuf_fd; (void)flags;
+   *sync_fd = -1;   /* no fence pending on the fake buffer */
+   return 0;
+}
+
 static uint64_t
 now_ns(void)
 {
@@ -597,6 +628,8 @@ const struct mali_backend_ops mali_backend_fake = {
    .wait_counter = fake_wait_counter,
    .heap_create = fake_heap_create,
    .heap_destroy = fake_heap_destroy,
+   .dmabuf_import_sync_file = fake_dmabuf_import_sync_file,
+   .dmabuf_export_sync_file = fake_dmabuf_export_sync_file,
 };
 
 const struct mali_backend_ops *

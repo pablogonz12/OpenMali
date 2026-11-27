@@ -148,6 +148,7 @@ mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
    int r;
 
    mem->bo.dmabuf_fd = -1;
+   mem->isync = MALI_ISYNC_BO_NONE;
    if (imp && imp->handleType != 0) {
       if (imp->handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT &&
           imp->handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT) {
@@ -162,8 +163,12 @@ mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
          r = (sz > 0 && (uint64_t)sz < pAllocateInfo->allocationSize) ? -EINVAL : 0;
          if (r == 0)
             r = be->bo_import(dev->kdev, imp->fd, pAllocateInfo->allocationSize, flags, &mem->bo);
-         if (r == 0)
+         if (r == 0) {
             close(imp->fd); /* ownership moves to the memory on success */
+            /* Somebody else's dma-buf: we may be its consumer, so a submit that uses it waits its fences
+             * (mali_isync.c). A swapchain image is an import too; mali_wsi.c re-marks those as WSI. */
+            mem->isync = MALI_ISYNC_BO_IMPORTED;
+         }
       }
    } else {
       const bool export = mem->vk.export_handle_types != 0;
@@ -296,6 +301,10 @@ mali_GetMemoryFdKHR(VkDevice _device, const VkMemoryGetFdInfoKHR *pGetFdInfo, in
    int fd = mali_device_pdev(dev)->backend->bo_export(dev->kdev, &mem->bo);
    if (fd < 0)
       return errno_to_vk(dev, fd);
+   /* The fd leaves this process: a submit that writes this BO must attach its fence to the dma-buf, or the
+    * consumer can sample a half-drawn frame (mali_isync.c). An imported BO stays IMPORTED (it needs both sides). */
+   if (mem->isync == MALI_ISYNC_BO_NONE)
+      mem->isync = MALI_ISYNC_BO_EXPORTED;
    *pFd = fd;
    return VK_SUCCESS;
 }

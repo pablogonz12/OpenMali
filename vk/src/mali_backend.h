@@ -41,6 +41,10 @@ struct mali_kdev;
 #define MALI_BO_HOT    (1u << 9) /* rewritten by the CPU every frame (arena): MEM_SYNC at every CS submit */
 #define MALI_BO_EXEC   (1u << 3) /* GPU-executable (shader binaries) */
 
+/* DMA_BUF_IOCTL_{IMPORT,EXPORT}_SYNC_FILE flags (mali_isync.c): the dma-buf's fences for this access. */
+#define MALI_DMA_BUF_SYNC_READ  (1u << 0)
+#define MALI_DMA_BUF_SYNC_WRITE (2u << 0)
+
 /* M9: tiler heap (kb_tiler_heap) as the CS needs it. */
 struct mali_heap {
    uint64_t ctx_va, first_chunk_va;
@@ -114,6 +118,11 @@ struct mali_backend_ops {
    int (*wait_counter)(struct mali_kdev *kdev, const volatile uint64_t *counter_cpu, uint64_t target, int timeout_ms);
    int (*heap_create)(struct mali_kdev *kdev, uint32_t chunk_size, uint32_t initial, uint32_t max, struct mali_heap *out);
    void (*heap_destroy)(struct mali_kdev *kdev, struct mali_heap *heap);
+   /* Implicit sync on a dma-buf (mali_isync.c): DMA_BUF_IOCTL_IMPORT_SYNC_FILE attaches sync_fd as a fence for
+    * flags (MALI_DMA_BUF_SYNC_*), EXPORT_SYNC_FILE hands out one sync_file (*sync_fd = -1 when none is pending).
+    * 0 or -errno; -ENOTTY = this kernel has no such ioctl (5.10), i.e. its dma-bufs carry no implicit fences. */
+   int (*dmabuf_import_sync_file)(struct mali_kdev *kdev, int dmabuf_fd, uint32_t flags, int sync_fd);
+   int (*dmabuf_export_sync_file)(struct mali_kdev *kdev, int dmabuf_fd, uint32_t flags, int *sync_fd);
 };
 
 struct mali_kdev;

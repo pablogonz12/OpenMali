@@ -1973,6 +1973,22 @@ mali_wsi_create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *ci,
       VK_FROM_HANDLE(wsi_swapchain, chain, *out);
       mali_x11_shm_create(*out, surface, chain, ci);
    }
+   if (r == VK_SUCCESS && !pdev->vk.wsi_device->sw) {
+      /* Swapchain images are shared dma-bufs too, but their fences are already handled: wsi_common imports the
+       * present's sync_file into the dma-buf (mali_present_fence_ok, mali_queue.c) and the compositor waits it.
+       * Mark their memory so mali_isync.c leaves them alone - attaching a fence and CPU-waiting every render
+       * submit that writes one would serialise the very pipelining that fence preserves. */
+      VK_FROM_HANDLE(mali_device, dev, device);
+      VK_FROM_HANDLE(wsi_swapchain, chain, *out);
+      for (uint32_t i = 0; chain->get_wsi_image && i < chain->image_count; i++) {
+         struct wsi_image *wi = chain->get_wsi_image(chain, i);
+         if (!wi || wi->memory == VK_NULL_HANDLE)
+            continue;
+         VK_FROM_HANDLE(mali_memory, mem, wi->memory);
+         if (mem)
+            mem->isync = MALI_ISYNC_BO_WSI;
+      }
+   }
    struct wsi_swapchain *created = NULL;
    if (r == VK_SUCCESS) {
       /* #329: struct wsi_swapchain carries neither the surface nor the requested format back to vkQueuePresentKHR. */

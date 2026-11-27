@@ -494,6 +494,20 @@ kbase_bo_cache(struct mali_kdev *k, const struct mali_bo *bo, size_t off, size_t
       kb_bo_cache_flush_inv(bo->priv, off, len); /* dc civac works in both directions */
 }
 
+/* Implicit sync on a dma-buf (mali_isync.c): the ioctls themselves live in libkbase; -ENOTTY (5.10) says the kernel
+ * has none, which is the signal to fall back to the CPU wait. */
+static int
+kbase_dmabuf_import_sync_file(struct mali_kdev *k, int dmabuf_fd, uint32_t flags, int sync_fd)
+{
+   return kb_dmabuf_import_sync_file(dmabuf_fd, flags, sync_fd);
+}
+
+static int
+kbase_dmabuf_export_sync_file(struct mali_kdev *k, int dmabuf_fd, uint32_t flags, int *sync_fd)
+{
+   return kb_dmabuf_export_sync_file(dmabuf_fd, flags, sync_fd);
+}
+
 static int
 kbase_bo_export(struct mali_kdev *k, const struct mali_bo *bo)
 {
@@ -850,4 +864,6 @@ const struct mali_backend_ops mali_backend_kbase = {
    .wait_counter = kbase_wait_counter,
    .heap_create = kbase_heap_create,
    .heap_destroy = kbase_heap_destroy,
+   .dmabuf_import_sync_file = kbase_dmabuf_import_sync_file,
+   .dmabuf_export_sync_file = kbase_dmabuf_export_sync_file,
 };

@@ -50,6 +50,7 @@ struct mali_memory {
    struct vk_device_memory vk;
    struct mali_bo bo;
    bool mapped;
+   uint8_t isync;   /* MALI_ISYNC_BO_* (mali_isync.h): exported/imported dma-buf, or a swapchain image */
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(mali_memory, vk.base, VkDeviceMemory, VK_OBJECT_TYPE_DEVICE_MEMORY)
 
