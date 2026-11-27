@@ -666,21 +666,36 @@ test_wait_debug(void)
    fflush(stderr);
    dup2(saved, STDERR_FILENO);
    close(saved);
+   const char *e = getenv("MALI_WAIT_DBG");
+   if (e && e[0] == '/') {
+      char comm[16] = "?";
+      FILE *fcomm = fopen("/proc/self/comm", "r");
+      CHECK(fcomm && fgets(comm, sizeof(comm), fcomm), "read comm");
+      fclose(fcomm);
+      comm[strcspn(comm, "\n")] = 0;
+      char path[4096];
+      snprintf(path, sizeof(path), "%s-%s-%ld.log", e, comm, (long)getpid());
+      fclose(capture);
+      capture = fopen(path, "r");
+      CHECK(capture != NULL, "open diagnostic file");
+   }
    rewind(capture);
    char line[512];
-   int entries = 0, done = 0;
+   int entries = 0, done = 0, startup = 0;
    while (fgets(line, sizeof(line), capture)) {
       if (strstr(line, "mali_wait: sync_wait ") && strstr(line, "not submitted for"))
          entries++;
       if (strstr(line, "mali_wait: sync_wait ") && strstr(line, "done after"))
          done++;
+      if (strstr(line, "mali_wait: startup ") && strstr(line, "mali-open "))
+         startup++;
    }
    fclose(capture);
    DestroyFence(dev, f, NULL);
-   const char *e = getenv("MALI_WAIT_DBG");
-   int expected = e && !strcmp(e, "1");
-   CHECK(r == VK_TIMEOUT && entries == expected && done == expected,
-         "wait result=%d entries=%d done=%d expected=%d", r, entries, done, expected);
+   int expected = e && (!strcmp(e, "1") || e[0] == '/');
+   CHECK(r == VK_TIMEOUT && entries == expected && done == expected &&
+         (!(e && e[0] == '/') || startup == 1),
+         "wait result=%d entries=%d done=%d startup=%d expected=%d", r, entries, done, startup, expected);
    return 1;
 }
 

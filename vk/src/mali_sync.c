@@ -8,8 +8,108 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <poll.h>
+#include <inttypes.h>
+#include <stdatomic.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/prctl.h>
+#include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
+
+#ifndef MALI_GIT_SHA
+#define MALI_GIT_SHA "unknown"
+#endif
+static pthread_once_t wait_once = PTHREAD_ONCE_INIT;
+static FILE *wait_file;
+static pthread_mutex_t wait_file_lock = PTHREAD_MUTEX_INITIALIZER;
+static _Atomic uint64_t wait_submits, wait_presents, wait_active, wait_last_hb;
+
+static void
+wait_init(void)
+{
+   const char *env = getenv("MALI_WAIT_DBG");
+   if (!env)
+      return;
+   char comm[16] = "?";
+   prctl(PR_GET_NAME, comm, 0, 0, 0);
+   if (!strcmp(env, "1")) {
+      wait_file = stderr;
+   } else if (env[0] == '/') {
+      size_t len = strlen(env) + 64;
+      char *path = malloc(len);
+      if (!path)
+         return;
+      snprintf(path, len, "%s-%s-%ld.log", env, comm, (long)getpid());
+      int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+      free(path);
+      if (fd >= 0) {
+         wait_file = fdopen(fd, "a");
+         if (!wait_file)
+            close(fd);
+      }
+      if (wait_file)
+         setvbuf(wait_file, NULL, _IOLBF, 0);
+   }
+   if (wait_file)
+      fprintf(wait_file, "mali_wait: startup comm=%s pid=%ld mali-open %s\n",
+              comm, (long)getpid(), MALI_GIT_SHA);
+}
+
+int
+mali_wait_debug(void)
+{
+   pthread_once(&wait_once, wait_init);
+   return wait_file != NULL;
+}
+
+void
+mali_wait_log(const char *what, const void *sync, const char *state, uint64_t ms, uint64_t value)
+{
+   if (!mali_wait_debug())
+      return;
+   char comm[16] = "?";
+   prctl(PR_GET_NAME, comm, 0, 0, 0);
+   pthread_mutex_lock(&wait_file_lock);
+   fprintf(wait_file, "mali_wait: %s %p %s %" PRIu64 " ms comm=%s tid=%ld value=%" PRIu64 "\n",
+           what, sync, state, ms, comm, (long)syscall(SYS_gettid), value);
+   pthread_mutex_unlock(&wait_file_lock);
+}
+
+void
+mali_wait_count(int change)
+{
+   if (mali_wait_debug()) {
+      if (change > 0)
+         atomic_fetch_add(&wait_active, 1);
+      else
+         atomic_fetch_sub(&wait_active, 1);
+   }
+}
+
+void
+mali_wait_heartbeat(struct mali_device *dev, int submit, int present)
+{
+   if (!mali_wait_debug())
+      return;
+   if (submit) atomic_fetch_add(&wait_submits, 1);
+   if (present) atomic_fetch_add(&wait_presents, 1);
+   uint64_t now = mali_wait_now(), old = atomic_load(&wait_last_hb);
+   if (now - old < 1000000000ull ||
+       !atomic_compare_exchange_strong(&wait_last_hb, &old, now))
+      return;
+   uint64_t submitted = UINT64_MAX, done = UINT64_MAX;
+   const struct mali_backend_ops *be = mali_device_pdev(dev)->backend;
+   if (be->debug_seqnos)
+      be->debug_seqnos(dev->kdev, &submitted, &done);
+   pthread_mutex_lock(&wait_file_lock);
+   fprintf(wait_file, "hb t=%" PRIu64 " submits=%" PRIu64 " presents=%" PRIu64
+           " last_submit_seqno=%" PRIu64 " last_done_seqno=%" PRIu64 " waits_in_progress=%" PRIu64 "\n",
+           now / 1000000, atomic_load(&wait_submits), atomic_load(&wait_presents),
+           submitted, done, atomic_load(&wait_active));
+   pthread_mutex_unlock(&wait_file_lock);
+}
 
 static uint64_t
 now_ns(void)
@@ -116,6 +216,8 @@ mali_sync_wait(struct vk_device *vk, struct vk_sync *sync, uint64_t wait_value,
    uint64_t start = dbg ? now_ns() : 0;
    bool logged_submit = false, logged_fence = false;
    VkResult result;
+   if (dbg)
+      mali_wait_count(1);
 
    for (;;) {
       pthread_mutex_lock(&dev->sync_lock);
@@ -185,6 +287,8 @@ done:
       mali_wait_log("sync_wait", s, "done after", (now_ns() - start) / 1000000, wait_value);
    if (logged_fence)
       mali_wait_log("fence_wait", s, "done after", (now_ns() - start) / 1000000, wait_value);
+   if (dbg)
+      mali_wait_count(-1);
    return result;
 }
 
@@ -228,11 +332,15 @@ mali_sync_export_sync_file(struct vk_device *vk, struct vk_sync *sync, int *sync
    const bool dbg = mali_wait_debug();
    uint64_t start = dbg ? now_ns() : 0;
    bool logged = false;
+   if (dbg)
+      mali_wait_count(1);
    while (s->fd < 0 && !s->signaled) {
       if (vk_device_is_lost(vk) || mali_device_pdev(dev)->backend->device_lost(dev->kdev)) {
          pthread_mutex_unlock(&dev->sync_lock);
          if (logged)
             mali_wait_log("export_sync_file", s, "done after", (now_ns() - start) / 1000000, 0);
+         if (dbg)
+            mali_wait_count(-1);
          return VK_ERROR_DEVICE_LOST;
       }
       if (dbg && !logged && now_ns() - start >= 2000000000ull) {
@@ -249,12 +357,16 @@ mali_sync_export_sync_file(struct vk_device *vk, struct vk_sync *sync, int *sync
       d = fcntl(s->fd, F_DUPFD_CLOEXEC, 3);
       if (d < 0) {
          pthread_mutex_unlock(&dev->sync_lock);
+         if (dbg)
+            mali_wait_count(-1);
          return vk_error(vk, VK_ERROR_OUT_OF_HOST_MEMORY);
       }
    }
    pthread_mutex_unlock(&dev->sync_lock);
    if (logged)
       mali_wait_log("export_sync_file", s, "done after", (now_ns() - start) / 1000000, 0);
+   if (dbg)
+      mali_wait_count(-1);
    *sync_file = d; /* -1: already signalled */
    return VK_SUCCESS;
 }

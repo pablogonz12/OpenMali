@@ -527,6 +527,17 @@ wait_ring_space(struct mali_kdev *k, size_t bytes)
    return -ETIMEDOUT;
 }
 
+static bool
+kbase_debug_seqnos(struct mali_kdev *k, uint64_t *submitted, uint64_t *done)
+{
+   if (!k || pthread_mutex_trylock(&k->submit_lock))
+      return false;
+   *submitted = k->target;
+   *done = *(volatile uint64_t *)k->cqs.cpu;
+   pthread_mutex_unlock(&k->submit_lock);
+   return true;
+}
+
 static int
 kbase_submit_signal(struct mali_kdev *k, int *fence_fd)
 {
@@ -840,6 +851,7 @@ const struct mali_backend_ops mali_backend_kbase = {
    .bo_cache = kbase_bo_cache,
    .bo_export = kbase_bo_export,
    .submit_signal = kbase_submit_signal,
+   .debug_seqnos = kbase_debug_seqnos,
    .fence_wait = kbase_fence_wait,
    .device_lost = kbase_device_lost,
    .gpu_timestamp = kbase_gpu_timestamp,

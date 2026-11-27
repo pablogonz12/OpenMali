@@ -1687,6 +1687,7 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
    uint64_t n = p_atomic_inc_return(&seq);
    VK_FROM_HANDLE(vk_queue, vq, queue);
    struct mali_device *dev = container_of(vq->base.device, struct mali_device, vk);
+   mali_wait_heartbeat(dev, 0, 1);
    if (mali_wsi_debug()) {
       const struct mali_physical_device *qpdev = mali_device_pdev(dev);
       fprintf(stderr, "mali_vk: wsi present #%llu: swapchains=%u wait_sems=%u dma_buf_sync=%d sw=%d\n",

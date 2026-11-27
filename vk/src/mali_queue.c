@@ -3,6 +3,7 @@
  * buffers arrive with M8. vk_queue runs in DEFERRED mode (emulated timeline semaphores), so this is
  * called from the runtime's submit thread, one submission at a time. */
 #include "mali_queue.h"
+#include "mali_wait_debug.h"
 #include "mali_fprof.h"
 #include <time.h>
 static double prof_now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec * 1e3 + t.tv_nsec / 1e6; }
@@ -638,6 +639,8 @@ static VkResult mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_subm
 static VkResult
 mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
 {
+   struct mali_device *dev = container_of(vq->base.device, struct mali_device, vk);
+   mali_wait_heartbeat(dev, 1, 0);
    uint32_t imported = 0;
    VkResult res = mali_queue_submit_impl(vq, submit, &imported);
    if (res != VK_SUCCESS && vk_queue_is_lost(vq)) {
