@@ -459,7 +459,7 @@ kbase_bo_host_touch(struct mali_kdev *k, struct mali_bo *b)
     * BO at every fence wait (below, mem_sync_bos). A mapped BO is covered by the per-wait sweep as before, so a BO the
     * GPU writes while it stays mapped is still refreshed at the next wait; an unmapped one is not, because the CPU
     * cannot read it. The invalidation has to happen now: the read follows the map immediately. */
-   {
+   if (k) {   /* mali_buffer.c passes a NULL kdev (a rebind before any submit): no kbase device, nothing to sync */
       const char *rd = getenv("MALI_SYNC_READ");
       bool lazy = !rd || rd[0] != '0';
       uint64_t wrote = __atomic_load_n(&bo->gpu_writes, __ATOMIC_RELAXED);

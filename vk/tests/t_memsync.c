@@ -258,6 +258,12 @@ int main(void)
          b->wait_counter(k, &c3, 1, 100);
          EXPECT(kb_fake_memsync_count(rd[1].gpu_va) == after_unmap + 1, "MALI_SYNC_READ=0: the unmapped BO is swept again (old behaviour, %u)", kb_fake_memsync_count(rd[1].gpu_va) - after_unmap);
          unsetenv("MALI_SYNC_READ");
+
+         /* the buffer path calls bo_host_touch with no kdev (mali_buffer.c: a rebind before any submit). The map-time
+          * sync must not dereference it: that NULL deref (0x1c8, the offset of a kdev member) segfaulted Xwayland at
+          * start on the CMF the first time this rule was tried (cmf-1128-000646). */
+         b->bo_host_touch(NULL, &rd[1]);
+         EXPECT(1, "sync-read: bo_host_touch with a NULL kdev does not dereference it");
       }
 
       /* ---- measurement: 300 fence waits, 5 BOs, one BO written per frame ---- */
