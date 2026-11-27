@@ -169,6 +169,13 @@ static int res_view(VkImageView v, struct mali_cmd_target *o)
                                     .zs_format = 1, .is_zs = true, .samples = 4, .surface_stride = 12288};
       return 0;
    }
+   if ((uintptr_t)v == 8 || (uintptr_t)v == 9) {
+      *o = (struct mali_cmd_target){.va = 0x300000, .row_stride = 256, .width = 63, .height = 47,
+         .zs_format = (uintptr_t)v == 8 ? 2 : 1, .is_zs = true, .has_s = true,
+         .s_va = 0x200000, .s_row_stride = 64, .samples = 4,
+         .surface_stride = 12032, .s_surface_stride = 3072};
+      return 0;
+   }
    if ((uintptr_t)v == 1) {
       *o = (struct mali_cmd_target){.va = F.rt.gpu_va, .row_stride = W * 4, .width = W, .height = H, .rt = NULL};
       return 0;
@@ -675,6 +682,45 @@ ls_preloads(const struct mali_frame *f)
    return n;
 }
 
+static void
+test_msaa_zs_only(VkCommandPool pool)
+{
+   DFN(EndCommandBuffer);
+   for (unsigned i = 0; i < 4; i++) {
+      VkCommandBuffer cb;
+      struct vk_command_buffer *vc = new_cmd(pool, &cb);
+      bool depth = i != 1, stencil = i != 0;
+      uintptr_t view = i == 0 ? 7 : i == 1 ? 6 : i == 2 ? 8 : 9;
+      VkRenderingAttachmentInfo a = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+         .imageView = (VkImageView)view, .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+         .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+      VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+         .renderArea = {{0, 0}, {32, 32}}, .layerCount = 1,
+         .pDepthAttachment = depth ? &a : NULL, .pStencilAttachment = stencil ? &a : NULL};
+      mali_CmdBeginRendering(cb, &ri);
+      struct mali_cmd_buffer *cmd = mali_cmd_buffer_from_vk(vc);
+      struct mali_frame *f = &cmd->cur;
+      CHECK(cmd->in_render && f->samples == 4 && f->has_zs == depth && f->has_st == stencil,
+            "4x depth/stencil-only case %u records", i);
+      CHECK(f->ndraws == 1 && f->draws[0].push, "4x case %u preload", i);
+      if (f->ndraws && f->draws[0].push) {
+         uint32_t pc[5];
+         memcpy(pc, f->draws[0].push->push[1], sizeof pc);
+         CHECK(pc[3] == (depth ? (i == 0 ? 12288u : 12032u) : 0u), "4x case %u depth stride %u", i, pc[3]);
+         CHECK(pc[4] == (stencil ? (i == 1 ? 3328u : 3072u) : 0u), "4x case %u stencil stride %u", i, pc[4]);
+      }
+      uint8_t fbd[KB_FB_DESC_SIZE_ZS];
+      struct mali_env env = {.arch = ARCH, .tile_log2 = 10};
+      CHECK(mali_render_pack_fbd(&env, f, fbd, 0, 0x300000) == 0, "4x case %u pack", i);
+      uint32_t w[16];
+      memcpy(w, fbd + KB_FB_FBD_SIZE, sizeof w);
+      CHECK(!depth || (((w[0] >> 8) & 3) == 3 && w[11] == f->zs.surface_stride), "4x case %u depth writeback", i);
+      CHECK(!stencil || (((w[0] >> 24) & 3) == 3 && w[15] == f->st.surface_stride), "4x case %u stencil writeback", i);
+      mali_CmdEndRendering(cb);
+      CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "4x case %u end", i);
+   }
+}
+
 /* Records one pass with one triangle and checks the load-op outcome at record time (the frame draw list is the command stream's draws). */
 static struct mali_frame *
 ls_pass(VkCommandPool pool, const struct ls_case *c)
@@ -796,7 +842,7 @@ int main(int argc, char **argv)
       else if (!strcmp(argv[i], "--ringwrap")) ringwrap = true;
    }
    setenv("MALI_BACKEND", "fake", 1);
-   setenv("MALI_FAKE_GPU", ARCH == 13 ? "v13" : "v11", 1);
+   setenv("MALI_FAKE_GPU", ARCH == 13 ? "v13" : ARCH == 10 ? "v10" : "v11", 1);
    test_clear_words();
    test_poly_assemble();
    test_store_op();
@@ -1046,6 +1092,7 @@ int main(int argc, char **argv)
    if (loadstore) {
       struct mali_meta_dev seam = {.user = &F, .arch = ARCH, .alloc = hw_alloc, .free = ls_meta_free, .upload_shader = ls_upload};
       mali_meta_set_dev(&seam);
+      test_msaa_zs_only(pool);
       static const struct ls_case cases[] = {
          {.name = "colour_none", .col = true, .lcol = VK_ATTACHMENT_LOAD_OP_NONE_KHR, .pre = 0},
          {.name = "colour_dont_care", .col = true, .lcol = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .pre = 0},
