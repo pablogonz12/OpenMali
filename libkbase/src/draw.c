@@ -54,6 +54,20 @@ void kb_draw_tiler_heap_desc(uint32_t *d, uint64_t base, uint32_t size)
 	w64(d, 6, base + size);
 }
 
+/* Tiler hierarchy mask for an effective fragment tile of 1 << tile_log2 pixels (log2 of the tile AREA, as the driver's
+ * env->tile_log2: 10 = 32x32, 12 = 64x64):
+ * pan_desc.c GENX(pan_select_tiler_hierarchy_mask) "Disable hierarchies falling under the effective tile size".
+ * Mask bit 0 = 16x16 bins, bit n = (16 << n)^2, so a 32x32 tile keeps 0xfe and a 64x64 tile keeps 0xfc (the levels below
+ * the fragment tile would be walked by the tiler and never used by the fragment job). */
+uint32_t kb_tiler_hmask_from_tile(unsigned tile_log2)
+{
+	const uint32_t tile_px = 1u << tile_log2;
+	unsigned disable;
+	for (disable = 0; tile_px > (16u * 16u) << (disable * 2); disable++)
+		;
+	return 0xfeu & ~((1u << disable) - 1u);
+}
+
 void kb_draw_tiler_ctx(uint32_t *d, unsigned fb_w, unsigned fb_h, uint32_t hmask, uint64_t heap_desc_va, uint64_t geom_buf)
 {
 	memset(d, 0, KB_TILER_CTX_SIZE);
