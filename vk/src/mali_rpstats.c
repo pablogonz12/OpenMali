@@ -121,17 +121,20 @@ sample_bo(struct mali_rpstats *s, const struct mali_backend_ops *be, struct mali
       if (be->bo_cache)
          be->bo_cache(kdev, bo, 0, bo->size, true);
    }
+   /* Every 16th PIXEL, all of its bytes: one byte per 64 was blind to a pixel whose blue/alpha is set but whose
+    * first byte is 0 (the X4 surface read nonzero=0.0 alpha_nonzero=100 on a phone that paints). */
    const uint8_t *p = (const uint8_t *)bo->cpu;
    unsigned long long nz = 0, sum = 0, an = 0, anz = 0;
    size_t n = 0;
-   for (size_t i = 0; i < bo->size; i += 64) {
-      sum += p[i];
-      nz += p[i] != 0;
-      n++;
-   }
-   if (bpp == 4) {
-      for (size_t i = 3; i < bo->size; i += 64) {
-         anz += p[i] != 0;
+   const size_t px = bpp ? bpp : 1;
+   for (size_t i = 0; i + px <= bo->size; i += 16 * px) {
+      for (size_t c = 0; c < px && c < 4; c++) {
+         sum += p[i + c];
+         nz += p[i + c] != 0;
+         n++;
+      }
+      if (px == 4) {
+         anz += p[i + 3] != 0;
          an++;
       }
    }

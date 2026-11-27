@@ -168,8 +168,8 @@ main(void)
    mali_rpstats_flush(&on, &fake_ops, (struct mali_kdev *)&k);
    EXPECT(count("rp n=1 kind=render extent=1024x600 layers=1 samples=1 fmt=37 load=2 store=0 resolve=none,0 draws=7") == 1,
           "render: the pass identity, extent, load/store and draw count are on the line");
-   EXPECT(count("nonzero=100.0 mean=64.00 alpha_nonzero=100.0") == 1,
-          "render: a painted attachment reads nonzero=100.0, mean=64.00, alpha 100.0");
+   EXPECT(count("nonzero=100.0 mean=111.75 alpha_nonzero=100.0") == 1,
+          "render: a painted attachment (64,64,64,255) reads nonzero=100.0, mean=111.75, alpha 100.0");
    EXPECT(k.touches == 1 && k.caches == 1, "render: one host touch and one cache sync before the read (%u/%u)",
           k.touches, k.caches);
 
@@ -192,9 +192,9 @@ main(void)
    ka.gpu = paint(sz, 200, 30, 30, 0);
    mali_rpstats_pass(&on, &pb);
    mali_rpstats_flush(&on, &fake_ops, (struct mali_kdev *)&ka);
-   /* Sampled at every 64th byte = the R byte of every 16th pixel: 200, alpha byte 0. */
-   EXPECT(count("nonzero=100.0 mean=200.00 alpha_nonzero=0.0") == 1,
-          "alpha 0: colour present (100 %), alpha_nonzero 0.0");
+   /* Whole pixels now: 200,30,30,0 -> three non-zero of four, mean 65.00, alpha 0. */
+   EXPECT(count("nonzero=75.0 mean=65.00 alpha_nonzero=0.0") == 1,
+          "alpha 0: colour present (75 %), alpha_nonzero 0.0");
 
    /* 5: MSAA resolve: a second attachment, nonzero per attachment. */
    log_len = 0; log_buf[0] = '\0';

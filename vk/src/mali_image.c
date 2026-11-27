@@ -388,6 +388,33 @@ adopt_explicit_pitch(struct mali_image_layout *lay, uint64_t pitch, bool is_bc)
    return 0;
 }
 
+/* MALI_NO_MODIFIER_COMM: read once per process (the /proc/self/comm substring), so the extension can be hidden from
+ * one process only (chromium's GPU process) and the rest of the session keeps the DRI3 modifiers it wants. */
+bool
+mali_modifier_disabled(void)
+{
+   static int state = -1;   /* -1 unread, 0 enabled, 1 disabled */
+   if (state >= 0)
+      return state;
+   state = 0;
+   const char *want = getenv("MALI_NO_MODIFIER_COMM");
+   if (want && want[0]) {
+      char comm[32] = "";
+      FILE *f = fopen("/proc/self/comm", "r");
+      if (f) {
+         if (fgets(comm, sizeof comm, f)) {
+            size_t n = strlen(comm);
+            while (n && (comm[n - 1] == '\n' || comm[n - 1] == ' '))
+               comm[--n] = '\0';
+            if (strstr(comm, want))
+               state = 1;
+         }
+         fclose(f);
+      }
+   }
+   return state;
+}
+
 static VkResult
 mali_create_image_impl(VkDevice _dev, const VkImageCreateInfo *ci, const VkAllocationCallbacks *alloc, VkImage *out)
 {
@@ -397,6 +424,8 @@ mali_create_image_impl(VkDevice _dev, const VkImageCreateInfo *ci, const VkAlloc
    bool is_bc;
    bool has_explicit = false;
    uint64_t explicit_pitch = 0;   /* VkImageDrmFormatModifierExplicitCreateInfoEXT row pitch (must be non-zero when has_explicit) */
+   if (ci->tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT && mali_modifier_disabled())
+      return vk_error(dev, VK_ERROR_FORMAT_NOT_SUPPORTED);
    if (ci->tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT) {
       /* Linear is the only modifier (mali_wsi_modifier): the request must allow it, and an explicit layout must
        * describe a single plane we can honour (offset 0; row pitch is the layout's, so a different one is refused). */
