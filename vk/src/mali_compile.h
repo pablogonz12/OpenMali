@@ -126,6 +126,9 @@ int mali_compile_blend(const struct mali_blend_opts *o, struct mali_compiled *ou
 #define MALI_XFB_STORES 1u
 #define MALI_XFB_PLAIN  2u
 int mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char *err, size_t errsz);
+/* GS lane 2 / tess lane: compile one program that is already NIR (poly_nir_lower_* output). Ownership of `nir` passes
+ * here; no SPIR-V parse, no disk cache (the cache key is a module, and these programs have none of their own). */
+int mali_compile_nir(const struct mali_compile_opts *o, void *nir, struct mali_compiled *out, char *err, size_t errsz);
 
 /* 1 when the SPIR-V declares transform-feedback outputs (OpDecorate ... DecorationXfbBuffer), i.e. when the
  * pipeline layout must reserve the driver's 32 B of XFB buffer addresses after the application's push constants.

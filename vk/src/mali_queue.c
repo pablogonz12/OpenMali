@@ -297,6 +297,14 @@ hw_retire(struct mali_hwctx *h, unsigned max_left)
    }
 }
 
+/* hw->poly_alloc: poly kernels' memory. hw_alloc_ovf already is what the heap needs: its own BO (16 MiB first, doubling to 512 MiB),
+ * zeroed on request, tagged with the submission that used it and freed only after that submission retired. */
+static void *
+hw_poly_alloc(void *u, size_t n, size_t al, uint64_t *va)
+{
+   return hw_alloc_ovf(u, n, al, va, true);
+}
+
 static void
 hw_drain(void *u)
 {
@@ -526,7 +534,7 @@ mali_hw_init(struct mali_device *dev)
    h->ar.bo.gpu_va = h->arena.gpu_va;
    h->ar.bo.size = h->arena.size;
 
-   struct mali_hw hw = {.user = h, .alloc = hw_alloc, .alloc_nz = hw_alloc_nz, .job_begin = hw_job_begin, .submit = hw_submit, .submit_multi = hw_submit_multi, .tls = hw_tls, .drain = hw_drain, .bo_wrote = hw_bo_wrote};
+   struct mali_hw hw = {.user = h, .alloc = hw_alloc, .alloc_nz = hw_alloc_nz, .poly_alloc = hw_poly_alloc, .job_begin = hw_job_begin, .submit = hw_submit, .submit_multi = hw_submit_multi, .tls = hw_tls, .drain = hw_drain, .bo_wrote = hw_bo_wrote};
    hw.env = (struct mali_env){.arch = arch,
                               .hmask = arch == 13 ? 0 : 0xfe,
                               .tile_log2 = 12,

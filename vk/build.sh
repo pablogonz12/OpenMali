@@ -70,7 +70,7 @@ SRCS="$V/src/mali_instance.c $V/src/mali_physical_device.c $V/src/mali_device.c
       $V/src/mali_backend_fake.c $V/src/mali_backend_kbase.c
       $V/src/mali_format.c $V/src/mali_image.c $V/src/mali_buffer.c $V/src/mali_sampler.c
       $V/src/mali_descriptor.c $V/src/mali_descriptor_lower.c $V/src/mali_pipeline_layout.c
-      $V/src/mali_compile.c $V/src/mali_gs.c $V/src/mali_resources.c
+      $V/src/mali_compile.c $V/src/mali_gs.c $V/src/mali_poly.c $V/src/mali_gs_poly.c $V/src/mali_resources.c
       $V/src/mali_wsi.c $V/src/mali_meta.c $V/src/mali_bc.c $V/src/mali_meta_vk.c $V/src/mali_query.c $V/src/mali_query_core.c
       $V/src/mali_event.c $V/src/mali_event_vk.c $V/src/mali_cmd.c $V/src/mali_render.c $V/src/mali_cs_emit.c $V/src/mali_blend.c $V/src/mali_pipeline.c $V/src/mali_maint5.c $V/src/mali_vb3.c $V/src/mali_soft.c $V/src/mali_dmabuf.c $GEN/mali_entrypoints.c"
 # libkbase (own, MIT, libc only) is compiled in with the same flags as the rest, warnings not fatal.
@@ -126,6 +126,13 @@ PANLIBS="src/panfrost/compiler/libpanfrost_compiler.a src/panfrost/compiler/midg
 LIBS="$PANLIBS src/vulkan/util/libvulkan_util.a src/compiler/nir/libnir.a src/compiler/libcompiler.a
       src/compiler/spirv/libvtn.a src/util/libmesa_util.a src/util/libmesa_util_simd.a
       src/util/blake3/libblake3.a src/c11/impl/libmesa_util_c11.a src/util/libxmlconfig.a"
+# GS lane 2 step (i) (notes/gs-design.md §5(i)): Mesa's src/poly NIR lowering, unmodified, as libpoly_nir.a for this target
+# (vk/poly.sh: one host Mesa configure generates poly's CL half once; the archive is compiled with this target's flags).
+# mali_poly.c is the only caller; tess (notes/tess-design.md §Recommendation step 1) links the same archive.
+POLYOUT=$("$V/poly.sh" "${MALI_TARGET:-native}") || { echo "poly.sh failed (Mesa src/poly: see above)"; exit 1; }
+POLY=$(tail -1 <<<"$POLYOUT"); [ -f "$POLY" ] || { echo "poly.sh printed no archive: $POLYOUT"; exit 1; }
+echo "$POLYOUT" | sed '$d' | sed 's/^/    /'
+LIBS="$LIBS $POLY"
 for l in src/loader/libloader_wayland_helper.a src/x11/libloader_x11.a src/loader/libloader.a; do   # M14: -Dplatforms=wayland; X11 WSI: -Dplatforms=x11
    [ -f "$l" ] && LIBS="$LIBS $l"
 done
@@ -159,6 +166,13 @@ $CXX -o "$OUT/shaderdb" $OBJ/shaderdb.o $OBJS \
 eval "$CC -I$GEN -I$V/src -I$KB/include -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -o $OBJ/t_soft_frame.o -c $V/tests/t_soft_frame.c"
 # shellcheck disable=SC2086
 $CXX -o "$OUT/t_soft_frame" $OBJ/t_soft_frame.o $OBJS \
+   -Wl,--whole-archive -Wl,--start-group $WHOLE -Wl,--no-whole-archive $LIBS $LDSYS ${MALI_EXTRA_LD:-} -Wl,--end-group
+
+# 4d. t_gs_lower: GS lane 2 step (i) — Mesa's src/poly lowering called through mali_poly.c, i.e. the same object that is in
+#     libvulkan_mali.so (statically linked, like t_resources). No device, no pipeline, no draw: that is step (ii)/(iii).
+eval "$CC -I$GEN -I$V/src -I$KB/include -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -o $OBJ/t_gs_lower.o -c $V/tests/t_gs_lower.c"
+# shellcheck disable=SC2086
+$CXX -o "$OUT/t_gs_lower" $OBJ/t_gs_lower.o $OBJS \
    -Wl,--whole-archive -Wl,--start-group $WHOLE -Wl,--no-whole-archive $LIBS $LDSYS ${MALI_EXTRA_LD:-} -Wl,--end-group
 
 # 5. Loader manifest + test.
