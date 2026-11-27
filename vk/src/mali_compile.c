@@ -6,6 +6,8 @@
 #include "compiler/spirv/nir_spirv.h"
 #include "panfrost/compiler/bifrost/bifrost_compile.h"
 #include "panfrost/compiler/pan_compiler.h"
+
+#include "mali_poly.h"   /* mali_poly_lower_tcs_nir(), weak: see the note there */
 #include "panfrost/compiler/pan_nir.h"
 #include "panfrost/model/pan_model.h"
 #include "util/blake3/blake3.h"
@@ -34,7 +36,7 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 42 /* 42: xfb/xfb_pc are part of the cache key and MALI_XFB_PLAIN (an XFB shader that stores nothing) is a legal compile instead of a cache-hit copy of the STORES binary, so an XFB vertex program's code differs from 41 ; 41: the gl_PointSize output stripped for a non-point topology also fixes the deref modes, so such a VS now compiles (it aborted nir_validate and every such pipeline failed to create) ; 40: the robust store bound spans the lowest..highest written component (a sparse write mask left a gap uncounted) and rejects a wrapping component offset, so the code differs from 39 ; 39: robust SSBO stores are bounded by our own wrap-safe predicate instead of Mesa's 32-bit "offset + size - 1" test (a scalar-layout vec4 at 0xfffffff4 wrapped to 3 and wrote past the descriptor), so their code differs from 38 ; 38: the get_ssbo_size/get_ubo_size lowering runs for every shader (a non-robust shader with a size query kept an intrinsic Valhall does not have), so its code differs from 37 ; 37: robust load bounds reject a wrapping end offset (offset 0xfffffff4 + 4 summed to 3 and passed the size test) and the pass invalidates metadata (it inserts an if), so a robust program's code differs from 36 ; 36: number collision on 34 merged -- main's 34 (noperspective varyings) and this lane's 34/35 (robustness2 size query, then out-of-bounds loads returning zero) both change generated code, so neither alone may be reused ; 35: robustness2 out-of-bounds LOADS return zero (mali_descriptor_lower.c lower_load_bounds wraps them in an if; Mesa's pass only rewrote the offset, which read element 0), so a robust program's code differs from 34 ; 34: robustness2 buffer bounds: get_ssbo_size/get_ubo_size is lowered to a load of dw1 of the hardware Buffer descriptor through resource table 62 (mali_descriptor_lower.c lower_size_query), so a robust program's code differs from 33 ; 33: a texelFetch (txf/txf_ms) of a combined image sampler takes the sampler half of that binding instead of the all-zero dummy sampler (the fetch returned 0 on the phone) ; 32: nir_lower_xfb_to_stores keeps the captured outputs for rasterization (keep_outputs), so the generated code of an XFB vertex shader differs from 31 ; 31: mali_spirv_has_xfb() keys on OpExecutionMode Xfb (16/11) from word 5, the same word spirv_to_nir reads (29/30 detected nothing, so no stores were ever emitted) ; 29: transform-feedback outputs lowered to global stores, per-buffer bases loaded from the driver's push-constant area ; 27: transform-feedback vertex shaders are detected and refused (MALI_COMPILE_UNSUPPORTED), before anything is cached ; 26: requested subgroup size (arch warp, 16) is validated, part of the cache key and recorded in mali_compiled ; 25: logicOp blend shader; logicOp in mali_compile_blend (opts struct grew) ; 24: merged fau_reserved API-push-block fix with the unique cache temporary (pid + sequence, O_EXCL) ; 23: fau_reserved covers the API push block (promoted immediates could land in it: >56 B VS, >32 B CS/FS-v11) / cache_store unique temporary ; 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table 34: noperspective varyings: the VS gets the linked FS's noperspective bitfield inlined (nir_intrinsic_load_noperspective_varyings_pan), so the VS stores x w wherever the FS multiplies by gl_FragCoord.w; cached 33 VS code of a noperspective pipeline has no multiply and renders c/w */
+#define MALI_COMPILE_VERSION 46 /* 46: merge of lane/gs-step2 (4188ed03: mali_compile_nir, poly programs) into the tess lane ; 45: merge of lane/compute-in-pass (#394) into the tess lane, 44 is lane/cull-distance's ; 43: the control shader is compiled at all (poly_nir_lower_tcs then the compute path), and poly's three sysvals load their 64-bit addresses from the driver's tessellation header (table 9 index 31), so a tess shader's code differs from 42 ; 42: nir_intrinsic_load_tess_param_buffer_poly is lowered to the driver's fixed tessellation descriptor (table 9 index 31), so a tess shader's code differs from 41 ; 41: 41: the gl_PointSize output stripped for a non-point topology also fixes the deref modes, so such a VS now compiles (it aborted nir_validate and every such pipeline failed to create) ; 40: the robust store bound spans the lowest..highest written component (a sparse write mask left a gap uncounted) and rejects a wrapping component offset, so the code differs from 39 ; 39: robust SSBO stores are bounded by our own wrap-safe predicate instead of Mesa's 32-bit "offset + size - 1" test (a scalar-layout vec4 at 0xfffffff4 wrapped to 3 and wrote past the descriptor), so their code differs from 38 ; 38: the get_ssbo_size/get_ubo_size lowering runs for every shader (a non-robust shader with a size query kept an intrinsic Valhall does not have), so its code differs from 37 ; 37: robust load bounds reject a wrapping end offset (offset 0xfffffff4 + 4 summed to 3 and passed the size test) and the pass invalidates metadata (it inserts an if), so a robust program's code differs from 36 ; 36: number collision on 34 merged -- main's 34 (noperspective varyings) and this lane's 34/35 (robustness2 size query, then out-of-bounds loads returning zero) both change generated code, so neither alone may be reused ; 35: robustness2 out-of-bounds LOADS return zero (mali_descriptor_lower.c lower_load_bounds wraps them in an if; Mesa's pass only rewrote the offset, which read element 0), so a robust program's code differs from 34 ; 34: robustness2 buffer bounds: get_ssbo_size/get_ubo_size is lowered to a load of dw1 of the hardware Buffer descriptor through resource table 62 (mali_descriptor_lower.c lower_size_query), so a robust program's code differs from 33 ; 33: a texelFetch (txf/txf_ms) of a combined image sampler takes the sampler half of that binding instead of the all-zero dummy sampler (the fetch returned 0 on the phone) ; 32: nir_lower_xfb_to_stores keeps the captured outputs for rasterization (keep_outputs), so the generated code of an XFB vertex shader differs from 31 ; 31: mali_spirv_has_xfb() keys on OpExecutionMode Xfb (16/11) from word 5, the same word spirv_to_nir reads (29/30 detected nothing, so no stores were ever emitted) ; 29: transform-feedback outputs lowered to global stores, per-buffer bases loaded from the driver's push-constant area ; 27: transform-feedback vertex shaders are detected and refused (MALI_COMPILE_UNSUPPORTED), before anything is cached ; 26: requested subgroup size (arch warp, 16) is validated, part of the cache key and recorded in mali_compiled ; 25: logicOp blend shader; logicOp in mali_compile_blend (opts struct grew) ; 24: merged fau_reserved API-push-block fix with the unique cache temporary (pid + sequence, O_EXCL) ; 23: fau_reserved covers the API push block (promoted immediates could land in it: >56 B VS, >32 B CS/FS-v11) / cache_store unique temporary ; 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table 34: noperspective varyings: the VS gets the linked FS's noperspective bitfield inlined (nir_intrinsic_load_noperspective_varyings_pan), so the VS stores x w wherever the FS multiplies by gl_FragCoord.w; cached 33 VS code of a noperspective pipeline has no multiply and renders c/w */
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -437,9 +439,29 @@ fs_noperspective_mask(unsigned arch, const struct mali_compile_opts *o, uint32_t
    return 0;
 }
 
+/* `pre`: NULL = parse o->spirv (the normal path). Non-NULL = a NIR program that is already parsed and lowered (GS lane 2:
+ * the four programs poly_nir_lower_gs emits from one module share this one backend; the ownership of `pre` passes here,
+ * the caller must not touch it afterwards). The stage then comes from the shader, not from o->stage. */
+/* Pan's options carry a `lower_mediump_io` hook that supports VS/FS only (bifrost_compile.h:167 -> pan_compiler.c:476,
+ * `assert(!"Unsupported shader")`), and nir_lower_io_passes() calls it — so a TCS parsed through do_compile() needs the same
+ * copy mali_poly.c uses. Static: nir->options points into it for the life of the shader. */
+static const nir_shader_compiler_options *
+tcs_nir_options(unsigned arch)
+{
+   static nir_shader_compiler_options o[3];
+   static bool ready[3];
+   const unsigned k = arch == 10 ? 0 : arch == 11 ? 1 : 2;
+   if (!ready[k]) {
+      o[k] = *pan_get_nir_shader_compiler_options(arch, MESA_SHADER_TESS_CTRL, false);
+      o[k].lower_mediump_io = NULL;
+      ready[k] = true;
+   }
+   return &o[k];
+}
+
 static int
 do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned push_base, struct mali_compiled *out,
-           char *err, size_t errsz)
+           char *err, size_t errsz, nir_shader *pre)
 {
    pthread_once(&g_once, init_once);
    unsigned arch = o->arch;
@@ -459,9 +481,12 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    /* The Bifrost/Valhall backend lowers every subgroup op with pan_subgroup_size(arch) (bifrost_nir.c); a driver table that
     * disagrees would validate one width and emit another. Tie the two together so the mismatch is loud. */
    assert(subgroup_size == pan_subgroup_size(arch));
-   mesa_shader_stage stage = o->stage == MALI_STAGE_VERTEX ? MESA_SHADER_VERTEX :
-                             o->stage == MALI_STAGE_FRAGMENT ? MESA_SHADER_FRAGMENT : MESA_SHADER_COMPUTE;
-   const nir_shader_compiler_options *opts = pan_get_nir_shader_compiler_options(arch, stage, false);
+   mesa_shader_stage stage = pre ? pre->info.stage :
+                             o->stage == MALI_STAGE_VERTEX ? MESA_SHADER_VERTEX :
+                             o->stage == MALI_STAGE_FRAGMENT ? MESA_SHADER_FRAGMENT :
+                             o->stage == MALI_STAGE_TESS_CTRL ? MESA_SHADER_TESS_CTRL : MESA_SHADER_COMPUTE;
+   const nir_shader_compiler_options *opts = stage == MESA_SHADER_TESS_CTRL ? tcs_nir_options(arch)
+                                                                          : pan_get_nir_shader_compiler_options(arch, stage, false);
 
    struct vtn_diag diag = {{0}};
    struct spirv_to_nir_options so = {
@@ -487,7 +512,7 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       spec.num_entries = o->nspec;
       spec.entries = se;
    }
-   nir_shader *nir = spirv_to_nir(o->spirv, o->spirv_words, o->nspec ? &spec : NULL, stage, o->entry ? o->entry : "main", &so, opts);
+   nir_shader *nir = pre ? pre : spirv_to_nir(o->spirv, o->spirv_words, o->nspec ? &spec : NULL, stage, o->entry ? o->entry : "main", &so, opts);
    free(se);
    if (!nir) {
       if (diag.msg[0] && err && errsz)
@@ -497,9 +522,48 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       return -1;
    }
 
-   /* VK_EXT_transform_feedback: the SPIR-V sets has_transform_feedback_varyings and the xfb_* decorations; the stores
-    * are created later, once IO is lowered to store_output intrinsics (below, where panfrost does the same:
-    * src/gallium/drivers/panfrost/pan_shader.c:124-136 runs nir_io_add_intrinsic_xfb_info + nir_lower_xfb_to_stores). */
+   /* ---- tessellation control shader, compiled as compute (notes/tcs-compute-pipeline.md § Recommendation) ----
+    * 2. poly's precondition, unchanged and *before* poly: it is what makes load_invocation_id visible to poly and what
+    *    turns the patch stores into intrinsics;
+    * 3. nir_shader_gather_info, which poly needs for outputs_written/patch_outputs_written — without it
+    *    poly_tcs_per_vertex_outputs() is 0 and the stride is 24 B, i.e. every invocation writes to the same address;
+    * 4. poly_nir_lower_tcs(tcs, false): the patch outputs live in global memory, so the cross-invocation barrier is a real
+    *    requirement and must not be dropped;
+    * 5. flip the stage *after* poly (it reads info.tess), then the compute tail below applies unchanged. */
+   uint32_t tcs_vout = 0, tcs_stride = 0, tcs_tess[4] = {0};
+   uint64_t tcs_mask = 0;
+   if (stage == MESA_SHADER_TESS_CTRL) {
+      /* ---- the control shader, compiled as compute (notes/tcs-compute-pipeline.md § Recommendation) ----
+       * 2-4 are one call into mali_poly.c: poly's precondition, the shader-info gather poly needs (without it
+       * poly_tcs_per_vertex_outputs() is 0 and the stride is 24 B, i.e. every invocation writes to one address) and
+       * poly_nir_lower_tcs(tcs, false) — false, because the patch outputs live in global memory and the cross-invocation
+       * barrier is then a real requirement, not something to drop. poly turns the patch stores into stores to the
+       * tessellation blob and the level slots into loads from it; from step 5 on the shader is a compute shader and takes
+       * the compute path below unchanged (shared memory, subgroup width, WLS/merge). AgX reads the same metadata before its
+       * poly call (hk_shader.c:1112-1127 then :1347) and flips the stage the same way. The call is weak so a white-box test
+       * that links mali_compile.c without Mesa's poly library still links. */
+      struct mali_poly_tcs_meta tcs;
+      if (!mali_poly_lower_tcs_nir || !mali_poly_lower_tcs_nir(nir, &tcs))
+         return fail(err, errsz, "this build has no poly library: a tessellation control shader cannot be compiled");
+      tcs_vout = tcs.vertices_out;
+      tcs_stride = tcs.stride;
+      tcs_mask = tcs.per_vertex_outputs;
+      tcs_tess[0] = tcs.tess_mode;
+      tcs_tess[1] = tcs.tess_spacing;
+      tcs_tess[2] = tcs.tess_ccw;
+      tcs_tess[3] = tcs.tess_point_mode;
+      nir->info.stage = MESA_SHADER_COMPUTE;
+      memset(&nir->info.cs, 0, sizeof nir->info.cs);
+      nir->xfb_info = NULL;
+      nir->info.workgroup_size[0] = tcs_vout;
+      nir->info.workgroup_size[1] = 1;
+      nir->info.workgroup_size[2] = 1;
+      nir->info.api_subgroup_size = subgroup_size;
+      nir->info.min_subgroup_size = subgroup_size;
+      nir->info.max_subgroup_size = subgroup_size;
+      (void)tcs.wls_size;
+      stage = MESA_SHADER_COMPUTE;
+   }
    if (stage == MESA_SHADER_FRAGMENT && o->sample_shading)
       nir->info.fs.uses_sample_shading = true;
    if (stage == MESA_SHADER_COMPUTE) {
@@ -749,6 +813,12 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    pan_shader_compile(nir, &in, &bin, &info);
 
    memset(out, 0, sizeof *out);
+   if (o->stage == MALI_STAGE_TESS_CTRL) {   /* the TCS metadata, stashed before the memset above */
+      out->tcs_vertices_out = tcs_vout;
+      out->tcs_output_stride = tcs_stride;
+      out->tcs_per_vertex_outputs = tcs_mask;
+      memcpy(&out->tess_mode, tcs_tess, sizeof tcs_tess);
+   }
    out->arch = arch;
    out->stage = o->stage;
    out->noperspective_mask = nv_mask;
@@ -871,7 +941,7 @@ mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char 
       return fail(err, errsz, "not a SPIR-V module (bad magic or too short)");
    if (o->arch != 10 && o->arch != 11 && o->arch != 13)
       return fail(err, errsz, "arch must be 10, 11 or 13");
-   if (o->stage > MALI_STAGE_COMPUTE)
+   if (o->stage > MALI_STAGE_TESS_CTRL)   /* 3: the TCS, compiled as compute after poly_nir_lower_tcs() */
       return fail(err, errsz, "bad stage");
    unsigned fau_reserved = o->fau_reserved ? o->fau_reserved : (o->stage == MALI_STAGE_VERTEX ? 24 : (o->arch == 13 && o->stage == MALI_STAGE_FRAGMENT ? 16 : 8));
    unsigned push_base = o->push_base_set ? o->push_base : (o->stage == MALI_STAGE_VERTEX ? 40 : (o->arch == 13 && o->stage == MALI_STAGE_FRAGMENT ? 24 : 0)); /* v13 FS: blend words 4,5 live in the FAU */
@@ -896,10 +966,36 @@ mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char 
       }
    }
    atomic_fetch_add(&g_misses, 1);
-   int r = do_compile(o, fau_reserved, push_base, out, err, errsz);
+   int r = do_compile(o, fau_reserved, push_base, out, err, errsz, NULL);
    if (r == 0 && use_cache)
       cache_store(dir, hex, out);
    return r;
+}
+
+/* GS lane 2: compile one already-parsed, already-lowered NIR program (poly_nir_lower_gs hands out four of them). Same
+ * backend, same FAU/push layout as mali_compile(), but no SPIR-V parse and no disk cache: the cache key is the SPIR-V
+ * module, and these programs have no module of their own (they come from one). Ownership of `nir` passes here. */
+int
+mali_compile_nir(const struct mali_compile_opts *o, void *nir_pre, struct mali_compiled *out, char *err, size_t errsz)
+{
+   if (!o || !out || !nir_pre)
+      return fail(err, errsz, "bad arguments");
+   if (o->arch != 10 && o->arch != 11 && o->arch != 13)
+      return fail(err, errsz, "arch must be 10, 11 or 13");
+   nir_shader *nir = nir_pre;
+   const mesa_shader_stage st = nir->info.stage;
+   unsigned fau_reserved = o->fau_reserved ? o->fau_reserved :
+                           (st == MESA_SHADER_VERTEX ? 24 : (o->arch == 13 && st == MESA_SHADER_FRAGMENT ? 16 : 8));
+   unsigned push_base = o->push_base_set ? o->push_base :
+                        (st == MESA_SHADER_VERTEX ? 40 : (o->arch == 13 && st == MESA_SHADER_FRAGMENT ? 24 : 0));
+   if (!o->fau_reserved && o->layout && o->layout->push_size) {
+      unsigned push_end = (push_base + o->layout->push_size + 3) / 4;
+      fau_reserved = MAX2(fau_reserved, push_end);
+   }
+   if (fau_reserved > PAN_MAX_PUSH)
+      return fail(err, errsz, "push constants leave no FAU space for immediates");
+   atomic_fetch_add(&g_misses, 1);
+   return do_compile(o, fau_reserved, push_base, out, err, errsz, nir);
 }
 
 void

@@ -11,7 +11,10 @@
 extern "C" {
 #endif
 
-enum mali_stage { MALI_STAGE_VERTEX = 0, MALI_STAGE_FRAGMENT = 1, MALI_STAGE_COMPUTE = 2 };
+enum mali_stage { MALI_STAGE_VERTEX = 0, MALI_STAGE_FRAGMENT = 1, MALI_STAGE_COMPUTE = 2,
+                  /* T2: the control shader, compiled as *compute* (poly_nir_lower_tcs, notes/tcs-compute-pipeline.md) but
+                   * named as its own stage so the record side gets the metadata. */
+                  MALI_STAGE_TESS_CTRL = 3 };
 
 #define MALI_VARYING_BLOB_MAX 1024
 
@@ -93,6 +96,10 @@ struct mali_compiled {
    struct mali_varying_slot varying[64];   /* VS: layout it writes; FS: layout it reads */
    struct mali_varying_blob layout;        /* VS: pass to the FS compile (link_vs) */
    uint32_t local_size[3];        /* CS: workgroup size */
+   uint32_t tcs_vertices_out;       /* TCS: control points per patch (poly: one invocation each, workgroup = this) */
+   uint32_t tcs_output_stride;      /* TCS: bytes per patch in the tessellation blob's output buffer */
+   uint64_t tcs_per_vertex_outputs; /* TCS: bitmask (varying slots) of the outputs written per control point */
+   uint32_t tess_mode, tess_spacing, tess_ccw, tess_point_mode;   /* TCS: the descriptor's tessellation state */
    uint32_t allow_merge;          /* CS: COMPUTE_SIZE_WORKGROUP bit 31 (no shared memory, workgroup barrier or subgroup op: HW may merge workgroups) */
    uint32_t subgroup_size;        /* CS: the warp width the code was compiled for (mali_subgroup_size_for_arch) */
    uint32_t cache_hit;            /* 1 if this result came from the disk cache */
@@ -126,6 +133,9 @@ int mali_compile_blend(const struct mali_blend_opts *o, struct mali_compiled *ou
 #define MALI_XFB_STORES 1u
 #define MALI_XFB_PLAIN  2u
 int mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char *err, size_t errsz);
+/* GS lane 2 / tess lane: compile one program that is already NIR (poly_nir_lower_* output). Ownership of `nir` passes
+ * here; no SPIR-V parse, no disk cache (the cache key is a module, and these programs have none of their own). */
+int mali_compile_nir(const struct mali_compile_opts *o, void *nir, struct mali_compiled *out, char *err, size_t errsz);
 
 /* 1 when the SPIR-V declares transform-feedback outputs (OpDecorate ... DecorationXfbBuffer), i.e. when the
  * pipeline layout must reserve the driver's 32 B of XFB buffer addresses after the application's push constants.

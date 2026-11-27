@@ -201,6 +201,16 @@ for g in v11 v13; do
    run "frameprof $g unset" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_frameprof" --direct "$OUT/libvulkan_mali.so" --off
 done
 
+# Compute path: shared memory + a workgroup barrier (T2 step 3's blocker, notes/tess-design.md § T2). White-box: the
+# compiler must report the 256 B of WLS the shader needs and must NOT claim mergeable workgroups — PanVK's rule
+# (valhall_can_merge_workgroups, bifrost_nir.c:517 via panvk_vX_shader.c:1598) and what mali_cs_emit.c:837-914 consumes.
+# The control (saxpy) must report zero WLS and the merge bit, so neither value is a constant.
+for g in v11 v13; do run "cs_barrier $g" 0 "$OUT/t_cs_barrier" --spv-dir "$V/shader" --arch "${g#v}"; done
+# ... and the same shader dispatched through the ICD (fake backend records it; a device run checks the values).
+for g in v11 v13; do
+   run "vk_compute barrier $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_compute" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only barrier
+done
+
 # M5/M7: buffers, images, views, samplers, memory binding, descriptor sets, updates, templates (white-box, static link).
 for g in v11 v13; do run "resources $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_resources"; done
 
@@ -237,6 +247,42 @@ done
 if [ $gs_rc -ne 0 ]; then echo "FAIL  gs refusal diagnostic exited $gs_rc (want 0)"; echo "$out" | tail -5 | sed 's/^/        /'; fail=1
 elif [ $gs_n -eq 6 ]; then echo "ok    gs refusals name their reason (6/6)"
 else echo "FAIL  gs refusals name their reason ($gs_n/6)"; echo "$out" | grep "geometry shader refused" | sed 's/^/        /'; fail=1; fi
+
+# Tessellation lane T1 (notes/tess-design.md §"Lane T1"): the tessellation stages reach the driver as a *named refusal* — the
+# gate (tessellationShader is not advertised, the state every application sees) and, with MALI_EXPERIMENTAL_TESS=1, each
+# classifier reason (levels above 1.0, a non-identity TCS, a computed TES output, quads). tess_tri asserts the whole T1
+# claim: refused without the gate, ACCEPTED with it (the TCS is proved from SPIR-V words in mali_tcs.c and the TES by
+# folding gl_TessCoord at the three unit coordinates in mali_tess.c), and on a device its frame must equal the plain
+# scene's pixel for pixel. t_gs_lower also links Mesa's poly_nir_lower_tes and lowers the TES with it.
+for g in v11 v13; do
+   run "vk_draw tess_tri $g" 0 MALI_EXPERIMENTAL_TESS=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tess_tri
+   run "vk_draw tess_reject $g" 0 MALI_EXPERIMENTAL_TESS=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tess_reject
+   # T2: a non-identity TCS is no longer refused — its pipeline is accepted and the control shader is compiled as the
+   # compute program the dispatch will run (tess_bar creates bar.tesc and the barrier-free rotation tess_rot.tesc; both must
+   # report 3 control points, stride 120 B, mask 0x100000001). Drawing with it is still refused by name in mali_cmd.c until
+   # the compute job is recorded, so this row checks the pipeline, and the pixel half (--only tess_bar on a device) waits
+   # for the dispatch.
+   run "vk_draw tess_bar $g" 0 MALI_EXPERIMENTAL_TESS=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tess_bar
+done
+out=$(MALI_EXPERIMENTAL_TESS=1 MALI_PIPE_DBG=1 MALI_BACKEND=fake MALI_FAKE_GPU=v11 timeout -k 5 120 env "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tess_reject 2>&1)
+tess_rc=$?
+tess_n=0
+for r in "tessellationShader is not advertised" \
+         "an output that is not a copy of a patch input (at gl_TessCoord = e0)" "only triangles patches are accepted"; do
+   echo "$out" | grep -qF "tessellation refused: $r" && tess_n=$((tess_n+1))
+done
+if [ $tess_rc -ne 0 ]; then echo "FAIL  tess refusal diagnostic exited $tess_rc (want 0)"; echo "$out" | tail -5 | sed 's/^/        /'; fail=1
+elif [ $tess_n -eq 3 ]; then echo "ok    tess refusals name their reason (3/3)"
+else echo "FAIL  tess refusals name their reason ($tess_n/3)"; echo "$out" | grep "tessellation refused" | sed 's/^/        /'; fail=1; fi
+
+# GS lane 2, step (i) (notes/gs-design.md §5(i)): Mesa's src/poly geometry lowering, linked into the driver as an
+# unmodified library (vk/poly.sh -> out/<target>/poly/libpoly_nir.a) and called through mali_poly.c, i.e. the same object
+# that is in libvulkan_mali.so. Host-only and white-box: four GS modules through poly_nir_lower_gs(), each checked for the
+# programs it must produce (copy = our vertex program, pre_gs = compute), its index stride and its count words; plus a
+# vertex module, which must be refused with the stage named.
+for g in v11 v13; do
+   run "gs_lower $g" 0 "$OUT/t_gs_lower" --spv-dir "$V/shader" --arch "${g#v}"
+done
 
 # Reference scene (docs/desktop-gpu.md): the real scene, recorded through the ICD with an OPTIMAL-tiled (AFBC on Mali)
 # colour attachment read back by vkCmdCopyImageToBuffer. The fake backend executes nothing, so this is the record-side gate

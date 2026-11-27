@@ -844,38 +844,60 @@ run_compute_instr(unsigned task_incr, unsigned axis)
    return ((uint64_t)4 << 56) | (task_incr & 0x3fff) | ((uint64_t)(axis & 3) << 14);
 }
 
+/* Everything a compute dispatch needs in the descriptor arena (SPD, SRT, FAU, TSD, WLS/TLS, its sets), CPU-written. `sh` (optional)
+ * lets the kernels of one pre block share the all-zero dummy set and one TSD (kernels without WLS/TLS). */
+struct cprep { uint64_t va_srt, va_fau, va_spd, va_tsd; unsigned nres; };
+struct cshare { uint64_t va_set, va_tsd; };
+
 static int
-build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **out, unsigned *nout)
+compute_prep(const struct mali_hw *hw, const struct mali_dispatch *d, struct cshare *sh, struct cprep *p)
 {
    const struct mali_env *env = &hw->env;
-   const struct mali_dispatch *d = &f->disp;
    const struct mali_compiled *cs = d->cs;
    bool v13 = env->arch == 13;
-   const struct regs *R = v13 ? &R13 : &R11;
-   struct cs c;
-   uint64_t va_spd, va_set, va_srt, va_fau, va_tsd, va_wls = 0;
+   uint64_t va_spd, va_set = 0, va_srt, va_fau, va_tsd = 0, va_wls = 0;
    uint32_t *spd, *tsd, *fau;
    uint8_t *set;
 
-   *out = NULL;
-   *nout = 0;
    if (!cs || !cs->bin_size || !d->cs_va)
       return -EINVAL;
    for (int i = 0; i < 3; i++)
       if (!cs->local_size[i])
          return -EINVAL;
-   unsigned nres = d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets, res_alloc = ((nres + 3) & ~3u) * KB_RES_SIZE;   /* dynamic table at MALI_DYN_TABLE as in the draw path */
+   const unsigned nres = p->nres = d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets;
+   const unsigned res_alloc = ((nres + 3) & ~3u) * KB_RES_SIZE;   /* dynamic table at MALI_DYN_TABLE as in the draw path */
    uint64_t va_dyn = 0;
    uint32_t *dyn = NULL;
+   const bool own_tsd = !sh || cs->wls_size || cs->tls_size;   /* kernels without WLS/TLS in a block share one TSD */
 
    spd = A(hw, KB_SPD_SIZE, 32, &va_spd);
-   set = A(hw, (MALI_DUMMY_SAMPLER_IDX + 1) * KB_DESC_SET_STRIDE, 64, &va_set);   /* entry MALI_DUMMY_SAMPLER_IDX (all zero) serves texelFetch */
+   if (sh && sh->va_set) {   /* the all-zero dummy set is the same for every kernel of a block */
+      set = NULL;
+      va_set = sh->va_set;
+   } else {
+      set = A(hw, (MALI_DUMMY_SAMPLER_IDX + 1) * KB_DESC_SET_STRIDE, 64, &va_set);   /* entry MALI_DUMMY_SAMPLER_IDX (all zero) serves texelFetch */
+      if (!set)
+         return -ENOMEM;
+      if (sh)
+         sh->va_set = va_set;
+   }
    uint32_t *srt = A(hw, res_alloc, 64, &va_srt);
    fau = A(hw, FAU_BYTES(cs->fau_count), 64, &va_fau);
-   tsd = A(hw, KB_LS_SIZE, 64, &va_tsd);
+   if (own_tsd) {
+      tsd = A(hw, KB_LS_SIZE, 64, &va_tsd);
+   } else {
+      if (!sh->va_tsd) {
+         uint32_t *t = A(hw, KB_LS_SIZE, 64, &sh->va_tsd);
+         if (!t)
+            return -ENOMEM;
+         kb_draw_local_storage_none(t);
+      }
+      va_tsd = sh->va_tsd;
+      tsd = NULL;   /* shared: never written below */
+   }
    if (d->ndyn)
       dyn = A(hw, ((d->ndyn * KB_DESC_SET_STRIDE) + 63) & ~63u, 64, &va_dyn);
-   if (!spd || !set || !srt || !fau || !tsd || (d->ndyn && !dyn))
+   if (!spd || !srt || !fau || (own_tsd && !tsd) || (d->ndyn && !dyn))
       return -ENOMEM;
 
    if (v13)
@@ -907,11 +929,11 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
       tsd[1] = log2i | ((lg + 1) << 8);
       tsd[4] = (uint32_t)va_wls;
       tsd[5] = (uint32_t)(va_wls >> 32);
-   } else {
+   } else if (own_tsd) {
       kb_draw_local_storage_none(tsd);
    }
 
-   if (cs->tls_size) {
+   if (cs->tls_size) {   /* own_tsd is true here */
       /* TLS spill (panvk GENX(pan_emit_tls), PAN_ARCH >= 9: packed addressing, base >> 8). Size as pan_get_total_stack_size(). */
       unsigned per = cs->tls_size < 16 ? 16 : (cs->tls_size + 15) & ~15u, pot = 1, shift = 0;
       while (pot < per)
@@ -929,6 +951,10 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
       tsd[3] = (uint32_t)(va_tls >> 40) | (1u << 28);
    }
 
+   p->va_srt = va_srt;
+   p->va_fau = va_fau;
+   p->va_spd = va_spd;
+   p->va_tsd = va_tsd;
    kb_draw_resource(srt, va_set, (MALI_DUMMY_SAMPLER_IDX + 1) * KB_DESC_SET_STRIDE, 1);
    for (unsigned s = 0; s < d->nsets; s++)
       kb_draw_resource(srt + (1 + s) * (KB_RES_SIZE / 4), d->set_va[s], d->set_bytes[s], 1);
@@ -944,6 +970,84 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
          n = (unsigned)room;
       memcpy((uint8_t *)fau, d->push, n);
    }
+   return 0;
+}
+
+/* The register moves of one dispatch (SRT, FAU, SPD, TSD, GAO, WG_SIZE, JOB_OFFSET, JOB_SIZE), all through the shadow so a following
+ * draw or kernel sees what is really in the registers. A GPU-loaded job size forgets its three registers (the LOAD replaces them). */
+static void
+emit_compute_regs(struct cs *c, const struct mali_dispatch *d, const struct cprep *p)
+{
+   const struct mali_compiled *cs = d->cs;
+   M48(c, CR_SRT, kb_draw_srt_ptr(p->va_srt, p->nres));
+   M64(c, CR_FAU, kb_draw_fau_ptr(p->va_fau, cs->fau_count));
+   M48(c, CR_SPD, p->va_spd);
+   M48(c, CR_TSD, p->va_tsd);
+   M32(c, CR_GAO, 0);
+   M32(c, CR_WG_SIZE, (cs->local_size[0] - 1) | ((cs->local_size[1] - 1) << 10) | ((cs->local_size[2] - 1) << 20) | (cs->allow_merge ? 1u << 31 : 0));
+   M32(c, CR_JOB_OFFSET, 0);
+   M32(c, CR_JOB_OFFSET + 1, 0);
+   M32(c, CR_JOB_OFFSET + 2, 0);
+   if (d->indirect_va) {
+      M48(c, CR_TMP, d->indirect_va);
+      E(c, kb_cs_load_multiple(CR_JOB_SIZE, CR_TMP, 0x7, 0));
+      E(c, kb_cs_wait(1u << KB_CS_SLOT_LS));
+      for (unsigned r = CR_JOB_SIZE; r < CR_JOB_SIZE + 3; r++)
+         c->sv[r >> 3] &= (uint8_t)~(1u << (r & 7));
+   } else {
+      M32(c, CR_JOB_SIZE, d->groups[0]);
+      M32(c, CR_JOB_SIZE + 1, d->groups[1]);
+      M32(c, CR_JOB_SIZE + 2, d->groups[2]);
+   }
+}
+
+/* The RUN_COMPUTE instruction of one dispatch: task axis/increment as panvk calculate_task_axis_and_increment (spread workgroups
+ * over cores, ~T threads per task). */
+static uint64_t
+compute_run(const struct mali_env *env, const struct mali_dispatch *d)
+{
+   const struct mali_compiled *cs = d->cs;
+
+   /* task axis/increment as panvk calculate_task_axis_and_increment: spread workgroups over cores, ~T threads per task */
+   unsigned inc = 1, axis = 0;
+   const char *te = getenv("MALI_TASK_THREADS");
+   unsigned T = te ? (unsigned)atoi(te) : (env->tls_threads ? env->tls_threads / 4 : 0);
+   if (!d->indirect_va && T) {
+      unsigned wgc[3] = { d->groups[0], d->groups[1], d->groups[2] };
+      unsigned tpw = cs->local_size[0] * cs->local_size[1] * cs->local_size[2];
+      unsigned total = wgc[0] * wgc[1] * wgc[2], cores = env->core_id_range ? env->core_id_range : 1;
+      if (total && tpw) {
+         unsigned per_core = (total + cores - 1) / cores, w = T / tpw;
+         w = w < 1 ? 1 : w > per_core ? per_core : w;
+         inc = w;
+         for (unsigned i = 0; i < 2; i++) {
+            if (inc <= wgc[i])
+               break;
+            axis++;
+            inc /= wgc[i];
+         }
+         if (!inc) inc = 1;
+      }
+   }
+   return run_compute_instr(inc, axis);
+}
+
+
+static int
+build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **out, unsigned *nout)
+{
+   const struct mali_env *env = &hw->env;
+   const struct mali_dispatch *d = &f->disp;
+   bool v13 = env->arch == 13;
+   const struct regs *R = v13 ? &R13 : &R11;
+   struct cs c;
+
+   *out = NULL;
+   *nout = 0;
+   struct cprep p;
+   int rc = compute_prep(hw, d, NULL, &p);
+   if (rc)
+      return rc;
 
    memset(&c, 0, sizeof c);
    E(&c, kb_cs_nop());
@@ -957,24 +1061,7 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
       }
       E(&c, kb_cs_wait(1u << KB_CS_SLOT_LS));
    }
-   M48(&c, CR_SRT, kb_draw_srt_ptr(va_srt, nres));
-   M64(&c, CR_FAU, kb_draw_fau_ptr(va_fau, cs->fau_count));
-   M48(&c, CR_SPD, va_spd);
-   M48(&c, CR_TSD, va_tsd);
-   M32(&c, CR_GAO, 0);
-   M32(&c, CR_WG_SIZE, (cs->local_size[0] - 1) | ((cs->local_size[1] - 1) << 10) | ((cs->local_size[2] - 1) << 20) | (cs->allow_merge ? 1u << 31 : 0));
-   M32(&c, CR_JOB_OFFSET, 0);
-   M32(&c, CR_JOB_OFFSET + 1, 0);
-   M32(&c, CR_JOB_OFFSET + 2, 0);
-   if (d->indirect_va) {
-      M48(&c, CR_TMP, d->indirect_va);
-      E(&c, kb_cs_load_multiple(CR_JOB_SIZE, CR_TMP, 0x7, 0));
-      E(&c, kb_cs_wait(1u << KB_CS_SLOT_LS));
-   } else {
-      M32(&c, CR_JOB_SIZE, d->groups[0]);
-      M32(&c, CR_JOB_SIZE + 1, d->groups[1]);
-      M32(&c, CR_JOB_SIZE + 2, d->groups[2]);
-   }
+   emit_compute_regs(&c, d, &p);
    {
       const char *cvs = getenv("MALI_CV");
       unsigned cv = cvs ? (unsigned)strtoul(cvs, NULL, 0) : 0;
@@ -988,30 +1075,7 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
    }
    E(&c, kb_cs_set_state_imm32(KB_CS_SB_SEL_ENDPOINT, env->slot));
    E(&c, kb_cs_req_res(KB_CS_RES_COMPUTE));
-   {
-      /* task axis/increment as panvk calculate_task_axis_and_increment: spread workgroups over cores, ~T threads per task */
-      unsigned inc = 1, axis = 0;
-      const char *te = getenv("MALI_TASK_THREADS");
-      unsigned T = te ? (unsigned)atoi(te) : (env->tls_threads ? env->tls_threads / 4 : 0);
-      if (!d->indirect_va && T) {
-         unsigned wgc[3] = { d->groups[0], d->groups[1], d->groups[2] };
-         unsigned tpw = cs->local_size[0] * cs->local_size[1] * cs->local_size[2];
-         unsigned total = wgc[0] * wgc[1] * wgc[2], cores = env->core_id_range ? env->core_id_range : 1;
-         if (total && tpw) {
-            unsigned per_core = (total + cores - 1) / cores, w = T / tpw;
-            w = w < 1 ? 1 : w > per_core ? per_core : w;
-            inc = w;
-            for (unsigned i = 0; i < 2; i++) {
-               if (inc <= wgc[i])
-                  break;
-               axis++;
-               inc /= wgc[i];
-            }
-            if (!inc) inc = 1;
-         }
-      }
-      E(&c, run_compute_instr(inc, axis));
-   }
+   E(&c, compute_run(env, d));
    E(&c, kb_cs_wait(1u << env->slot));
    E(&c, kb_cs_req_res(0));
    {
@@ -1038,6 +1102,132 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
    return 0;
 }
 
+void *
+mali_hw_poly_alloc(const struct mali_hw *hw, size_t size, size_t align, uint64_t *va)
+{
+   return hw->poly_alloc ? hw->poly_alloc(hw->user, size, align, va) : A(hw, size, align, va);
+}
+
+/* GS lane 2 step (iii): the build-time half of a geometry-shader draw. Allocates one arena per draw (header, poly's vertex and
+ * geometry parameter blocks with the pull table, a zero count buffer, a scratch block, the vertex-output arena, the output index
+ * buffer), writes the blocks, and resolves what the records could not know: the header descriptor every kernel and the copy
+ * program read at table 9 index 31, and the rasterisation draw's index buffer VA. Runs before emit_pre_block and the draw loop.
+ * The arena comes from the poly heap (mali_hw_poly_alloc); one draw is capped at GS_ARENA_MAX. */
+extern void mali_gs_fill_params(void *, void *, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint64_t, uint64_t, uint64_t,
+                                uint64_t, uint64_t) __attribute__((weak));
+#define GS_ARENA_MAX (256u << 20)
+static int
+gs_prepare(const struct mali_hw *hw, const struct mali_frame *f)
+{
+   for (unsigned i = 0; i < f->ndraws; i++) {
+      struct mali_gsdraw *g = f->draws[i].gs;
+      if (!g)
+         continue;
+      if (!mali_gs_fill_params)
+         return -ENOTSUP;
+      const unsigned pop = (unsigned)__builtin_popcountll(g->vs_outputs);
+      const uint64_t vs_bytes = (((uint64_t)g->nverts * g->ninst * pop * 16) + 63) & ~63ull;
+      const uint64_t idx_bytes = (((uint64_t)g->index_count * 4) + 63) & ~63ull;
+      const size_t off_vp = 64, off_gp = 448, off_cnt = 768, off_scr = 832, off_vs = 896;
+      const uint64_t total = off_vs + vs_bytes + idx_bytes;
+      if (total > GS_ARENA_MAX)
+         return -ENOMEM;
+      uint64_t va = 0;
+      uint8_t *p = mali_hw_poly_alloc(hw, (size_t)total, 64, &va);
+      if (!p)
+         return -ENOMEM;
+      g->hdr_va = va;
+      g->index_va = va + off_vs + vs_bytes;
+      mali_gs_fill_params(p + off_vp, p + off_gp, g->max_indices, g->shape, g->count_words, g->nverts, g->ninst, g->vs_outputs,
+                          va + off_vs, g->index_va, va + off_cnt, va + off_scr);
+      /* the pull table behind the 64-byte vertex param block (mali_gs_poly.c MALI_GS_VP_EXTRA) */
+      uint32_t *ex = (uint32_t *)(p + off_vp + 64);
+      ex[0] = g->first_vertex;
+      ex[1] = g->first_instance;
+      for (unsigned k = 0; k < g->nattr; k++) {
+         uint8_t *e = (uint8_t *)ex + 16 + 16 * k;
+         memcpy(e, &g->attr[k].va, 8);
+         memcpy(e + 8, &g->attr[k].stride, 4);
+         memcpy(e + 12, &g->attr[k].inst, 4);
+      }
+      uint64_t hdr[4] = {0, va + off_vp, 0, va + off_gp};   /* tess, vertex params, vs_outputs (TCS only), geometry params */
+      memcpy(p, hdr, sizeof hdr);
+      memset(g->hdr_desc, 0, sizeof g->hdr_desc);
+      g->hdr_desc[0] = 9u | (1u << 4);   /* Buffer descriptor, size in bytes (mali_pack_buffer) */
+      g->hdr_desc[1] = 32;
+      g->hdr_desc[2] = (uint32_t)va;
+      g->hdr_desc[3] = (uint32_t)(va >> 32);
+   }
+   for (unsigned i = 0; i < f->npre; i++)
+      if (f->pre[i].gs)
+         memcpy(((struct mali_pre *)&f->pre[i])->d.dyn_desc[MALI_TESS_PARAM_IDX], f->pre[i].gs->hdr_desc, 32);
+   return 0;
+}
+
+/* The pre block (compute-in-pass.md): the per-draw kernels of a render pass (tessellation VS/TCS/tessellator, geometry-shader
+ * count/prefix-sum/main) run at the head of the pass' own frame, before draw 0 - the Asahi `pre_gfx` form (hk_cmd_buffer.h:487-490).
+ * Same queue, same endpoint slot, no new scoreboard slot: the only waits are `WAIT 1<<slot` after a wave's RUN_COMPUTEs and
+ * `WAIT LS` after a flush or LOAD, both already on the device in a dispatch frame. Waves ascend; kernels of one wave have no
+ * dependency on each other and share one wait; an empty wave emits nothing. Must run before the first draw (RUN_COMPUTE after
+ * VT_STARTED is the Gallium interleave, never run by us): mali_frame_build calls it right after the head flush.
+ *
+ * The block ends with one FLUSH 0x332 + WAIT LS: kernel output reaches L2 (CS LOAD of draw arguments), the vertex cache is invalidated
+ * (vertex fetch) and the LSC is cleaned. Whether the L2 clean alone suffices for the CS LOAD is the open question the falsifier
+ * (t_vk_draw --only inpass_compute, frame 2 "stale") decides on hardware. */
+static int
+emit_pre_block(struct cs *c, const struct mali_hw *hw, const struct mali_frame *f)
+{
+   const struct mali_env *env = &hw->env;
+   const struct regs *R = env->arch == 13 ? &R13 : &R11;
+   struct cshare sh = {0};
+   struct cprep *pp = calloc(f->npre, sizeof *pp);
+   uint8_t maxw = 0;
+   int rc = 0;
+
+   if (!pp)
+      return -ENOMEM;
+   for (unsigned i = 0; i < f->npre; i++) {
+      if ((rc = compute_prep(hw, &f->pre[i].d, &sh, &pp[i])))
+         goto out;
+      if (f->pre[i].wave > maxw)
+         maxw = f->pre[i].wave;
+   }
+   for (unsigned w = 0; w <= maxw; w++) {
+      unsigned ran = 0;
+      bool sync = false;
+      for (unsigned i = 0; i < f->npre; i++) {
+         const struct mali_dispatch *d = &f->pre[i].d;
+         if (f->pre[i].wave != w)
+            continue;
+         if (!d->indirect_va && (!d->groups[0] || !d->groups[1] || !d->groups[2]))
+            continue;   /* a CPU-known empty grid does nothing observable */
+         if (!ran) {   /* the same prologue a dispatch frame has, once per wave that runs something */
+            E(c, kb_cs_set_state_imm32(KB_CS_SB_SEL_ENDPOINT, env->slot));
+            E(c, kb_cs_req_res(KB_CS_RES_COMPUTE));
+         }
+         emit_compute_regs(c, d, &pp[i]);
+         E(c, compute_run(env, d));
+         ran++;
+         sync |= f->pre[i].sync_cs;
+      }
+      if (!ran)
+         continue;
+      E(c, kb_cs_wait(1u << env->slot));
+      E(c, kb_cs_req_res(0));
+      if (sync) {   /* a later wave LOADs a job size this wave wrote */
+         M32(c, R->flush_id, 0);
+         E(c, kb_cs_flush_cache2(1, 1, 0, R->flush_id));
+         E(c, kb_cs_wait(1u << KB_CS_SLOT_LS));
+      }
+   }
+   M32(c, R->flush_id, 0);
+   E(c, kb_cs_flush_cache2(3, 3, 2, R->flush_id));
+   E(c, kb_cs_wait(1u << KB_CS_SLOT_LS));
+out:
+   free(pp);
+   return rc;
+}
+
 int
 mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **out, unsigned *nout)
 {
@@ -1054,6 +1244,8 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
 
    if (f->nops)
       return mali_ops_build(env, f->ops, f->nops, out, nout);
+   if (hw->soft && f->npre)
+      return -ENOTSUP;   /* nothing on the CPU rasteriser can run a pre-block kernel: refused by name, never dropped */
    if (hw->soft) {
       /* MALI_SOFT=1: render on the CPU instead of encoding a command stream. A frame the rasteriser cannot do is a hard
        * error (-ENOTSUP), never a silent no-op: the whole point of the harness is that nothing passes unnoticed.
@@ -1122,6 +1314,10 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
       }
       E(&c, kb_cs_wait(1u << KB_CS_SLOT_LS));
    }
+   if ((rc = gs_prepare(hw, f)))
+      goto out;
+   if (f->npre && (rc = emit_pre_block(&c, hw, f)))
+      goto out;
    if (geometry) {
       unsigned prev_prim = 0;
       struct mali_draw x, pv;   /* the running full draw (updated by the groups each record renewed) and what build_draw_descs needs of the previous one */
@@ -1411,11 +1607,18 @@ mali_draw_expand(struct mali_draw *x, const struct mali_rec *r)
    x->count = r->count; x->instance_count = r->instance_count; x->first_vertex = r->first_vertex; x->first_instance = r->first_instance;
    x->draw_id = r->draw_id; x->occ_va = r->occ_va; x->ind = r->ind; x->ind_count = r->ind_count; x->ind_n = r->ind_n;
    x->ind_stride = r->ind_stride; x->ind_va = r->ind_va; x->ind_nodrain = r->ind_nodrain; x->occ_mode = r->occ_mode;
+   if (r->gs) {   /* resolved by gs_prepare before the records are expanded */
+      x->index_va = r->gs->index_va;
+      memcpy(x->dyn_desc[MALI_TESS_PARAM_IDX], r->gs->hdr_desc, 32);
+   }
 }
 
 void
 mali_frame_finish(struct mali_frame *f)
 {
+   free(f->pre);
+   f->pre = NULL;
+   f->npre = f->cappre = 0;
    free(f->draws);
    for (struct mali_pool *p = f->pool, *n; p; p = n) {
       n = p->next;

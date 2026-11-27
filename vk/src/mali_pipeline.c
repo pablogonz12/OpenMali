@@ -15,6 +15,15 @@
 #include "vk_enum_to_str.h"
 #include "mali_msaa.h"
 #include "mali_gs.h"
+#include "mali_tess.h"
+#include "mali_gs_poly.h"
+/* vk/tests/build-t_cmd.sh links this file without the poly archive (it has no GS pipelines to create): there the step-(ii)
+ * hook is simply absent (weak symbols resolve to 0), which is why every call below is guarded. */
+extern int mali_gs_poly_compile(unsigned arch, const uint32_t *spirv, uint32_t nwords, const char *entry,
+                                const struct mali_compile_opts *base, const uint32_t *vs_spirv, uint32_t vs_words, const char *vs_entry,
+                                struct mali_gs_programs *out, char *err, size_t errsz) __attribute__((weak));
+extern void mali_gs_programs_free(struct mali_gs_programs *p) __attribute__((weak));
+extern const char *mali_gs_programs_report(const struct mali_gs_programs *p, char *buf, size_t n) __attribute__((weak));
 #include "mali_pipeline_layout.h"
 #include "vk_alloc.h"
 #include "vk_graphics_state.h"
@@ -32,8 +41,9 @@ struct mali_pipeline {
    struct mali_device *dev;
    struct vk_dynamic_graphics_state dynamic;   /* R4: static state values + which states are static (bound with the pipeline) */
    struct mali_gfx_state gfx;     /* vs/fs point into this object; vs_va/fs_va into code */
-   struct mali_compiled vs, fs, cs, blend;   /* cs: compute pipelines (is_compute); the binary is at code + 0 */
+   struct mali_compiled vs, fs, cs, blend, tcs;   /* tcs: the control shader as compute (T2), when the pipeline is not T1's identity */   /* cs: compute pipelines (is_compute); the binary is at code + 0 */
    struct mali_compiled vs_plain;            /* XFB programs: the same VS without the XFB lowering (mali_tf.h) */
+   struct mali_gs_programs *gsp;             /* GS lane 2 step (iii): poly's programs; vs is the rast (copy) program, the compute ones are in code */
    bool is_compute;
    struct mali_bo code;
    bool have_code;
@@ -51,6 +61,12 @@ pipeline_destroy(struct mali_device *dev, struct mali_pipeline *p, const VkAlloc
    mali_compiled_free(&p->fs);
    mali_compiled_free(&p->cs);
    mali_compiled_free(&p->blend);
+   mali_compiled_free(&p->tcs);
+   if (p->gsp) {
+      if (mali_gs_programs_free)
+         mali_gs_programs_free(p->gsp);
+      free(p->gsp);
+   }
    mali_compiled_free(&p->vs_plain);   /* the XFB pipeline's side-effect-free vertex variant; the fail: path frees through here too */
    vk_object_free(&dev->vk, alloc, p);
 }
@@ -130,7 +146,11 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    p->dev = dev;
 
    const VkPipelineShaderStageCreateInfo *vss = NULL, *fss = NULL, *gss = NULL;
+   const VkPipelineShaderStageCreateInfo *tcss = NULL, *tesss = NULL;
    unsigned gs_prims = 0;   /* lane 1: the input primitive of an accepted pass-through GS (0 = no geometry stage) */
+   int tcs_t2 = 0;          /* T2: the TCS is not T1's identity, so it is compiled as a compute program (below) */
+   const uint32_t *tcode2 = NULL;
+   uint32_t twords2 = 0;
    for (uint32_t i = 0; i < ci->stageCount; i++) {
       /* requiredSubgroupSizeStages is COMPUTE only: a graphics stage may not chain a requested size. */
       const VkPipelineShaderStageRequiredSubgroupSizeCreateInfo *rss =
@@ -146,6 +166,10 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
          fss = &ci->pStages[i];
       else if (ci->pStages[i].stage == VK_SHADER_STAGE_GEOMETRY_BIT)
          gss = &ci->pStages[i];   /* accepted below only when it is a provable pass-through (mali_gs.c) */
+      else if (ci->pStages[i].stage == VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT)
+         tcss = &ci->pStages[i];  /* lane T1 has no TCS: refused below with a name */
+      else if (ci->pStages[i].stage == VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT)
+         tesss = &ci->pStages[i]; /* accepted below only when it is a provable pass-through (mali_tess.c) */
       else {
          res = VK_ERROR_FEATURE_NOT_PRESENT; if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: unsupported pipeline state at %s:%d\n", __FILE__, __LINE__);   /* tessellation / geometry: not supported */
          goto fail;
@@ -178,14 +202,122 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
       }
       if (!stage_spirv(gss, &gcode, &gwords) ||
           !mali_gs_passthrough(gcode, gwords, gss->pName, &gs_prims, why, sizeof why)) {
-         res = VK_ERROR_FEATURE_NOT_PRESENT;
+         /* Lane 2 step (ii), mali_gs_poly.c: this is a *real* GS, so poly lowers the module and our backend compiles the
+          * four programs it emits (main/count compute, copy/pre_gs vertex). The draw path — arena, count and prefix-sum
+          * dispatches, the rast draw — is step (iii) and does not exist, so the pipeline is still refused; the refusal
+          * now carries the compile's verdict instead of only the classifier's, which is what t_vk_draw --only gs_amplify
+          * quotes and what step (iii) starts from. MALI_EXPERIMENTAL_GS=1 is required above: nothing here is advertised. */
+         struct mali_gs_programs *gsp = calloc(1, sizeof *gsp);
+         char gsmsg[384] = "", rep[288] = "";
+         /* The layout is what makes the descriptor lowering run at all: with layout NULL the compile keeps the plain
+          * NIR path, poly's sysvals survive, and Mesa's divergence analysis aborts the process. Flatten it here (the
+          * pipeline's own flatten happens later) so step (ii) compiles exactly as the pipeline would. */
+         struct mali_flat_layout gflat;
+         VK_FROM_HANDLE(vk_pipeline_layout, glayout, ci->layout);
+         const int gfrc = glayout ? mali_pipeline_layout_flatten(glayout, &gflat) : -1;
+         struct mali_compile_opts go = {.arch = arch, .layout = gfrc == 0 ? &gflat.c : NULL};
+         const int grc = (gsp && mali_gs_poly_compile && gcode && gwords)
+                            ? mali_gs_poly_compile(arch, gcode, gwords, gss->pName, &go, vcode, vwords, vss->pName, gsp, gsmsg, sizeof gsmsg) : -1;
          if (getenv("MALI_PIPE_DBG"))
-            fprintf(stderr, "mali_vk: geometry shader refused: %s\n", why);
-         goto fail;
+            fprintf(stderr, "mali_vk: geometry shader refused: %s | lane 2 step (ii): %s\n", why,
+                    grc ? gsmsg : (mali_gs_programs_report ? mali_gs_programs_report(gsp, rep, sizeof rep) : "compiled"));
+         /* step (iii) covers exactly one draw shape: triangle-list input, direct draw, no XFB, no counts program use, VS
+          * attributes of 32-bit components. Everything else is refused by name here, not at draw time. */
+         const char *why_not = NULL;
+         /* the draw is behind a second development knob: until it is proven on a device a real GS is still refused by name,
+          * and every row of t_vk_draw --only gs_reject keeps meaning what it says */
+         const char *pd = getenv("MALI_GS_POLY_DRAW");
+         if (!pd || strcmp(pd, "1"))
+            why_not = "the poly draw path is off (MALI_GS_POLY_DRAW=1 enables it)";
+         else if (grc)
+            why_not = "poly/backend refused the geometry shader";
+         else if (!gsp->main.bin_size || !gsp->copy.bin_size || !gsp->vs.bin_size)
+            why_not = "poly produced no main/copy/vs program";
+         else if (gsp->info.xfb || gsp->info.prefix_sum || gsp->info.multistream)
+            why_not = "geometry shader with transform feedback or several streams";
+         else if (gsp->info.shape != MALI_POLY_SHAPE_DYNAMIC_INDEXED)
+            why_not = "geometry shader whose rasterisation draw is not the dynamic-indexed strip shape";
+         else if (!ci->pInputAssemblyState || ci->pInputAssemblyState->topology != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
+            why_not = "geometry shader input other than a triangle list";
+         else if (gsp->info.mode != 5 /* MESA_PRIM_TRIANGLE_STRIP */)
+            why_not = "geometry shader output other than triangle_strip";
+         if (why_not) {
+            if (getenv("MALI_PIPE_DBG"))
+               fprintf(stderr, "mali_vk: geometry shader refused: %s\n", why_not);
+            if (gsp && mali_gs_programs_free)
+               mali_gs_programs_free(gsp);
+            free(gsp);
+            res = VK_ERROR_FEATURE_NOT_PRESENT;
+            goto fail;
+         }
+         p->gsp = gsp;
       }
-      if (getenv("MALI_PIPE_DBG"))
+      if (gs_prims && getenv("MALI_PIPE_DBG"))
          fprintf(stderr, "mali_vk: geometry shader accepted as a pass-through (%u-in/1-out, compiled as the vertex program)\n",
                  gs_prims);
+   }
+
+   /* Tessellation, lane T1 of notes/tess-design.md: the same shape as lane 1's GS. A TES that provably changes nothing at
+    * all-levels-1.0 (no TCS, the VS writes the six level slots as the constant 1.0, and at gl_TessCoord = e_i every output
+    * is the matching patch input i — mali_tess.c folds the coord instead of matching arithmetic) is compiled into the
+    * vertex program by not existing: at level 1 a triangle patch tessellates to exactly its three control points, so the
+    * VS already produces the stream the TES would. Zero jobs, zero dispatches, zero bytes, the existing draw record. Every
+    * other tess pipeline is refused here with a named reason (it needs T2's tessellator chain). The feature bit stays
+    * false (mali_physical_device.c), so an application cannot reach this path; MALI_EXPERIMENTAL_TESS=1 (mali_tess.h) is
+    * the development gate the tess_* tests use. */
+   if (tcss || tesss) {
+      char why[192] = "no SPIR-V in the tessellation stages";
+      const uint32_t *tcode = NULL, *tecode = NULL;
+      uint32_t twords = 0, tewords = 0;
+      const unsigned patch = ci->pTessellationState ? ci->pTessellationState->patchControlPoints : 0;
+      if (!mali_experimental_tess()) {
+         res = VK_ERROR_FEATURE_NOT_PRESENT;
+         if (getenv("MALI_PIPE_DBG"))
+            fprintf(stderr, "mali_vk: tessellation refused: tessellationShader is not advertised (MALI_EXPERIMENTAL_TESS=1 is the development gate)\n");
+         goto fail;
+      }
+      if (!tcss || !vss || !stage_spirv(tcss, &tcode, &twords) || !stage_spirv(tesss, &tecode, &tewords)) {
+         res = VK_ERROR_FEATURE_NOT_PRESENT;
+         if (getenv("MALI_PIPE_DBG"))
+            fprintf(stderr, "mali_vk: tessellation refused: %s\n", why);
+         goto fail;
+      }
+      if (patch != 3) {
+         res = VK_ERROR_FEATURE_NOT_PRESENT;
+         if (getenv("MALI_PIPE_DBG"))
+            fprintf(stderr, "mali_vk: tessellation refused: %u patch control points, T1 accepts 3\n", patch);
+         goto fail;
+      }
+      if (fss == NULL) {
+         res = VK_ERROR_FEATURE_NOT_PRESENT;
+         if (getenv("MALI_PIPE_DBG"))
+            fprintf(stderr, "mali_vk: tessellation refused: no fragment shader\n");
+         goto fail;
+      }
+      if (!mali_tess_passthrough(arch, tcode, twords, tcss->pName, tecode, tewords, tesss->pName, why, sizeof why)) {
+         /* T2: not T1's identity. The control shader is compiled as a *compute* program (mali_compile.c
+          * MALI_STAGE_TESS_CTRL: poly_nir_lower_tcs + the compute path), and the draw runs it as a dispatch before the
+          * vertex job. Until that dispatch is wired, drawing is refused by name (mali_cmd.c), so the pipeline is accepted
+          * here and nothing is misrendered. The reason T1 gave is kept for the debug log. */
+         /* Only the *control* stage is T2's now: the TES still has to be the T1 identity (poly's TES lowering is step 4).
+          * Until then a TCS reason accepts the pipeline and a TES reason keeps refusing it, by name. */
+         const bool tes_reason = strstr(why, "tessellation evaluation") || strstr(why, "only triangles") ||
+                                 strstr(why, "only equal_spacing") || strstr(why, "point_mode") ||
+                                 strstr(why, "gl_TessCoord") || strstr(why, "no SPIR-V");   /* every refuse() of mali_tess.c; mali_tcs.c's are the control stage */
+         if (tes_reason) {
+            res = VK_ERROR_FEATURE_NOT_PRESENT;
+            if (getenv("MALI_PIPE_DBG"))
+               fprintf(stderr, "mali_vk: tessellation refused: %s\n", why);
+            goto fail;
+         }
+         tcs_t2 = 1;
+         tcode2 = tcode;
+         twords2 = twords;
+         if (getenv("MALI_PIPE_DBG"))
+            fprintf(stderr, "mali_vk: tessellation not the T1 identity (%s); compiling the control shader as compute (T2)\n", why);
+      }
+      if (getenv("MALI_PIPE_DBG"))
+         fprintf(stderr, "mali_vk: tessellation accepted as a pass-through (level 1.0, 3 control points, compiled as the vertex program)\n");
    }
 
    all = vk_zalloc(&dev->vk.alloc, sizeof *all, 8, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
@@ -240,7 +372,38 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    o.fs_spirv_words = fss ? fwords : 0;
    o.fs_entry = fss ? fss->pName : NULL;
    set_spec(&o, specbuf, vss->pSpecializationInfo);
-   int vcr = mali_compile(&o, &p->vs, err, sizeof err);
+   int vcr = 0;
+   if (p->gsp) {
+      /* GS: the program the hardware runs as "the vertex shader" is poly's rast (copy) program; the application VS runs as
+       * the compute pre-pass (p->gsp->vs). The FS below links against the copy program's varying layout. */
+      p->vs = p->gsp->copy;
+      memset(&p->gsp->copy, 0, sizeof p->gsp->copy);
+   } else
+      vcr = mali_compile(&o, &p->vs, err, sizeof err);
+   if (!vcr && tcs_t2) {
+      struct mali_compile_opts tobj = o;
+      tobj.stage = MALI_STAGE_TESS_CTRL;
+      tobj.link_vs = NULL;
+      tobj.fs_spirv = NULL;
+      tobj.fs_entry = NULL;
+      tobj.fs_spirv_words = 0;
+      tobj.spirv = tcode2;
+      tobj.spirv_words = twords2;
+      tobj.entry = tcss->pName;
+      set_spec(&tobj, specbuf, tcss->pSpecializationInfo);
+      if (mali_compile(&tobj, &p->tcs, err, sizeof err)) {
+         fprintf(stderr, "mali_vk: TCS compile failed: %s\n", err);
+         res = VK_ERROR_INVALID_SHADER_NV;
+         goto fail;
+      }
+      /* The draw is refused until the dispatch exists (mali_cmd.c), and the numbers go to the debug log because the
+       * tessellation blob's layout is decided from them. */
+      p->gfx.needs_tcs = 1;
+      if (getenv("MALI_PIPE_DBG"))
+         fprintf(stderr, "mali_vk: TCS compiled as compute: %u control points, stride %u B, mask %llx, %u B of code\n",
+                 p->tcs.tcs_vertices_out, p->tcs.tcs_output_stride,
+                 (unsigned long long)p->tcs.tcs_per_vertex_outputs, p->tcs.bin_size);
+   }
    if (vcr) {
       fprintf(stderr, "mali_vk: VS compile failed: %s\n", err);
       res = vcr == MALI_COMPILE_UNSUPPORTED ? VK_ERROR_FEATURE_NOT_PRESENT : VK_ERROR_INVALID_SHADER_NV;
@@ -347,6 +510,12 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    size_t pl_off = (fs_off + p->fs.bin_size + BIN_ALIGN - 1) & ~(size_t)(BIN_ALIGN - 1);   /* non-XFB VS variant of an XFB program */
    size_t bl_off = (pl_off + p->vs_plain.bin_size + 15) & ~(size_t)15;
    size_t code_sz = has_blend ? bl_off + p->blend.bin_size : pl_off + p->vs_plain.bin_size;
+   size_t gv_off = 0, gm_off = 0;
+   if (p->gsp) {   /* the two compute programs of a GS pipeline follow everything else, 256-byte aligned */
+      gv_off = (code_sz + BIN_ALIGN - 1) & ~(size_t)(BIN_ALIGN - 1);
+      gm_off = (gv_off + p->gsp->vs.bin_size + BIN_ALIGN - 1) & ~(size_t)(BIN_ALIGN - 1);
+      code_sz = gm_off + p->gsp->main.bin_size;
+   }
    if (mali_device_pdev(dev)->backend->bo_alloc(dev->kdev, code_sz, MALI_BO_EXEC, &p->code)) {
       res = VK_ERROR_OUT_OF_DEVICE_MEMORY;
       goto fail;
@@ -360,7 +529,20 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    if (has_blend)
       memcpy((char *)p->code.cpu + bl_off, p->blend.bin, p->blend.bin_size);
 
+   if (p->gsp) {
+      memcpy((char *)p->code.cpu + gv_off, p->gsp->vs.bin, p->gsp->vs.bin_size);
+      memcpy((char *)p->code.cpu + gm_off, p->gsp->main.bin, p->gsp->main.bin_size);
+   }
    struct mali_gfx_state *g = &p->gfx;
+   if (p->gsp) {
+      g->gs.on = true;
+      g->gs.vs_cs = &p->gsp->vs;
+      g->gs.vs_cs_va = p->code.gpu_va + gv_off;
+      g->gs.main = &p->gsp->main;
+      g->gs.main_va = p->code.gpu_va + gm_off;
+      g->gs.max_indices = p->gsp->info.max_indices;
+      g->gs.vs_outputs = p->gsp->vs_outputs;
+   }
    if (has_blend)
       g->blend_va = p->code.gpu_va + bl_off;
    g->vs = &p->vs;

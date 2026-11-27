@@ -1,0 +1,16 @@
+#version 450
+// T2 step 3's blocker, proved on its own (notes/tess-design.md § T2): a 64-wide workgroup that cannot be correct without
+// a workgroup barrier and a WLS (workgroup local storage) allocation. Every invocation writes its own value to shared[lid],
+// then — after barrier() — reads the value 32 lanes away. Without the barrier the read races the writes and the result is
+// hardware-scheduling dependent; with it, dst[gid] is exactly src of the neighbour 32 lanes along, in the same workgroup.
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+layout(binding = 0) buffer Src { uint src[]; };
+layout(binding = 1) buffer Dst { uint dst[]; };
+shared uint s[64];
+void main(){
+  uint gid = gl_GlobalInvocationID.x;
+  uint lid = gl_LocalInvocationID.x;
+  s[lid] = src[gid];
+  barrier();
+  dst[gid] = s[(lid + 32u) % 64u];
+}

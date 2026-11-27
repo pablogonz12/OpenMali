@@ -3,7 +3,7 @@
  * render pass, framebuffer, command buffer, queue submit, fence, host readback). Loader-free: dlopens the
  * ICD like t_queue --direct. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_draw --direct <icd.so> [--loop N] [--loop-reset] [--only triangle|two|depth|rot|idx16|idx32|scissor|viewport|multivp|clearatt|ring|pushfs|ubo|descupd|sets8|texture|depth16|depth32s8|stencil]
+ *   t_vk_draw --direct <icd.so> [--loop N] [--loop-reset] [--only triangle|two|depth|rot|idx16|idx32|scissor|viewport|multivp|clearatt|ring|pushfs|ubo|descupd|sets8|texture|depth16|depth32s8|stencil|indirect_gpu|inpass_compute]
  *             [--spv-dir dir]
  * Pixel checks are skipped on the fake backend (MALI_BACKEND=fake): it renders nothing.
  * --loop N repeats the triangle case N times; --loop-reset reuses one command buffer via
@@ -92,6 +92,7 @@ static const char *g_only, *g_spv = "shader";
 /* Lane 1 of notes/gs-design.md §4 (geometry shaders): the geometry module of the next scene, and two knobs the gs_reject
  * case needs (an input-assembly topology other than the triangle list, and "this pipeline creation must fail"). */
 static const char *g_gs;
+static const char *g_tesc, *g_tese;   /* lane T1: the tessellation stages, NULL = none */
 static VkPrimitiveTopology g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 static int g_gs_expect_fail;
 static int g_msaa;   /* 1: 4x MSAA colour + resolve attachment, 2: additionally sampleShadingEnable (the cases gate on the driver's advertised counts, not on MALI_EXPERIMENTAL_MSAA) */
@@ -102,7 +103,7 @@ static struct st_state g_st2;  /* second pipeline (s->pipe2) for the LOAD pass: 
 
 /* MODE_SHAREIDX stays BELOW MODE_PUSHFS: the >= MODE_PUSHFS test means "the full-screen indexed quad", and that branch must not bind
  * an index buffer of its own before the share_idx draws (the point of that case is the exact index-buffer register sequence). */
-enum { MODE_TRI, MODE_IDX16, MODE_IDX32, MODE_CLEARATT, MODE_CLEARQUAD, MODE_SCISSOR, MODE_VPORT, MODE_MVP, MODE_SHAREIDX, MODE_PUSHFS, MODE_TEX, MODE_UBO, MODE_DESCUPD, MODE_MDI, MODE_SETS8, MODE_INDGPU };
+enum { MODE_TRI, MODE_IDX16, MODE_IDX32, MODE_CLEARATT, MODE_CLEARQUAD, MODE_SCISSOR, MODE_VPORT, MODE_MVP, MODE_SHAREIDX, MODE_PUSHFS, MODE_TEX, MODE_UBO, MODE_DESCUPD, MODE_MDI, MODE_SETS8, MODE_INDGPU, MODE_INPASS };
 
 #define CASE_ON(n) ((!g_only || !strcmp(g_only, n)) && !case_skipped(n))
 /* MALI_SKIP_CASES="a,b": cases to leave out (farm --env route: lets one failing case be isolated without a phone shell) */
@@ -197,7 +198,7 @@ load_spv(const char *name)
 /* ------------------------------------------------------------------ scene */
 struct scene {
    int depth;
-   VkShaderModule vs, fs, gs;
+   VkShaderModule vs, fs, gs, tesc, tese;
    VkPipelineLayout layout;
    VkRenderPass rp, rp2;
    int second;   /* scene_draw uses rp2 (LOAD) */
@@ -259,7 +260,9 @@ scene_create(struct scene *s, int depth)
    s->vs = load_spv(vsn);
    s->fs = load_spv(fsn);
    if (g_gs) s->gs = load_spv(g_gs);
-   CHECK(s->vs && s->fs && (!g_gs || s->gs), "shader modules %s %s%s%s", vsn, fsn, g_gs ? " " : "", g_gs ? g_gs : "");
+   if (g_tesc) s->tesc = load_spv(g_tesc);
+   if (g_tese) s->tese = load_spv(g_tese);
+   CHECK(s->vs && s->fs && (!g_gs || s->gs) && (!g_tesc || s->tesc) && (!g_tese || s->tese), "shader modules %s %s", vsn, fsn);
 
    VkPushConstantRange pcr = {.stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .offset = 0, .size = 16};
    if (mode == MODE_PUSHFS) { pcr.stageFlags |= VK_SHADER_STAGE_FRAGMENT_BIT; pcr.size = 32; }
@@ -427,7 +430,7 @@ scene_create(struct scene *s, int depth)
                                   1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1, 1, 1, 1, 1,
                                   0, 0, 0, 1, 1, 0, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1};
    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 256,
-                            .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT};
+                            .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | (mode == MODE_INPASS ? VK_BUFFER_USAGE_STORAGE_BUFFER_BIT : 0)};
    for (int i = 0; i < 2; i++)
       CHECK(CreateBuffer(dev, &bi, NULL, &s->vb[i]) == VK_SUCCESS, "vertex buffer");
    GetBufferMemoryRequirements(dev, s->vb[0], &mr);
@@ -437,7 +440,10 @@ scene_create(struct scene *s, int depth)
    CHECK(AllocateMemory(dev, &va, NULL, &s->vbmem) == VK_SUCCESS, "vb mem");
    uint8_t *vp;
    CHECK(MapMemory(dev, s->vbmem, 0, VK_WHOLE_SIZE, 0, (void **)&vp) == VK_SUCCESS, "map vb");
-   memcpy(vp, pos, sizeof pos);
+   if (mode == MODE_INPASS)
+      memset(vp, 0, stride);   /* the positions exist only on the GPU: a kernel inside the pass writes them */
+   else
+      memcpy(vp, pos, sizeof pos);
    memcpy(vp + stride, colr, sizeof colr);
    UnmapMemory(dev, s->vbmem);
    CHECK(BindBufferMemory(dev, s->vb[0], s->vbmem, 0) == VK_SUCCESS, "bind vb0");
@@ -540,7 +546,7 @@ scene_create(struct scene *s, int depth)
       UpdateDescriptorSets(dev, 1, &w, 0, NULL);
    }
 
-   VkPipelineShaderStageCreateInfo st[3] = {
+   VkPipelineShaderStageCreateInfo st[5] = {
       {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT,
        .module = s->vs, .pName = "main"},
       {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -556,6 +562,11 @@ scene_create(struct scene *s, int depth)
    unsigned nst = 2;
    if (g_gs) st[nst++] = (VkPipelineShaderStageCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                                                            .stage = VK_SHADER_STAGE_GEOMETRY_BIT, .module = s->gs, .pName = "main"};
+   /* lane T1: the tessellation stages, always all three (a Vulkan tess pipeline is VS + TCS + TES). */
+   if (g_tesc) st[nst++] = (VkPipelineShaderStageCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                             .stage = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, .module = s->tesc, .pName = "main"};
+   if (g_tese) st[nst++] = (VkPipelineShaderStageCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                             .stage = VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, .module = s->tese, .pName = "main"};
    VkPipelineInputAssemblyStateCreateInfo ias = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
                                                  .topology = g_topo};
    VkPipelineViewportStateCreateInfo vps = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
@@ -611,8 +622,11 @@ scene_create(struct scene *s, int depth)
    if (g_fx.on) cbs.blendConstants[0] = g_fx.dyn ? 0.9f : g_fx.bc[0], cbs.blendConstants[1] = g_fx.dyn ? 0.9f : g_fx.bc[1],
                 cbs.blendConstants[2] = g_fx.dyn ? 0.9f : g_fx.bc[2], cbs.blendConstants[3] = g_fx.dyn ? 0.9f : g_fx.bc[3];
    if (g_discard == 2 || g_nofs) nst = 1;   /* unchanged: one stage (no FS) */
+   VkPipelineTessellationStateCreateInfo ts = {.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO,
+                                               .patchControlPoints = 3};
    VkGraphicsPipelineCreateInfo gp = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = nst,
                                       .pStages = st, .pVertexInputState = &vis, .pInputAssemblyState = &ias,
+                                      .pTessellationState = g_tese ? &ts : NULL,
                                       .pViewportState = &vps, .pRasterizationState = &rs, .pMultisampleState = &ms,
                                       .pDepthStencilState = depth ? &dss : NULL, .pColorBlendState = &cbs,
                                       .pDynamicState = &dys, .layout = s->layout, .renderPass = s->rp};
@@ -649,7 +663,7 @@ scene_create(struct scene *s, int depth)
    VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
    CHECK(CreateCommandPool(dev, &pci, NULL, &s->pool) == VK_SUCCESS, "pool");
 
-   if (mode == MODE_INDGPU) {
+   if (mode == MODE_INDGPU || mode == MODE_INPASS) {
       /* One VkDrawIndirectCommand the GPU writes: {vertexCount, instanceCount, firstVertex, firstInstance}. The host
        * zeroes it and does not touch it again, so the draw is empty unless the command stream itself reads it after the
        * compute job has run. */
@@ -670,21 +684,26 @@ scene_create(struct scene *s, int depth)
       }
       CHECK(BindBufferMemory(dev, s->args, s->argsmem, 0) == VK_SUCCESS, "bind args");
 
-      s->csm = load_spv("indargs.comp.spv");
-      CHECK(s->csm, "load indargs.comp.spv");
-      VkDescriptorSetLayoutBinding csb = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                          .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT};
+      const unsigned nb = mode == MODE_INPASS ? 2 : 1;   /* INPASS: binding 1 = the vertex buffer (storage + vertex usage) */
+      s->csm = load_spv(mode == MODE_INPASS ? "inpass.comp.spv" : "indargs.comp.spv");
+      CHECK(s->csm, "load the compute shader");
+      VkDescriptorSetLayoutBinding csb[2] = {{.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                              .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT},
+                                             {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                              .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT}};
       VkDescriptorSetLayoutCreateInfo cdli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-                                              .bindingCount = 1, .pBindings = &csb};
+                                              .bindingCount = nb, .pBindings = csb};
       CHECK(CreateDescriptorSetLayout(dev, &cdli, NULL, &s->cdsl) == VK_SUCCESS, "compute dsl");
+      VkPushConstantRange cpcr = {.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .offset = 0, .size = 12};
       VkPipelineLayoutCreateInfo cpli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-                                         .setLayoutCount = 1, .pSetLayouts = &s->cdsl};
+                                         .setLayoutCount = 1, .pSetLayouts = &s->cdsl,
+                                         .pushConstantRangeCount = mode == MODE_INPASS, .pPushConstantRanges = &cpcr};
       CHECK(CreatePipelineLayout(dev, &cpli, NULL, &s->clayout) == VK_SUCCESS, "compute layout");
       VkComputePipelineCreateInfo cpci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = s->clayout,
                                           .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                                                     .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = s->csm, .pName = "main"}};
       CHECK(CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpci, NULL, &s->cpipe) == VK_SUCCESS, "compute pipeline");
-      VkDescriptorPoolSize cps = {.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1};
+      VkDescriptorPoolSize cps = {.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = nb};
       VkDescriptorPoolCreateInfo cpci2 = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1,
                                           .poolSizeCount = 1, .pPoolSizes = &cps};
       CHECK(CreateDescriptorPool(dev, &cpci2, NULL, &s->cpool) == VK_SUCCESS, "compute pool");
@@ -692,9 +711,12 @@ scene_create(struct scene *s, int depth)
                                           .descriptorSetCount = 1, .pSetLayouts = &s->cdsl};
       CHECK(AllocateDescriptorSets(dev, &cdai, &s->cset) == VK_SUCCESS, "compute set");
       VkDescriptorBufferInfo cbi = {.buffer = s->args, .offset = 0, .range = 64};
-      VkWriteDescriptorSet cw = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = s->cset, .dstBinding = 0,
-                                 .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &cbi};
-      UpdateDescriptorSets(dev, 1, &cw, 0, NULL);
+      VkDescriptorBufferInfo cvi = {.buffer = s->vb[0], .offset = 0, .range = 256};
+      VkWriteDescriptorSet cw[2] = {{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = s->cset, .dstBinding = 0,
+                                     .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &cbi},
+                                    {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = s->cset, .dstBinding = 1,
+                                     .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &cvi}};
+      UpdateDescriptorSets(dev, nb, cw, 0, NULL);
    }
    return 1;
 }
@@ -742,6 +764,8 @@ scene_destroy(struct scene *s)
    if (s->vs) DestroyShaderModule(dev, s->vs, NULL);
    if (s->fs) DestroyShaderModule(dev, s->fs, NULL);
    if (s->gs) DestroyShaderModule(dev, s->gs, NULL);
+   if (s->tesc) DestroyShaderModule(dev, s->tesc, NULL);
+   if (s->tese) DestroyShaderModule(dev, s->tese, NULL);
 }
 
 /* draw n triangles (rot[i] = cos, sin, ox, oy), submit, wait */
@@ -1553,6 +1577,121 @@ test_indirect_gpu(void)
       CHECK(cmd[0] == 3 && cmd[1] == 1 && cmd[2] == 0 && cmd[3] == 0,
             "compute job wrote {vertexCount %u, instanceCount %u, firstVertex %u, firstInstance %u}", cmd[0], cmd[1], cmd[2], cmd[3]);
    int ok = report("indirect_gpu", &s, 8192.0, 1.0, 0);
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return ok;
+}
+
+
+/* ---- inpass_compute (compute-in-pass.md, rung 1/2): a kernel inside a render pass feeds the draw after it ----
+ * One pass, clear, then per draw: dispatch inpass.comp (writes vertices into vb[0] and a VkDrawIndirectCommand into the args
+ * buffer), then vkCmdDrawIndirect reads both. Both buffers start zeroed, so a kernel that did not run (or ran too late, or whose
+ * output the draw did not see) draws nothing. The driver has no API-level way to take a vkCmdDispatch inside a pass (Vulkan
+ * forbids it): MALI_PRE_HOIST=1 is the test knob that makes it hoist the dispatch to the head of the pass' frame, which is
+ * the mechanism the tessellation and geometry-shader lanes call. Knob off: the dispatch is refused by name (end fails). */
+struct ip_draw { uint32_t mode, vbase, ai; int skip; };
+static int
+inpass_frame(struct scene *s, VkFence fence, const struct ip_draw *d, int nd, VkResult *end_res)
+{
+   VkCommandBuffer cb;
+   VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = s->pool,
+                                     .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+   CHECK(AllocateCommandBuffers(dev, &ai, &cb) == VK_SUCCESS, "alloc cb");
+   VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                  .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+   CHECK(BeginCommandBuffer(cb, &bi) == VK_SUCCESS, "begin");
+   VkClearValue cv = {.color = {{0, 0, 0, 0}}};
+   VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = s->rp, .framebuffer = s->fb,
+                               .renderArea = {{0, 0}, {W, H}}, .clearValueCount = 1, .pClearValues = &cv};
+   CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+   CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->pipe);
+   VkViewport vp = {0, 0, W, H, 0.0f, 1.0f};
+   VkRect2D sc = {{0, 0}, {W, H}};
+   CmdSetViewport(cb, 0, 1, &vp);
+   CmdSetScissor(cb, 0, 1, &sc);
+   CmdPushConstants(cb, s->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, ID);
+   for (int i = 0; i < nd; i++) {
+      uint32_t pc[3] = {d[i].skip ? 9u : d[i].mode, d[i].vbase, d[i].ai};
+      CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, s->cpipe);
+      CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, s->clayout, 0, 1, &s->cset, 0, NULL);
+      CmdPushConstants(cb, s->clayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 12, pc);
+      CmdDispatch(cb, 1, 1, 1);
+      VkBuffer vbs[2] = {s->vb[0], s->vb[1]};
+      VkDeviceSize offs[2] = {(VkDeviceSize)d[i].vbase * 16, 0};
+      CmdBindVertexBuffers(cb, 0, 2, vbs, offs);
+      CmdDrawIndirect(cb, s->args, (VkDeviceSize)d[i].ai * 16, 1, 16);
+   }
+   CmdEndRenderPass(cb);
+   VkMemoryBarrier2 hb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+      .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+      .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT, .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
+   VkDependencyInfo hd = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &hb};
+   CmdPipelineBarrier2(cb, &hd);
+   VkResult er = EndCommandBuffer(cb);
+   if (end_res) {
+      *end_res = er;
+      if (er != VK_SUCCESS) { FreeCommandBuffers(dev, s->pool, 1, &cb); return 1; }
+   } else
+      CHECK(er == VK_SUCCESS, "end = %d (the in-pass dispatch was refused)", er);
+   VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+   VkResult r = QueueSubmit(queue, 1, &si, fence);
+   CHECK(r == VK_SUCCESS, "submit = %d", r);
+   r = WaitForFences(dev, 1, &fence, VK_TRUE, 20000000000ull);
+   CHECK(r == VK_SUCCESS, "wait = %d", r);
+   ResetFences(dev, 1, &fence);
+   FreeCommandBuffers(dev, s->pool, 1, &cb);
+   VkMappedMemoryRange mr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = s->colmem, .offset = 0, .size = VK_WHOLE_SIZE};
+   InvalidateMappedMemoryRanges(dev, 1, &mr);
+   return 1;
+}
+
+/* coverage check that also takes an expected 0 (report() divides by the expectation) */
+static int
+ip_cov(const char *name, struct scene *s, uint32_t expect, double tolpct)
+{
+   if (g_fake) {
+      printf("{\"test\":\"%s\",\"skipped\":\"fake backend\",\"ok\":true}\n", name);
+      return 1;
+   }
+   uint32_t cov = count_cov(s);
+   double err = expect ? fabs((double)cov - expect) / expect * 100.0 : (double)cov;
+   CHECK(err <= tolpct, "%s coverage %u expected %u", name, cov, expect);
+   printf("{\"test\":\"%s\",\"coverage\":%u,\"expect\":%u,\"ok\":true}\n", name, cov, expect);
+   return 1;
+}
+
+static int
+test_inpass_compute(void)
+{
+   struct scene s = {.mode = MODE_INPASS};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   if (!scene_create(&s, 0)) return 0;
+   g_hostread = 1;
+   int ok = 1;
+   VkResult er;
+   /* 5 (first, so a red tree names the refusal): knob off, the dispatch inside the pass is refused by name */
+   unsetenv("MALI_PRE_HOIST");
+   { struct ip_draw d = {0, 0, 0, 0}; ok &= inpass_frame(&s, f, &d, 1, &er); }
+   CHECK(ok && er != VK_SUCCESS, "knob off: a dispatch inside a render pass must be refused (end = %d)", er);
+   setenv("MALI_PRE_HOIST", "1", 1);
+   /* 2: the control that can fail - the kernel does nothing, the args stay zero, nothing is drawn */
+   { struct ip_draw d = {0, 0, 0, 1}; ok &= ok && inpass_frame(&s, f, &d, 1, NULL); }
+   ok &= ok && ip_cov("inpass_skipped", &s, 0, 0.0);
+   /* 1: kernel writes 3 vertices + {3,1,0,0}; the draw uses them: the "triangle" case, 8192 px */
+   { struct ip_draw d = {0, 0, 0, 0}; ok &= ok && inpass_frame(&s, f, &d, 1, NULL); }
+   ok &= ok && ip_cov("inpass_one", &s, 8192, 1.0);
+   /* 3: two kernels, two draws, disjoint vertex ranges and args slots, left and right half, in wave order */
+   { struct ip_draw d[2] = {{2, 0, 0, 0}, {3, 8, 1, 0}}; ok &= ok && inpass_frame(&s, f, d, 2, NULL); }
+   ok &= ok && ip_cov("inpass_two", &s, 13107, 2.0);
+   /* 4: staleness: the same buffers again, the kernel now writes 6 vertices / count 6: 8192 + 2048. A missing L2 clean before
+    * the CS LOAD of the args, or a missing vertex-cache invalidate, draws the previous frame's 3 vertices (8192) here. */
+   { struct ip_draw d = {0, 0, 0, 0}; ok &= ok && inpass_frame(&s, f, &d, 1, NULL); }
+   ok &= ok && ip_cov("inpass_frame1", &s, 8192, 1.0);
+   { struct ip_draw d = {1, 0, 0, 0}; ok &= ok && inpass_frame(&s, f, &d, 1, NULL); }
+   ok &= ok && ip_cov("inpass_stale", &s, 10240, 1.0);
+   unsetenv("MALI_PRE_HOIST");
    scene_destroy(&s);
    DestroyFence(dev, f, NULL);
    return ok;
@@ -3273,6 +3412,281 @@ out:
    return ok;
 }
 
+/* GS lane 2, step (ii) target — a REAL geometry shader: two triangles out per triangle in (shader/gs_amp2.geom).
+ * Assembly-mode amplification, i.e. exactly what lane 1's classifier must refuse and what the compute pre-pass exists
+ * for. Failing-first: with MALI_EXPERIMENTAL_GS=1 the pipeline is refused today, and the refusal now carries lane 2 step
+ * (ii)'s verdict (poly's four programs compiled by our backend, contents printed under MALI_PIPE_DBG). The pass
+ * condition, once step (iii) records the draw: the same pipeline with the geometry stage must paint strictly more pixels
+ * than without it, all of them from the second primitive it emits.
+ * Explicit --only row only (`check.sh` runs gs_passthrough/gs_reject, not this) until step (iii) makes it green. */
+static int
+test_gs_amplify(void)
+{
+   const char *gse = getenv("MALI_EXPERIMENTAL_GS");
+   if (!gse || strcmp(gse, "1")) {
+      printf("{\"test\":\"gs_amplify\",\"skipped\":\"MALI_EXPERIMENTAL_GS not set\",\"ok\":true}\n");
+      return 1;
+   }
+   struct scene a, b;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   VkFence fence;
+   CHECK(CreateFence(dev, &fi, NULL, &fence) == VK_SUCCESS, "fence");
+   float rot[1][4] = {{ID[0], ID[1], ID[2], ID[3]}};
+   memset(&a, 0, sizeof a);
+   memset(&b, 0, sizeof b);
+   a.mode = b.mode = MODE_TRI;
+   g_gs = NULL;
+   if (!scene_create(&a, 0))
+      return 0;
+   g_gs = "gs_amp2.geom.spv";
+   setenv("MALI_GS_POLY_DRAW", "1", 1);   /* the poly draw path of lane 2 step (iii) */
+   const int b_ok = scene_create(&b, 0);
+   unsetenv("MALI_GS_POLY_DRAW");
+   if (!b_ok) {   /* the refusal prints its reason under MALI_PIPE_DBG */
+      printf("{\"test\":\"gs_amplify\",\"ok\":false,\"pending\":\"GS pipeline refused: run with MALI_PIPE_DBG=1 for "
+             "lane 2 step (ii)'s compile report; the record path is step (iii)\"}\n");
+      g_gs = NULL;
+      scene_destroy(&a);
+      DestroyFence(dev, fence, NULL);
+      return 0;
+   }
+   int ok = 0;
+   if (g_fake) {
+      /* the fake backend executes nothing: it proves the record + frame build + command stream of the GS draw (pre block, arena,
+       * header descriptor) go through without an error; the pixel count is the device's job */
+      ok = scene_draw(&b, 1, rot, fence);
+      printf("{\"test\":\"gs_amplify\",\"skipped\":\"fake backend: record and build only\",\"ok\":%s}\n", ok ? "true" : "false");
+      goto out;
+   }
+   if (!scene_draw(&a, 1, rot, fence) || !scene_draw(&b, 1, rot, fence))
+      goto out;
+   {
+      const uint32_t cov_a = count_cov(&a), cov_b = count_cov(&b);
+      uint32_t diff = 0;
+      for (int y = 0; y < H; y++)
+         for (int x = 0; x < W; x++) {
+            const uint8_t *p = a.px + y * a.pitch + x * 4, *q = b.px + y * b.pitch + x * 4;
+            if (memcmp(p, q, 4))
+               diff++;
+         }
+      printf("{\"test\":\"gs_amplify\",\"cov\":[%u,%u],\"diff_px\":%u,\"ok\":%s}\n", cov_a, cov_b, diff,
+             (cov_a == 8192 && cov_b > cov_a && diff > 0) ? "true" : "false");
+      ok = cov_a == 8192 && cov_b > cov_a && diff > 0;
+   }
+out:
+   scene_destroy(&a);
+   scene_destroy(&b);
+   DestroyFence(dev, fence, NULL);
+   g_gs = NULL;
+   return ok;
+}
+
+/* Lane T1 (notes/tess-design.md): a tessellation pipeline whose TCS is the identity patch at level 1.0 and whose TES is
+ * the pass-through is compiled into the vertex program by not existing, so its frame must be identical to the same scene
+ * without the two tessellation stages. The reference is therefore the *plain* pipeline with the same vertex shader: the
+ * assertion is "tessellation did not change the picture", which is exactly what a level-1 identity tess means.
+ * On the fake backend there is no rasteriser, so the case stops after pipeline creation (the host half of the gate). */
+static int
+test_tess_tri(void)
+{
+   /* The row T1 is specified by. Without MALI_EXPERIMENTAL_TESS the pipeline must be refused (tessellationShader is not
+    * advertised — the state every application sees). With the gate on the identity-TCS + pass-through-TES pipeline is
+    * accepted, and the frame it draws must be identical to the same scene without the two tessellation stages: at level
+    * 1.0 a triangle patch tessellates to exactly its three control points, so the VS alone produces the same stream.
+    * On the fake backend there is no rasteriser, so the case stops after pipeline creation (the host half of the gate)
+    * and says so; the pixel half runs on a device. */
+   struct scene a, b;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   VkFence fence;
+   CHECK(CreateFence(dev, &fi, NULL, &fence) == VK_SUCCESS, "fence");
+   float rot[1][4] = {{1, 0, 0, 0.5f}};
+   memset(&a, 0, sizeof a);
+   memset(&b, 0, sizeof b);
+   a.mode = b.mode = MODE_TRI;
+   int ok = 0;
+   g_gs = NULL;
+
+   /* gate off: refused, by design */
+   g_tesc = "tess_tri.tesc.spv";
+   g_tese = "tess_tri.tese.spv";
+   unsetenv("MALI_EXPERIMENTAL_TESS");
+   g_gs_expect_fail = 1;
+   struct scene g;
+   memset(&g, 0, sizeof g);
+   g.mode = MODE_TRI;
+   const int refused_gate_off = scene_create(&g, 0);
+   g_gs_expect_fail = 0;
+   scene_destroy(&g);
+   setenv("MALI_EXPERIMENTAL_TESS", "1", 1);
+   if (!refused_gate_off) {
+      printf("{\"test\":\"tess_tri\",\"fail\":\"accepted without MALI_EXPERIMENTAL_TESS\"}\n");
+      goto out;
+   }
+
+   g_tesc = g_tese = NULL;
+   if (!scene_create(&a, 0))          /* the plain scene, same VS: the reference */
+      goto out;
+   g_tesc = "tess_tri.tesc.spv";
+   g_tese = "tess_tri.tese.spv";
+   if (!scene_create(&b, 0))          /* the same scene plus the identity tessellation stages */
+      goto out;
+   if (g_fake) {
+      printf("{\"test\":\"tess_tri\",\"gate_off_refused\":true,\"accepted\":true,\"cover\":\"pipelines only (fake backend)\",\"ok\":true}\n");
+      ok = 1;
+      goto out;
+   }
+   if (!scene_draw(&a, 1, rot, fence) || !scene_draw(&b, 1, rot, fence))
+      goto out;
+   {
+      const uint32_t cov_a = count_cov(&a), cov_b = count_cov(&b);
+      uint32_t diff = 0, maxd = 0;
+      for (int y = 0; y < H; y++)
+         for (int x = 0; x < W; x++) {
+            const uint8_t *p = a.px + y * a.pitch + x * 4, *q = b.px + y * b.pitch + x * 4;
+            int d = 0;
+            for (int c = 0; c < 4; c++) {
+               const int e = abs((int)p[c] - (int)q[c]);
+               if (e > d) d = e;
+            }
+            if (d) diff++;
+            if (d > (int)maxd) maxd = (uint32_t)d;
+         }
+      printf("{\"test\":\"tess_tri\",\"cov\":[%u,%u],\"diff_px\":%u,\"max_diff\":%u,\"ok\":%s}\n",
+             cov_a, cov_b, diff, maxd, (cov_a == cov_b && cov_b == 8192 && diff == 0) ? "true" : "false");
+      ok = cov_a == cov_b && cov_b == 8192 && diff == 0;
+   }
+out:
+   scene_destroy(&a);
+   scene_destroy(&b);
+   DestroyFence(dev, fence, NULL);
+   g_tesc = g_tese = NULL;
+   setenv("MALI_EXPERIMENTAL_TESS", "1", 1);
+   return ok;
+}
+
+/* T2's barrier row: bar.tesc writes its own control point's colour, barrier(), then takes the *next* control point's colour
+ * as its own. tess_rot.tesc computes the same rotation straight from the patch inputs, with no barrier and no dependency
+ * between invocations — so the two frames must be identical pixel for pixel. This is the only test of poly's rewritten
+ * barrier (a SCOPE_SUBGROUP barrier, bifrost_compile.c:1662-1675), and it also fails if the TCS's three invocations write
+ * to one address (the stride-24 bug: then the read sees its own write and every vertex gets its own colour). */
+static int
+test_tess_bar(void)
+{
+   struct scene a, b;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   VkFence fence;
+   CHECK(CreateFence(dev, &fi, NULL, &fence) == VK_SUCCESS, "fence");
+   float rot[1][4] = {{1, 0, 0, 0.5f}};
+   memset(&a, 0, sizeof a);
+   memset(&b, 0, sizeof b);
+   a.mode = b.mode = MODE_TRI;
+   int ok = 0;
+   g_gs = NULL;
+   setenv("MALI_EXPERIMENTAL_TESS", "1", 1);
+
+   g_tesc = "bar.tesc.spv";
+   g_tese = "tess_tri.tese.spv";
+   if (!scene_create(&a, 0))
+      goto out;
+   g_tesc = "tess_rot.tesc.spv";
+   if (!scene_create(&b, 0))
+      goto out;
+   if (g_fake) {
+      /* T2 step 3: both pipelines are created and each carries a control shader compiled as a compute program (the debug
+       * log below says which). The draw itself is still refused by name (mali_cmd.c) — that refusal and this acceptance are
+       * the two halves of the step, so the row is honest about which one it covers. */
+      printf("{\"test\":\"tess_bar\",\"pipelines\":\"bar.tesc + tess_rot.tesc as compute\",\"draw\":\"refused until the dispatch is recorded\",\"ok\":true}\n");
+      ok = 1;
+      goto out;
+   }
+   if (!scene_draw(&a, 1, rot, fence) || !scene_draw(&b, 1, rot, fence))
+      goto out;
+   {
+      const uint32_t cov_a = count_cov(&a), cov_b = count_cov(&b);
+      uint32_t diff = 0, maxd = 0;
+      for (int y = 0; y < H; y++)
+         for (int x = 0; x < W; x++) {
+            const uint8_t *p = a.px + y * a.pitch + x * 4, *q = b.px + y * b.pitch + x * 4;
+            int d = 0;
+            for (int c = 0; c < 4; c++) {
+               const int e = abs((int)p[c] - (int)q[c]);
+               if (e > d) d = e;
+            }
+            if (d) diff++;
+            if (d > (int)maxd) maxd = (uint32_t)d;
+         }
+      printf("{\"test\":\"tess_bar\",\"cov\":[%u,%u],\"diff_px\":%u,\"max_diff\":%u,\"ok\":%s}\n", cov_a, cov_b, diff,
+             maxd, (cov_a == cov_b && cov_b == 8192 && diff == 0) ? "true" : "false");
+      ok = cov_a == cov_b && cov_b == 8192 && diff == 0;
+   }
+out:
+   scene_destroy(&a);
+   scene_destroy(&b);
+   DestroyFence(dev, fence, NULL);
+   g_tesc = g_tese = NULL;
+   return ok;
+}
+
+/* Every tessellation pipeline this driver does not accept is refused at pipeline creation with a named reason: the gate
+ * off, a non-identity TES, and quads. check.sh greps each reason.
+ *
+ * A *non-identity TCS* used to be on this list (T1 could only fold the identity); since T2 it is accepted — the control
+ * shader is compiled as the compute program the dispatch will run — so `tess_levels` and `tess_move` moved to
+ * g_tess_t2_accept below. That is the honest split: the pipeline exists, the draw is refused by name until the dispatch is
+ * recorded, and neither is a silent misrender. */
+static const struct { const char *tesc, *tese; int gate_off; const char *why; } g_tess_rejects[] = {
+   {"tess_tri.tesc.spv", "tess_tri.tese.spv", 1, "tessellationShader is not advertised"},
+   {"tess_tri.tesc.spv", "tess_shift.tese.spv", 0, "an output that is not a copy of a patch input (at gl_TessCoord = e0)"},
+   {"tess_tri.tesc.spv", "tess_quad.tese.spv", 0, "only triangles patches are accepted"},
+};
+
+/* T2: accepted at pipeline creation (the TCS compiles as compute), refused at draw time. */
+static const char *const g_tess_t2_accept[] = {"tess_levels.tesc.spv", "tess_move.tesc.spv"};
+
+static int
+test_tess_reject(void)
+{
+   int ok = 1;
+   for (unsigned i = 0; i < sizeof g_tess_rejects / sizeof *g_tess_rejects; i++) {
+      struct scene s;
+      memset(&s, 0, sizeof s);
+      s.mode = MODE_TRI;
+      g_tesc = g_tess_rejects[i].tesc;
+      g_tese = g_tess_rejects[i].tese;
+      g_gs_expect_fail = 1;
+      if (g_tess_rejects[i].gate_off)
+         unsetenv("MALI_EXPERIMENTAL_TESS");
+      else
+         setenv("MALI_EXPERIMENTAL_TESS", "1", 1);
+      const int refused = scene_create(&s, 0);
+      g_gs_expect_fail = 0;
+      scene_destroy(&s);
+      if (g_tess_rejects[i].gate_off)
+         setenv("MALI_EXPERIMENTAL_TESS", "1", 1);
+      g_tesc = g_tese = NULL;
+      printf("{\"test\":\"tess_reject\",\"case\":\"%s %s\",\"reason\":\"%s\",\"refused\":%s,\"ok\":%s}\n",
+             g_tess_rejects[i].tesc, g_tess_rejects[i].gate_off ? "gate off" : g_tess_rejects[i].tese,
+             g_tess_rejects[i].why, refused ? "true" : "false", refused ? "true" : "false");
+      ok &= refused;
+   }
+   /* T2: a non-identity control shader must now be ACCEPTED at pipeline creation, and its compute program compiled. */
+   for (unsigned i = 0; i < sizeof g_tess_t2_accept / sizeof *g_tess_t2_accept; i++) {
+      struct scene s;
+      memset(&s, 0, sizeof s);
+      s.mode = MODE_TRI;
+      g_tesc = g_tess_t2_accept[i];
+      g_tese = "tess_tri.tese.spv";
+      setenv("MALI_EXPERIMENTAL_TESS", "1", 1);
+      const int accepted = scene_create(&s, 0);   /* 1 = the pipeline was created */
+      scene_destroy(&s);
+      g_tesc = g_tese = NULL;
+      printf("{\"test\":\"tess_reject\",\"case\":\"%s (T2)\",\"accepted\":%s,\"ok\":%s}\n", g_tess_t2_accept[i],
+             accepted ? "true" : "false", accepted ? "true" : "false");
+      ok &= accepted;
+   }
+   return ok;
+}
+
 /* Every geometry shader lane 1 does not accept must be refused at pipeline creation with VK_ERROR_FEATURE_NOT_PRESENT and
  * a name for why (the driver prints it under MALI_PIPE_DBG; check.sh greps each row's reason). The last row is the gate
  * itself: the same pass-through shader without MALI_EXPERIMENTAL_GS, which is the state every application sees. */
@@ -3328,8 +3742,10 @@ main(int argc, char **argv)
       else if (!strcmp(argv[i], "--only") && i + 1 < argc) g_only = argv[++i];
       else if (!strcmp(argv[i], "--spv-dir") && i + 1 < argc) g_spv = argv[++i];
       else if (!strcmp(argv[i], "--gs") && i + 1 < argc) g_gs = argv[++i];   /* lane 1: draw every case through this geometry shader */
+      else if (!strcmp(argv[i], "--tesc") && i + 1 < argc) g_tesc = argv[++i];   /* lane T1: ... and through these tessellation stages */
+      else if (!strcmp(argv[i], "--tese") && i + 1 < argc) g_tese = argv[++i];
       else if (!strcmp(argv[i], "--topo") && i + 1 < argc) g_topo = !strcmp(argv[++i], "strip") ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-      else { fprintf(stderr, "usage: t_vk_draw --direct icd.so [--loop N] [--loop-reset] [--only case] [--gs geom.spv] [--topo list|strip]\n"); return 2; }
+      else { fprintf(stderr, "usage: t_vk_draw --direct icd.so [--loop N] [--loop-reset] [--only case] [--gs geom.spv] [--tesc file] [--tese file] [--topo list|strip]\n"); return 2; }
    }
    if (!icd) { fprintf(stderr, "--direct required\n"); return 2; }
    const char *be = getenv("MALI_BACKEND");
@@ -3444,6 +3860,7 @@ main(int argc, char **argv)
    int ok = 1;
    if (CASE_ON("triangle") || CASE_ON("rot")) ok &= test_triangle();
    if (ok && g_only && CASE_ON("indirect_gpu")) ok &= test_indirect_gpu();
+   if (ok && g_only && CASE_ON("inpass_compute")) ok &= test_inpass_compute();
    if (ok && g_only && CASE_ON("blitreplay")) ok &= test_blitreplay();   /* --only only: it allocates two 800x600 images */
    if (ok && g_only && CASE_ON("blitwin")) { setenv("BLITREPLAY", "6", 1); ok &= test_blitreplay(); unsetenv("BLITREPLAY"); }   /* the twin control: our own shaders */
    if (ok && CASE_ON("sparse_loc")) { g_sparse = 1; ok &= test_triangle(); g_sparse = 0; }   /* same triangle as "triangle" through attribute locations 0 and 2 */
@@ -3528,6 +3945,10 @@ main(int argc, char **argv)
    if (ok && g_only && CASE_ON("dxvk_frame")) ok &= test_dxvk_frame();   /* explicit only: timing bench */
    if (ok && g_only && CASE_ON("gs_passthrough")) ok &= test_gs_passthrough();
    if (ok && g_only && CASE_ON("gs_reject")) ok &= test_gs_reject();
+   if (ok && g_only && CASE_ON("tess_tri")) ok &= test_tess_tri();
+   if (ok && g_only && CASE_ON("tess_bar")) ok &= test_tess_bar();
+   if (ok && g_only && CASE_ON("tess_reject")) ok &= test_tess_reject();
+   if (ok && g_only && CASE_ON("gs_amplify")) ok &= test_gs_amplify();
    if (ok && g_only && CASE_ON("many_draws")) ok &= test_many();   /* explicit only: 50k-draw frames are too big for the golden dumps */
    if (ok && CASE_ON("share")) ok &= test_share();
    if (ok && CASE_ON("share")) ok &= test_share_dyn();
