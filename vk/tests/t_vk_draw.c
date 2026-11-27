@@ -92,6 +92,7 @@ static const char *g_only, *g_spv = "shader";
 /* Lane 1 of notes/gs-design.md §4 (geometry shaders): the geometry module of the next scene, and two knobs the gs_reject
  * case needs (an input-assembly topology other than the triangle list, and "this pipeline creation must fail"). */
 static const char *g_gs;
+static const char *g_tesc, *g_tese;   /* lane T1: the tessellation stages, NULL = none */
 static VkPrimitiveTopology g_topo = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 static int g_gs_expect_fail;
 static int g_msaa;   /* 1: 4x MSAA colour + resolve attachment, 2: additionally sampleShadingEnable (the cases gate on the driver's advertised counts, not on MALI_EXPERIMENTAL_MSAA) */
@@ -196,7 +197,7 @@ load_spv(const char *name)
 /* ------------------------------------------------------------------ scene */
 struct scene {
    int depth;
-   VkShaderModule vs, fs, gs;
+   VkShaderModule vs, fs, gs, tesc, tese;
    VkPipelineLayout layout;
    VkRenderPass rp, rp2;
    int second;   /* scene_draw uses rp2 (LOAD) */
@@ -249,7 +250,9 @@ scene_create(struct scene *s, int depth)
    s->vs = load_spv(vsn);
    s->fs = load_spv(fsn);
    if (g_gs) s->gs = load_spv(g_gs);
-   CHECK(s->vs && s->fs && (!g_gs || s->gs), "shader modules %s %s%s%s", vsn, fsn, g_gs ? " " : "", g_gs ? g_gs : "");
+   if (g_tesc) s->tesc = load_spv(g_tesc);
+   if (g_tese) s->tese = load_spv(g_tese);
+   CHECK(s->vs && s->fs && (!g_gs || s->gs) && (!g_tesc || s->tesc) && (!g_tese || s->tese), "shader modules %s %s", vsn, fsn);
 
    VkPushConstantRange pcr = {.stageFlags = VK_SHADER_STAGE_VERTEX_BIT, .offset = 0, .size = 16};
    if (mode == MODE_PUSHFS) { pcr.stageFlags |= VK_SHADER_STAGE_FRAGMENT_BIT; pcr.size = 32; }
@@ -530,7 +533,7 @@ scene_create(struct scene *s, int depth)
       UpdateDescriptorSets(dev, 1, &w, 0, NULL);
    }
 
-   VkPipelineShaderStageCreateInfo st[3] = {
+   VkPipelineShaderStageCreateInfo st[5] = {
       {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT,
        .module = s->vs, .pName = "main"},
       {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -546,6 +549,11 @@ scene_create(struct scene *s, int depth)
    unsigned nst = 2;
    if (g_gs) st[nst++] = (VkPipelineShaderStageCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                                                            .stage = VK_SHADER_STAGE_GEOMETRY_BIT, .module = s->gs, .pName = "main"};
+   /* lane T1: the tessellation stages, always all three (a Vulkan tess pipeline is VS + TCS + TES). */
+   if (g_tesc) st[nst++] = (VkPipelineShaderStageCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                             .stage = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, .module = s->tesc, .pName = "main"};
+   if (g_tese) st[nst++] = (VkPipelineShaderStageCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                             .stage = VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, .module = s->tese, .pName = "main"};
    VkPipelineInputAssemblyStateCreateInfo ias = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
                                                  .topology = g_topo};
    VkPipelineViewportStateCreateInfo vps = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
@@ -601,8 +609,11 @@ scene_create(struct scene *s, int depth)
    if (g_fx.on) cbs.blendConstants[0] = g_fx.dyn ? 0.9f : g_fx.bc[0], cbs.blendConstants[1] = g_fx.dyn ? 0.9f : g_fx.bc[1],
                 cbs.blendConstants[2] = g_fx.dyn ? 0.9f : g_fx.bc[2], cbs.blendConstants[3] = g_fx.dyn ? 0.9f : g_fx.bc[3];
    if (g_discard == 2 || g_nofs) nst = 1;   /* unchanged: one stage (no FS) */
+   VkPipelineTessellationStateCreateInfo ts = {.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO,
+                                               .patchControlPoints = 3};
    VkGraphicsPipelineCreateInfo gp = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = nst,
                                       .pStages = st, .pVertexInputState = &vis, .pInputAssemblyState = &ias,
+                                      .pTessellationState = g_tese ? &ts : NULL,
                                       .pViewportState = &vps, .pRasterizationState = &rs, .pMultisampleState = &ms,
                                       .pDepthStencilState = depth ? &dss : NULL, .pColorBlendState = &cbs,
                                       .pDynamicState = &dys, .layout = s->layout, .renderPass = s->rp};
@@ -677,6 +688,8 @@ scene_destroy(struct scene *s)
    if (s->vs) DestroyShaderModule(dev, s->vs, NULL);
    if (s->fs) DestroyShaderModule(dev, s->fs, NULL);
    if (s->gs) DestroyShaderModule(dev, s->gs, NULL);
+   if (s->tesc) DestroyShaderModule(dev, s->tesc, NULL);
+   if (s->tese) DestroyShaderModule(dev, s->tese, NULL);
 }
 
 /* draw n triangles (rot[i] = cos, sin, ox, oy), submit, wait */
@@ -3148,6 +3161,128 @@ out:
    return ok;
 }
 
+/* Lane T1 (notes/tess-design.md): a tessellation pipeline whose TCS is the identity patch at level 1.0 and whose TES is
+ * the pass-through is compiled into the vertex program by not existing, so its frame must be identical to the same scene
+ * without the two tessellation stages. The reference is therefore the *plain* pipeline with the same vertex shader: the
+ * assertion is "tessellation did not change the picture", which is exactly what a level-1 identity tess means.
+ * On the fake backend there is no rasteriser, so the case stops after pipeline creation (the host half of the gate). */
+static int
+test_tess_tri(void)
+{
+   /* The row T1 is specified by. Without MALI_EXPERIMENTAL_TESS the pipeline must be refused (tessellationShader is not
+    * advertised — the state every application sees). With the gate on the identity-TCS + pass-through-TES pipeline is
+    * accepted, and the frame it draws must be identical to the same scene without the two tessellation stages: at level
+    * 1.0 a triangle patch tessellates to exactly its three control points, so the VS alone produces the same stream.
+    * On the fake backend there is no rasteriser, so the case stops after pipeline creation (the host half of the gate)
+    * and says so; the pixel half runs on a device. */
+   struct scene a, b;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   VkFence fence;
+   CHECK(CreateFence(dev, &fi, NULL, &fence) == VK_SUCCESS, "fence");
+   float rot[1][4] = {{1, 0, 0, 0.5f}};
+   memset(&a, 0, sizeof a);
+   memset(&b, 0, sizeof b);
+   a.mode = b.mode = MODE_TRI;
+   int ok = 0;
+   g_gs = NULL;
+
+   /* gate off: refused, by design */
+   g_tesc = "tess_tri.tesc.spv";
+   g_tese = "tess_tri.tese.spv";
+   unsetenv("MALI_EXPERIMENTAL_TESS");
+   g_gs_expect_fail = 1;
+   struct scene g;
+   memset(&g, 0, sizeof g);
+   g.mode = MODE_TRI;
+   const int refused_gate_off = scene_create(&g, 0);
+   g_gs_expect_fail = 0;
+   scene_destroy(&g);
+   setenv("MALI_EXPERIMENTAL_TESS", "1", 1);
+   if (!refused_gate_off) {
+      printf("{\"test\":\"tess_tri\",\"fail\":\"accepted without MALI_EXPERIMENTAL_TESS\"}\n");
+      goto out;
+   }
+
+   g_tesc = g_tese = NULL;
+   if (!scene_create(&a, 0))          /* the plain scene, same VS: the reference */
+      goto out;
+   g_tesc = "tess_tri.tesc.spv";
+   g_tese = "tess_tri.tese.spv";
+   if (!scene_create(&b, 0))          /* the same scene plus the identity tessellation stages */
+      goto out;
+   if (g_fake) {
+      printf("{\"test\":\"tess_tri\",\"gate_off_refused\":true,\"accepted\":true,\"cover\":\"pipelines only (fake backend)\",\"ok\":true}\n");
+      ok = 1;
+      goto out;
+   }
+   if (!scene_draw(&a, 1, rot, fence) || !scene_draw(&b, 1, rot, fence))
+      goto out;
+   {
+      const uint32_t cov_a = count_cov(&a), cov_b = count_cov(&b);
+      uint32_t diff = 0, maxd = 0;
+      for (int y = 0; y < H; y++)
+         for (int x = 0; x < W; x++) {
+            const uint8_t *p = a.px + y * a.pitch + x * 4, *q = b.px + y * b.pitch + x * 4;
+            int d = 0;
+            for (int c = 0; c < 4; c++) {
+               const int e = abs((int)p[c] - (int)q[c]);
+               if (e > d) d = e;
+            }
+            if (d) diff++;
+            if (d > (int)maxd) maxd = (uint32_t)d;
+         }
+      printf("{\"test\":\"tess_tri\",\"cov\":[%u,%u],\"diff_px\":%u,\"max_diff\":%u,\"ok\":%s}\n",
+             cov_a, cov_b, diff, maxd, (cov_a == cov_b && cov_b == 8192 && diff == 0) ? "true" : "false");
+      ok = cov_a == cov_b && cov_b == 8192 && diff == 0;
+   }
+out:
+   scene_destroy(&a);
+   scene_destroy(&b);
+   DestroyFence(dev, fence, NULL);
+   g_tesc = g_tese = NULL;
+   setenv("MALI_EXPERIMENTAL_TESS", "1", 1);
+   return ok;
+}
+
+/* Every tessellation pipeline T1 does not accept must be refused at pipeline creation with a named reason: the gate off,
+ * levels above 1.0, a TCS that moves a vertex, a non-identity TES, and quads. check.sh greps each reason. */
+static const struct { const char *tesc, *tese; int gate_off; const char *why; } g_tess_rejects[] = {
+   {"tess_tri.tesc.spv", "tess_tri.tese.spv", 1, "tessellationShader is not advertised"},
+   {"tess_levels.tesc.spv", "tess_tri.tese.spv", 0, "gl_TessLevelOuter[0] is 2, not 1.0"},
+   {"tess_move.tesc.spv", "tess_tri.tese.spv", 0, "a tessellation control output that is not a copy of the patch input"},
+   {"tess_tri.tesc.spv", "tess_shift.tese.spv", 0, "an output that is not a copy of a patch input (at gl_TessCoord = e0)"},
+   {"tess_tri.tesc.spv", "tess_quad.tese.spv", 0, "only triangles patches are accepted"},
+};
+
+static int
+test_tess_reject(void)
+{
+   int ok = 1;
+   for (unsigned i = 0; i < sizeof g_tess_rejects / sizeof *g_tess_rejects; i++) {
+      struct scene s;
+      memset(&s, 0, sizeof s);
+      s.mode = MODE_TRI;
+      g_tesc = g_tess_rejects[i].tesc;
+      g_tese = g_tess_rejects[i].tese;
+      g_gs_expect_fail = 1;
+      if (g_tess_rejects[i].gate_off)
+         unsetenv("MALI_EXPERIMENTAL_TESS");
+      else
+         setenv("MALI_EXPERIMENTAL_TESS", "1", 1);
+      const int refused = scene_create(&s, 0);
+      g_gs_expect_fail = 0;
+      scene_destroy(&s);
+      if (g_tess_rejects[i].gate_off)
+         setenv("MALI_EXPERIMENTAL_TESS", "1", 1);
+      g_tesc = g_tese = NULL;
+      printf("{\"test\":\"tess_reject\",\"case\":\"%s %s\",\"reason\":\"%s\",\"refused\":%s,\"ok\":%s}\n",
+             g_tess_rejects[i].tesc, g_tess_rejects[i].gate_off ? "gate off" : g_tess_rejects[i].tese,
+             g_tess_rejects[i].why, refused ? "true" : "false", refused ? "true" : "false");
+      ok &= refused;
+   }
+   return ok;
+}
+
 /* Every geometry shader lane 1 does not accept must be refused at pipeline creation with VK_ERROR_FEATURE_NOT_PRESENT and
  * a name for why (the driver prints it under MALI_PIPE_DBG; check.sh greps each row's reason). The last row is the gate
  * itself: the same pass-through shader without MALI_EXPERIMENTAL_GS, which is the state every application sees. */
@@ -3203,8 +3338,10 @@ main(int argc, char **argv)
       else if (!strcmp(argv[i], "--only") && i + 1 < argc) g_only = argv[++i];
       else if (!strcmp(argv[i], "--spv-dir") && i + 1 < argc) g_spv = argv[++i];
       else if (!strcmp(argv[i], "--gs") && i + 1 < argc) g_gs = argv[++i];   /* lane 1: draw every case through this geometry shader */
+      else if (!strcmp(argv[i], "--tesc") && i + 1 < argc) g_tesc = argv[++i];   /* lane T1: ... and through these tessellation stages */
+      else if (!strcmp(argv[i], "--tese") && i + 1 < argc) g_tese = argv[++i];
       else if (!strcmp(argv[i], "--topo") && i + 1 < argc) g_topo = !strcmp(argv[++i], "strip") ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-      else { fprintf(stderr, "usage: t_vk_draw --direct icd.so [--loop N] [--loop-reset] [--only case] [--gs geom.spv] [--topo list|strip]\n"); return 2; }
+      else { fprintf(stderr, "usage: t_vk_draw --direct icd.so [--loop N] [--loop-reset] [--only case] [--gs geom.spv] [--tesc file] [--tese file] [--topo list|strip]\n"); return 2; }
    }
    if (!icd) { fprintf(stderr, "--direct required\n"); return 2; }
    const char *be = getenv("MALI_BACKEND");
@@ -3402,6 +3539,8 @@ main(int argc, char **argv)
    if (ok && g_only && CASE_ON("dxvk_frame")) ok &= test_dxvk_frame();   /* explicit only: timing bench */
    if (ok && g_only && CASE_ON("gs_passthrough")) ok &= test_gs_passthrough();
    if (ok && g_only && CASE_ON("gs_reject")) ok &= test_gs_reject();
+   if (ok && g_only && CASE_ON("tess_tri")) ok &= test_tess_tri();
+   if (ok && g_only && CASE_ON("tess_reject")) ok &= test_tess_reject();
    if (ok && g_only && CASE_ON("many_draws")) ok &= test_many();   /* explicit only: 50k-draw frames are too big for the golden dumps */
    if (ok && CASE_ON("share")) ok &= test_share();
    if (ok && CASE_ON("share")) ok &= test_share_dyn();

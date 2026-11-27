@@ -15,6 +15,7 @@
 #include "vk_enum_to_str.h"
 #include "mali_msaa.h"
 #include "mali_gs.h"
+#include "mali_tess.h"
 #include "mali_pipeline_layout.h"
 #include "vk_alloc.h"
 #include "vk_graphics_state.h"
@@ -130,6 +131,7 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    p->dev = dev;
 
    const VkPipelineShaderStageCreateInfo *vss = NULL, *fss = NULL, *gss = NULL;
+   const VkPipelineShaderStageCreateInfo *tcss = NULL, *tesss = NULL;
    unsigned gs_prims = 0;   /* lane 1: the input primitive of an accepted pass-through GS (0 = no geometry stage) */
    for (uint32_t i = 0; i < ci->stageCount; i++) {
       /* requiredSubgroupSizeStages is COMPUTE only: a graphics stage may not chain a requested size. */
@@ -146,6 +148,10 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
          fss = &ci->pStages[i];
       else if (ci->pStages[i].stage == VK_SHADER_STAGE_GEOMETRY_BIT)
          gss = &ci->pStages[i];   /* accepted below only when it is a provable pass-through (mali_gs.c) */
+      else if (ci->pStages[i].stage == VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT)
+         tcss = &ci->pStages[i];  /* lane T1 has no TCS: refused below with a name */
+      else if (ci->pStages[i].stage == VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT)
+         tesss = &ci->pStages[i]; /* accepted below only when it is a provable pass-through (mali_tess.c) */
       else {
          res = VK_ERROR_FEATURE_NOT_PRESENT; if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: unsupported pipeline state at %s:%d\n", __FILE__, __LINE__);   /* tessellation / geometry: not supported */
          goto fail;
@@ -186,6 +192,54 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
       if (getenv("MALI_PIPE_DBG"))
          fprintf(stderr, "mali_vk: geometry shader accepted as a pass-through (%u-in/1-out, compiled as the vertex program)\n",
                  gs_prims);
+   }
+
+   /* Tessellation, lane T1 of notes/tess-design.md: the same shape as lane 1's GS. A TES that provably changes nothing at
+    * all-levels-1.0 (no TCS, the VS writes the six level slots as the constant 1.0, and at gl_TessCoord = e_i every output
+    * is the matching patch input i — mali_tess.c folds the coord instead of matching arithmetic) is compiled into the
+    * vertex program by not existing: at level 1 a triangle patch tessellates to exactly its three control points, so the
+    * VS already produces the stream the TES would. Zero jobs, zero dispatches, zero bytes, the existing draw record. Every
+    * other tess pipeline is refused here with a named reason (it needs T2's tessellator chain). The feature bit stays
+    * false (mali_physical_device.c), so an application cannot reach this path; MALI_EXPERIMENTAL_TESS=1 (mali_tess.h) is
+    * the development gate the tess_* tests use. */
+   if (tcss || tesss) {
+      char why[192] = "no SPIR-V in the tessellation stages";
+      const uint32_t *tcode = NULL, *tecode = NULL;
+      uint32_t twords = 0, tewords = 0;
+      const unsigned patch = ci->pTessellationState ? ci->pTessellationState->patchControlPoints : 0;
+      if (!mali_experimental_tess()) {
+         res = VK_ERROR_FEATURE_NOT_PRESENT;
+         if (getenv("MALI_PIPE_DBG"))
+            fprintf(stderr, "mali_vk: tessellation refused: tessellationShader is not advertised (MALI_EXPERIMENTAL_TESS=1 is the development gate)\n");
+         goto fail;
+      }
+      if (!tcss || !vss || !stage_spirv(tcss, &tcode, &twords) || !stage_spirv(tesss, &tecode, &tewords)) {
+         res = VK_ERROR_FEATURE_NOT_PRESENT;
+         if (getenv("MALI_PIPE_DBG"))
+            fprintf(stderr, "mali_vk: tessellation refused: %s\n", why);
+         goto fail;
+      }
+      if (patch != 3) {
+         res = VK_ERROR_FEATURE_NOT_PRESENT;
+         if (getenv("MALI_PIPE_DBG"))
+            fprintf(stderr, "mali_vk: tessellation refused: %u patch control points, T1 accepts 3\n", patch);
+         goto fail;
+      }
+      if (fss == NULL) {
+         res = VK_ERROR_FEATURE_NOT_PRESENT;
+         if (getenv("MALI_PIPE_DBG"))
+            fprintf(stderr, "mali_vk: tessellation refused: no fragment shader\n");
+         goto fail;
+      }
+      if (!mali_tess_passthrough(arch, tcode, twords, tcss->pName, tecode, tewords,
+                                 tesss->pName, why, sizeof why)) {
+         res = VK_ERROR_FEATURE_NOT_PRESENT;
+         if (getenv("MALI_PIPE_DBG"))
+            fprintf(stderr, "mali_vk: tessellation refused: %s\n", why);
+         goto fail;
+      }
+      if (getenv("MALI_PIPE_DBG"))
+         fprintf(stderr, "mali_vk: tessellation accepted as a pass-through (level 1.0, 3 control points, compiled as the vertex program)\n");
    }
 
    all = vk_zalloc(&dev->vk.alloc, sizeof *all, 8, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
