@@ -52,7 +52,9 @@ with tempfile.TemporaryDirectory() as td:
         assert imp.main("x4", str(path), False) == 1
     output = json.loads(result.getvalue())
     assert output["verdict"] == "IMPORT_HUNG" and now[0] == 90
-    assert sum("keyevent" in args and "BACK" in args for args in calls) == 1
+    shell_calls = [args[2:] for args in calls if args[2:4] == ["adb", "shell"]]
+    assert shell_calls == [["adb", "shell", "test ! -e /sdcard/Download/p.zip"],
+                           ["adb", "shell", "input keyevent BACK"]], shell_calls
     assert sum("screenshot" in args for args in calls) == 1
     assert sum("click" in args and "p.zip" in args for args in calls) == 1
     assert next(i for i, x in enumerate(calls) if "ledger" in x[0]) < next(i for i, x in enumerate(calls) if "push" in x)

@@ -1,0 +1,12 @@
+[Unit]
+Description=Supervised phone lab job queue
+
+[Service]
+Type=simple
+ExecStart=%h/.local/share/mali-phone-lab/bin/mq run
+Restart=on-failure
+RestartSec=5
+KillMode=process
+
+[Install]
+WantedBy=default.target

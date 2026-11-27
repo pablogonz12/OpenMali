@@ -55,3 +55,19 @@ explicitly if other machines can run the farm. `M` overrides the lab root.
 Golden images are manually approved references, never automatically promoted
 from a run. `PICTURE_DRIFT` signals a difference, not a pass or failure.
 Do not commit device identifiers, network addresses, logs or screenshots.
+
+## Supervised queue
+
+After setup, optionally install `mali-mq.service` in `~/.config/systemd/user/`
+and enable it with `systemctl --user enable --now mali-mq.service`. Edit its
+`ExecStart` if the lab root is not the default. `bin/mq submit <phone> --
+<smoke|soak> [args...]` queues a job; `bin/mq status` shows queues and
+`bin/mq wait <id> [--timeout seconds]` reports its result. Jobs run
+sequentially per phone and in parallel across phones.
+
+`$M/queue/STOP` prevents new starts without interrupting running jobs.
+`<phone>.blocked` requires operator investigation of the result and phone
+before clearing. An `.inflight` file after a crash represents an uncertain
+outcome: reconcile it manually; the service will not replay it. Job results
+are appended to `$M/queue/results.jsonl`. Never submit imports or deployments
+to this queue.

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-"""Internal locked import workflow; never automatically retries an import."""
+"""Internal locked import
+import workflow; never automatically retries an import."""
 import hashlib
+import shlex
 import json
 import os
 from pathlib import Path
@@ -10,7 +12,7 @@ import sys
 import time
 import zipfile
 
-M = Path(os.environ.get("M", Path.home() / ".config/opencode/mali-orchestrator"))
+M = Path(os.environ.get("M", Path(os.environ.get("MALI_LAB_ROOT", Path.home() / ".local/share/mali-phone-lab"))))
 CACHE = Path(os.environ.get("CACHE", Path.home() / ".cache/mali-orchestrator"))
 PICKER = "Choose a driver zip or an Android + Linux bundle"
 active = {"phone": None, "snapshot": None, "hung": False, "restored": False}
@@ -116,7 +118,9 @@ def main(phone, path, select):
     ledger("push " + target, "absent (verify before deletion)",
            "ddc " + phone + " adb shell rm " + target)
     # Refuse to overwrite an existing phone file.
-    run("adb", "shell", "sh", "-c", f"test ! -e {target!r}")
+    # adb shell joins its arguments into ONE remote command line, so `sh -c test ! -e X` ran `test` with no
+    # arguments (always false). Send a single command string.
+    run("adb", "shell", f"test ! -e {shlex.quote(target)}")
     run("adb", "push", str(path), target, timeout=120)
     run("ui", "click", "rail-components")
     run("ui", "click", "--match", "Import .zip")
@@ -141,7 +145,7 @@ def main(phone, path, select):
     if verdict == "IMPORT_HUNG":
         active["hung"] = True
         try:
-            run("adb", "shell", "input", "keyevent", "BACK", timeout=10)
+            run("adb", "shell", "input keyevent BACK", timeout=10)
         except subprocess.SubprocessError:
             pass
         shot = CACHE / "import" / (ident + "-hung.png")

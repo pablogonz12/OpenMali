@@ -1,0 +1,250 @@
+#!/usr/bin/env python3
+"""mq submit <phone> -- <smoke|soak> [args...]
+mq run | status | wait <id> [--timeout SECONDS]
+
+Supervised per-phone FIFO: only smoke and soak, parallel across phones.
+STOP prevents new starts; blocked phones require explicit operator review.
+"""
+import argparse
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import threading
+import time
+import uuid
+
+M = Path(os.environ.get("M", os.environ.get("MALI_LAB_ROOT", Path.home() / ".local/share/mali-phone-lab")))
+Q = M / "queue"
+ALIAS = re.compile(r"^[A-Za-z0-9_-]+$")
+SAFE_TOOLS = {"smoke", "soak"}
+BLOCKED = {"REFUSED", "IMPORT_HUNG", "INTERRUPTED"}
+
+
+def phones():
+    result = []
+    for line in (M / "phones.conf").read_text().splitlines():
+        if line and not line.lstrip().startswith("#"):
+            alias = line.split("|", 1)[0]
+            if not ALIAS.fullmatch(alias) or alias in result:
+                raise ValueError("invalid or duplicate phone alias")
+            result.append(alias)
+    return result
+
+
+def init():
+    Q.mkdir(parents=True, exist_ok=True)
+    (Q / "jobs").mkdir(exist_ok=True)
+
+
+class Locked:
+    def __enter__(self):
+        self.f = (Q / ".state.lock").open("a+")
+        fcntl.flock(self.f, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *_):
+        self.f.close()
+
+
+def lines(path):
+    if not path.exists():
+        return []
+    with path.open() as f:
+        rows = [json.loads(line) for line in f if line.strip()]
+    if not all(isinstance(x, dict) for x in rows):
+        raise ValueError("invalid queue journal")
+    return rows
+
+
+def append(path, row):
+    with path.open("a") as f:
+        f.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def atomic(path, row):
+    tmp = path.with_name(path.name + ".tmp-" + uuid.uuid4().hex)
+    with tmp.open("x") as f:
+        json.dump(row, f)
+        f.write("\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def submit(phone, args):
+    if phone not in phones():
+        raise ValueError("unknown phone")
+    if not args or args[0] not in SAFE_TOOLS:
+        raise ValueError("only smoke or soak may be queued")
+    job = {"id": uuid.uuid4().hex, "phone": phone, "tool": args[0],
+           "args": args[1:], "submitted": time.time()}
+    with Locked():
+        append(Q / (phone + ".jsonl"), job)
+    return job
+
+
+def results():
+    return lines(Q / "results.jsonl")
+
+
+def snapshot(phone):
+    rows = lines(Q / (phone + ".jsonl"))
+    done = {x["id"] for x in results()}
+    return [r for r in rows if r.get("id") not in done]
+
+
+def block(phone, value):
+    atomic(Q / (phone + ".blocked"), value)
+
+
+def recover():
+    with Locked():
+        finished = {r["id"] for r in results()}
+        for p in Q.glob("*.inflight"):
+            row = json.loads(p.read_text())
+            if row["id"] not in finished:
+                block(row["phone"], {"id": row["id"], "reason": "worker stopped with uncertain job outcome"})
+            else:
+                p.unlink()
+
+
+def blocks(parsed, errtext):
+    return (parsed.get("verdict") in BLOCKED or parsed.get("restored") is False
+            or "PHONE_LOCKED" in str(parsed.get("reason", "")) or "PHONE_LOCKED" in errtext
+            or parsed.get("verdict") == "INVALID_RESULT")
+
+
+def process(phone, job):
+    jobid = job["id"]
+    stem = Q / "jobs" / jobid
+    stdout, stderr = stem.with_suffix(".stdout"), stem.with_suffix(".stderr")
+    started = time.time()
+    try:
+        # No shell, no arbitrary executable and no phone supplied by the job's args.
+        if job["tool"] not in SAFE_TOOLS or job["phone"] != phone or not isinstance(job["args"], list) or not all(isinstance(x, str) for x in job["args"]):
+            raise ValueError("invalid job")
+        with stdout.open("w") as out, stderr.open("w") as err:
+            rc = subprocess.run([str(M / "bin" / job["tool"]), phone, *job["args"]],
+                                stdout=out, stderr=err, check=False).returncode
+        output = stdout.read_text(errors="replace")
+        parsed = None
+        for line in output.splitlines():
+            try:
+                d = json.loads(line)
+                if isinstance(d, dict) and "verdict" in d:
+                    parsed = d
+            except ValueError:
+                continue
+        errtext = stderr.read_text(errors="replace")
+        if parsed is None:
+            parsed = {"verdict": "INVALID_RESULT", "reason": "no JSON verdict"}
+        must_block = blocks(parsed, errtext)
+        result = {"id": jobid, "phone": phone, "tool": job["tool"], "started": started,
+                  "finished": time.time(), "exit_code": rc, "result": parsed,
+                  "stdout": str(stdout), "stderr": str(stderr), "blocked": must_block}
+    except Exception as exc:
+        result = {"id": jobid, "phone": phone, "tool": job.get("tool"), "started": started,
+                  "finished": time.time(), "result": {"verdict": "WORKER_ERROR", "reason": str(exc)},
+                  "blocked": True}
+    with Locked():
+        # Block before marking complete: a crash can only over-block, not replay.
+        if result["blocked"]:
+            block(phone, {"id": jobid, "reason": result["result"]})
+        append(Q / "results.jsonl", result)
+        (Q / (phone + ".inflight")).unlink(missing_ok=True)
+
+
+def worker(phone):
+    while True:
+        job = None
+        with Locked():
+            if (not (Q / "STOP").exists() and not (Q / (phone + ".blocked")).exists()
+                    and not (Q / (phone + ".inflight")).exists()):
+                pending = snapshot(phone)
+                if pending:
+                    job = pending[0]
+                    atomic(Q / (phone + ".inflight"), job)
+        if job:
+            process(phone, job)
+        else:
+            time.sleep(1)
+
+
+def run():
+    # The file stays open for the daemon's lifetime, including its threads.
+    daemon_lock = (Q / ".daemon.lock").open("a+")
+    try:
+        fcntl.flock(daemon_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise ValueError("another mq run is active")
+    recover()
+    threads = [threading.Thread(target=worker, args=(phone,), daemon=True) for phone in phones()]
+    for thread in threads:
+        thread.start()
+    while True:
+        time.sleep(1)
+        if not all(t.is_alive() for t in threads):
+            raise RuntimeError("phone worker exited; inspect queue before restarting")
+
+
+def status():
+    with Locked():
+        rows = []
+        for phone in phones():
+            pending = snapshot(phone)
+            p = Q / (phone + ".blocked")
+            inflight = Q / (phone + ".inflight")
+            rows.append({"phone": phone, "queued": len(pending) - int(inflight.exists() and bool(pending)),
+                         "running": json.loads(inflight.read_text())["id"] if inflight.exists() else None,
+                         "blocked": json.loads(p.read_text()) if p.exists() else None})
+        return {"stopped": (Q / "STOP").exists(),
+                "idle": not any(x["queued"] or x["running"] for x in rows), "phones": rows}
+
+
+def wait(jobid, timeout):
+    deadline = None if timeout is None else time.monotonic() + timeout
+    while True:
+        with Locked():
+            for row in results():
+                if row.get("id") == jobid:
+                    return row
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError("job not completed before timeout")
+        time.sleep(0.2)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest="op", required=True)
+    s = sub.add_parser("submit"); s.add_argument("phone"); s.add_argument("command", nargs=argparse.REMAINDER)
+    sub.add_parser("run"); sub.add_parser("status")
+    w = sub.add_parser("wait"); w.add_argument("id"); w.add_argument("--timeout", type=float)
+    a = parser.parse_args()
+    init()
+    if a.op == "run":
+        run()
+    elif a.op == "submit":
+        args = a.command
+        if len(sys.argv) < 5 or sys.argv[3] != "--":
+            parser.error("submit needs -- before the tool")
+        print(json.dumps(submit(a.phone, args)))
+    elif a.op == "status":
+        print(json.dumps(status()))
+    else:
+        if a.timeout is not None and a.timeout < 0:
+            parser.error("--timeout must be non-negative")
+        print(json.dumps(wait(a.id, a.timeout)))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError, KeyError, TimeoutError, RuntimeError) as exc:
+        print("mq: " + str(exc), file=sys.stderr)
+        sys.exit(1)

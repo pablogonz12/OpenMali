@@ -15,15 +15,15 @@ def events(minutes):
     end = minutes * 60
     plan = []
     for timestamp, label in ((0, "start"), (end / 2, "mid"), (end, "end")):
-        plan.append((timestamp, 0, "screenshot", label))
+        plan.append((timestamp, 3, "screenshot", label))
     for seconds in range(0, end + 1, 60):
-        plan.append((seconds, 1, "sample", seconds // 60))
+        plan.append((seconds, 4, "sample", seconds // 60))
     for index, seconds in enumerate(range(30, end + 1, 30), 1):
-        plan.append((seconds, 2, "right", index))
+        plan.append((seconds, 0, "right", index))
         if index % 4 == 0:
-            plan.append((seconds, 3, "down", index))
+            plan.append((seconds, 1, "down", index))
         if index % 8 == 0:
-            plan.append((seconds, 4, "b", index))
+            plan.append((seconds, 2, "b", index))
     for timestamp, _, action, index in sorted(plan):
         yield timestamp, action, index
 

@@ -4,9 +4,11 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import queue
 import re
 import subprocess
 import sys
+import threading
 import zipfile
 
 M = Path(os.environ.get("M", Path(os.environ.get("MALI_LAB_ROOT", Path.home() / ".local/share/mali-phone-lab"))))
@@ -42,6 +44,9 @@ def run(phone, out, minutes):
     previous_pids = None
     baseline = None
     failure = None
+    samples = queue.Queue()
+    sample_errors = []
+    write_lock = threading.Lock()
     with (out / "timeline.tsv").open("w", buffering=1) as timeline:
         timeline.write("scheduled_s\tactual_s\tevent\tdetail\n")
 
@@ -49,7 +54,8 @@ def run(phone, out, minutes):
             return command([ddc, phone, *map(str, args)], timeout)
 
         def log(due, actual, event, detail):
-            timeline.write(f"{due}\t{actual:.3f}\t{event}\t{json.dumps(detail, ensure_ascii=False)}\n")
+            with write_lock:
+                timeline.write(f"{due}\t{actual:.3f}\t{event}\t{json.dumps(detail, ensure_ascii=False)}\n")
 
         def shot(name):
             png, jpg = out / (name + ".png"), out / (name + ".jpg")
@@ -110,10 +116,13 @@ def run(phone, out, minutes):
                     "counters": delta, "gpu_compositing": feature}
 
         def event(due, actual, action, index):
+            if sample_errors:
+                raise RuntimeError("background sample failed: " + sample_errors[0])
             if action == "screenshot":
                 detail = shot("soak-" + index)
             elif action == "sample":
-                detail = sample(int(due))
+                samples.put((due, actual))
+                return
             else:
                 state = json_output(call("state"))
                 if not state.get("session", {}).get("running"):
@@ -122,8 +131,29 @@ def run(phone, out, minutes):
                 detail = index
             log(due, actual, action, detail)
 
+        def reader():
+            while True:
+                item = samples.get()
+                try:
+                    if item is None:
+                        return
+                    due, actual = item
+                    if not sample_errors:
+                        log(due, actual, "sample", sample(int(due)))
+                except Exception as exc:
+                    sample_errors.append(str(exc))
+                    log(due, actual, "sample_error", str(exc))
+                finally:
+                    samples.task_done()
+
+        thread = threading.Thread(target=reader, name="soak-log-reader", daemon=True)
+        thread.start()
         try:
             schedule.run(minutes, event)
+            samples.put(None)
+            thread.join()
+            if sample_errors:
+                raise RuntimeError("background sample failed: " + sample_errors[0])
             call("input", "pad", "b")
             result["pacing_screenshot"] = shot("pre-pacing")
             for i in range(3):
@@ -133,6 +163,10 @@ def run(phone, out, minutes):
         except (OSError, subprocess.SubprocessError, ValueError, KeyError, RuntimeError, zipfile.BadZipFile) as exc:
             failure = str(exc)
             log(-1, -1, "error", failure)
+        finally:
+            if thread.is_alive():
+                samples.put(None)
+                thread.join()
     result["error"] = failure
     (out / "soak-data.json").write_text(json.dumps(result) + "\n")
     if failure:
