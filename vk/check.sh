@@ -192,6 +192,7 @@ run "MALI_FENCE_ALWAYS restores it (expected fail)" 1 MALI_BACKEND=fake MALI_FAU
 for n in 1 50; do run "fault inject $n" 0 MALI_BACKEND=fake MALI_FAULT_INJECT=$n $TQ --only fault; done
 # WSI audit regressions: fd validation, sync export waits for a queued signal, DRM modifier/bind checks, failed submit still signals
 for c in wsifd syncexport wsiimg; do run "wsi $c" 0 MALI_BACKEND=fake $TQ --only $c; done
+for d in 0 1; do run "wait debug=$d" 0 MALI_BACKEND=fake MALI_WAIT_DBG=$d $TQ --only waitdebug; done
 run "wsi failsignal" 0 MALI_BACKEND=fake MALI_FAULT_INJECT=5 $TQ --only failsignal
 
 # M15: frame profiler (mali_fprof.c) on the fake backend. The last case leaves MALI_FRAME_PROF unset and requires

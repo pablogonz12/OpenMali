@@ -2,6 +2,7 @@
 /* vk_sync type over sync_files from the kbase KCPU queue. The runtime's vk_sync_timeline (emulated
  * timeline semaphores) uses this as its point type. */
 #include "mali_queue.h"
+#include "mali_wait_debug.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -111,12 +112,17 @@ mali_sync_wait(struct vk_device *vk, struct vk_sync *sync, uint64_t wait_value,
    struct mali_device *dev = to_dev(vk);
    struct mali_sync *s = to_sync(sync);
    const struct mali_backend_ops *be = mali_device_pdev(dev)->backend;
+   const bool dbg = mali_wait_debug();
+   uint64_t start = dbg ? now_ns() : 0;
+   bool logged_submit = false, logged_fence = false;
+   VkResult result;
 
    for (;;) {
       pthread_mutex_lock(&dev->sync_lock);
       if (s->signaled && s->fd < 0) {
          pthread_mutex_unlock(&dev->sync_lock);
-         return VK_SUCCESS;
+         result = VK_SUCCESS;
+         goto done;
       }
       int fd = s->fd >= 0 ? dup(s->fd) : -1;
       uint64_t now = now_ns();
@@ -126,50 +132,60 @@ mali_sync_wait(struct vk_device *vk, struct vk_sync *sync, uint64_t wait_value,
          /* Not submitted yet (queue thread has not got to it): wait for it to get a fence. */
          if (left == 0) {
             pthread_mutex_unlock(&dev->sync_lock);
-            return VK_TIMEOUT;
+            result = VK_TIMEOUT;
+            goto done;
          }
-         if (abs_timeout_ns == UINT64_MAX) {
-            pthread_cond_wait(&dev->sync_cv, &dev->sync_lock);
-         } else {
-            struct timespec ts;
-            clock_gettime(CLOCK_MONOTONIC, &ts);
-            uint64_t t = (uint64_t)ts.tv_sec * 1000000000ull + ts.tv_nsec + left;
-            ts.tv_sec = t / 1000000000ull;
-            ts.tv_nsec = t % 1000000000ull;
-            pthread_cond_timedwait(&dev->sync_cv, &dev->sync_lock, &ts);
+         if (dbg && !logged_submit && now - start >= 2000000000ull) {
+            mali_wait_log("sync_wait", s, "not submitted for", (now - start) / 1000000, wait_value);
+            logged_submit = true;
          }
+         uint64_t slice = left > 1000000000ull ? 1000000000ull : left;
+         uint64_t t = now + slice;
+         struct timespec ts = { .tv_sec = t / 1000000000ull, .tv_nsec = t % 1000000000ull };
+         pthread_cond_timedwait(&dev->sync_cv, &dev->sync_lock, &ts);
          pthread_mutex_unlock(&dev->sync_lock);
          continue;
       }
       pthread_mutex_unlock(&dev->sync_lock);
       if (fd < 0)
-         return vk_error(vk, VK_ERROR_OUT_OF_HOST_MEMORY);
+         { result = vk_error(vk, VK_ERROR_OUT_OF_HOST_MEMORY); goto done; }
       if (left == 0) {
          /* A poll (vkGetFenceStatus, vkWaitForFences/AcquireNextImage with timeout 0): a pending fence answers at once from the fd and
           * never queues behind another thread's blocking wait in the backend (kbase serialises those in 20 ms slices). */
          struct pollfd pf = {fd, POLLIN, 0};
          if (poll(&pf, 1, 0) == 0) {
             close(fd);
-            return VK_TIMEOUT;
+            result = VK_TIMEOUT;
+            goto done;
          }
       }
 
       /* Slices of 100 ms so that a reset/move/destroy on another thread and a device loss are noticed. */
-      uint64_t ms = (left + 999999ull) / 1000000ull;   /* any positive remainder waits at least 1 ms: 0 would turn the wait into a poll */
+      uint64_t ms = left / 1000000ull + (left % 1000000ull != 0);
       int slice = ms > 100 ? 100 : (int)ms;
+      if (dbg && !logged_fence && now - start >= 2000000000ull) {
+         mali_wait_log("fence_wait", s, "waiting for", (now - start) / 1000000, wait_value);
+         logged_fence = true;
+      }
       int r = be->fence_wait(dev->kdev, fd, slice);
       close(fd);
       if (r == 0)
-         return VK_SUCCESS;
+         { result = VK_SUCCESS; goto done; }
       if (r == -EIO)
-         return vk_device_set_lost(vk, "GPU fault while waiting on a fence");
+         { result = vk_device_set_lost(vk, "GPU fault while waiting on a fence"); goto done; }
       if (r != -ETIMEDOUT)
-         return vk_errorf(vk, VK_ERROR_UNKNOWN, "fence wait failed: %d", r);
+         { result = vk_errorf(vk, VK_ERROR_UNKNOWN, "fence wait failed: %d", r); goto done; }
       if (vk_device_is_lost(vk))
-         return VK_ERROR_DEVICE_LOST;
+         { result = VK_ERROR_DEVICE_LOST; goto done; }
       if (now_ns() >= abs_timeout_ns)
-         return VK_TIMEOUT;
+         { result = VK_TIMEOUT; goto done; }
    }
+done:
+   if (logged_submit)
+      mali_wait_log("sync_wait", s, "done after", (now_ns() - start) / 1000000, wait_value);
+   if (logged_fence)
+      mali_wait_log("fence_wait", s, "done after", (now_ns() - start) / 1000000, wait_value);
+   return result;
 }
 
 /* Attach a fence (caller keeps ownership of fd; -1 = signalled). */
@@ -209,10 +225,19 @@ mali_sync_export_sync_file(struct vk_device *vk, struct vk_sync *sync, int *sync
     * driver cannot tell the two apart), not "already signalled". Exporting -1 then would let the compositor sample a
     * half-drawn buffer. Wait for the submission with no fixed deadline (dependencies may legitimately take long);
     * the predicate is rechecked under the lock on every wake and only device loss ends the wait early. */
+   const bool dbg = mali_wait_debug();
+   uint64_t start = dbg ? now_ns() : 0;
+   bool logged = false;
    while (s->fd < 0 && !s->signaled) {
       if (vk_device_is_lost(vk) || mali_device_pdev(dev)->backend->device_lost(dev->kdev)) {
          pthread_mutex_unlock(&dev->sync_lock);
+         if (logged)
+            mali_wait_log("export_sync_file", s, "done after", (now_ns() - start) / 1000000, 0);
          return VK_ERROR_DEVICE_LOST;
+      }
+      if (dbg && !logged && now_ns() - start >= 2000000000ull) {
+         mali_wait_log("export_sync_file", s, "waiting for submit for", (now_ns() - start) / 1000000, 0);
+         logged = true;
       }
       struct timespec ts;
       clock_gettime(CLOCK_MONOTONIC, &ts); /* sync_cv is a CLOCK_MONOTONIC condvar (mali_queue.c) */
@@ -228,6 +253,8 @@ mali_sync_export_sync_file(struct vk_device *vk, struct vk_sync *sync, int *sync
       }
    }
    pthread_mutex_unlock(&dev->sync_lock);
+   if (logged)
+      mali_wait_log("export_sync_file", s, "done after", (now_ns() - start) / 1000000, 0);
    *sync_file = d; /* -1: already signalled */
    return VK_SUCCESS;
 }

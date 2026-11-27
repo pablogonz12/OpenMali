@@ -48,6 +48,7 @@ VKAPI_ATTR VkResult VKAPI_CALL wsi_WaitForPresentKHR(VkDevice device, VkSwapchai
 #include "vk_alloc.h"
 #include "vk_queue.h"      /* VK_FROM_HANDLE(vk_queue) */
 #include "vk_semaphore.h"  /* struct vk_semaphore -> &sem->sync */
+#include "mali_wait_debug.h"
 #include "vk_fence.h"      /* VkSwapchainPresentFenceInfoEXT in the shm shortcut (#325) */
 #include "vk_log.h"
 #include "vk_util.h"
@@ -1003,10 +1004,13 @@ present_image_cpu_sync(struct mali_device *dev, struct mali_image *mi, uint32_t 
    if (!dev || !mi || !mi->mem)
       return;
    const struct mali_backend_ops *be = mali_device_pdev(dev)->backend;
+   uint64_t start = mali_wait_debug() ? mali_wait_now() : 0;
    if (be->bo_host_touch)
       be->bo_host_touch(dev->kdev, &mi->mem->bo);   /* a mapped BO: the next sync must cover it */
    if (be->bo_cache)
       be->bo_cache(dev->kdev, &mi->mem->bo, 0, mi->mem->bo.size, true);
+   if (start && mali_wait_now() - start > 200000000ull)
+      mali_wait_log("dma_buf_sync", mi, "done after", (mali_wait_now() - start) / 1000000, image_index);
    if (mali_wsi_debug())
       fprintf(stderr, "mali_vk: wsi present: image %u BO 0x%llx synced device->CPU before the copy\n",
               image_index, (unsigned long long)mi->va);
@@ -1032,6 +1036,8 @@ present_wait_submit_fence(struct mali_device *dev, uint32_t image_index)
    clock_gettime(CLOCK_MONOTONIC, &t1);
    close(ffd);
    const long ms = (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+   if (ms > 200 && mali_wait_debug())
+      mali_wait_log("submit_fence", dev, "done after", ms, image_index);
    if (wr != 0) {
       /* The frame's submit never completed (device lost or a fault): copying its buffer would present a partial
        * frame as success. Let wsi's own path report the error. */
