@@ -177,6 +177,27 @@ Anz(const struct mali_hw *hw, size_t n, size_t al, uint64_t *va)
    return hw->alloc_nz ? hw->alloc_nz(hw->user, n, al, va) : hw->alloc(hw->user, n, al, va);
 }
 
+/* MALI_ARENA_ZERO=1: zero every arena block again, as before this change (phone A/B). Read once: this is per-draw code. */
+static bool
+arena_zero_all(void)
+{
+   static int c = -1;
+   if (c < 0) {
+      const char *e = getenv("MALI_ARENA_ZERO");
+      c = e && e[0] != '0';
+   }
+   return c;
+}
+
+/* `Az`: a block whose every byte the packer called on it writes, so the arena's zeroing memset (a write-combined pass over
+ * ~144 B/draw) is dead work. Only provably full overwrites use it - the FAU blocks stay zeroed, their gaps between the
+ * immediates and the push constants are read as zero by the hardware and never written here. */
+static void *
+Az(const struct mali_hw *hw, size_t n, size_t al, uint64_t *va)
+{
+   return arena_zero_all() ? A(hw, n, al, va) : Anz(hw, n, al, va);
+}
+
 static bool
 check_dirty(void)
 {
@@ -259,12 +280,14 @@ build_draw_descs(const struct mali_hw *hw, const struct mali_frame *f, const str
       o->bl = po->bl; o->zsd = po->zsd; o->bl23[0] = po->bl23[0]; o->bl23[1] = po->bl23[1];
       spd_p = spd_v = spd_f = bl = zsd = NULL;
    } else {
-      spd_p = A(hw, KB_SPD_SIZE, 32, &o->spd_p);
+      /* kb_draw_spd/kb_v13_spd, the blend builder and the zsd builders each memset the whole block before filling it
+       * (libkbase/src/draw.c:71,157,176 and draw_v13.c:22,32), and `bl` is then overwritten from the stack copy. */
+      spd_p = Az(hw, KB_SPD_SIZE, 32, &o->spd_p);
       if (!v13)
-         spd_v = A(hw, KB_SPD_SIZE, 32, &o->spd_v);
-      spd_f = A(hw, KB_SPD_SIZE, 32, &o->spd_f);
-      bl = A(hw, KB_BLEND_SIZE, 64, &o->bl);
-      zsd = A(hw, KB_ZSD_SIZE, 32, &o->zsd);
+         spd_v = Az(hw, KB_SPD_SIZE, 32, &o->spd_v);
+      spd_f = Az(hw, KB_SPD_SIZE, 32, &o->spd_f);
+      bl = Az(hw, KB_BLEND_SIZE, 64, &o->bl);
+      zsd = Az(hw, KB_ZSD_SIZE, 32, &o->zsd);
    }
    if (s1) {
       o->vsset = po->vsset;
@@ -891,11 +914,11 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
    uint64_t va_dyn = 0;
    uint32_t *dyn = NULL;
 
-   spd = A(hw, KB_SPD_SIZE, 32, &va_spd);
+   spd = Az(hw, KB_SPD_SIZE, 32, &va_spd);   /* kb_draw_spd/kb_v13_spd memset it first */
    set = A(hw, (MALI_DUMMY_SAMPLER_IDX + 1) * KB_DESC_SET_STRIDE, 64, &va_set);   /* entry MALI_DUMMY_SAMPLER_IDX (all zero) serves texelFetch */
    uint32_t *srt = A(hw, res_alloc, 64, &va_srt);
    fau = A(hw, FAU_BYTES(cs->fau_count), 64, &va_fau);
-   tsd = A(hw, KB_LS_SIZE, 64, &va_tsd);
+   tsd = Az(hw, KB_LS_SIZE, 64, &va_tsd);    /* local_storage_none / the WLS branch below memset all 32 B */
    if (d->ndyn)
       dyn = A(hw, ((d->ndyn * KB_DESC_SET_STRIDE) + 63) & ~63u, 64, &va_dyn);
    if (!spd || !set || !srt || !fau || !tsd || (d->ndyn && !dyn))
@@ -1094,10 +1117,12 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
    memset(&c, 0, sizeof c);
    bool geometry = f->ndraws > 0;
 
-   void *smp = A(hw, sizeof kb_sample_positions, 64, &va_smp);
-   uint32_t *tctx = A(hw, KB_TILER_CTX_SIZE, 64, &va_tctx);
-   uint8_t *fbd = A(hw, KB_FB_DESC_SIZE_ZS, 64, &va_fbd);
-   uint32_t *tsd = A(hw, KB_LS_SIZE, 64, &va_tsd);
+   /* smp: a full memcpy below; tctx: kb_*_tiler_ctx memsets all 128 B when there is geometry (unused otherwise);
+    * fbd: kb_fb_pack memsets the whole descriptor; tsd: local_storage_none/WLS memset all 32 B. */
+   void *smp = Az(hw, sizeof kb_sample_positions, 64, &va_smp);
+   uint32_t *tctx = Az(hw, KB_TILER_CTX_SIZE, 64, &va_tctx);
+   uint8_t *fbd = Az(hw, KB_FB_DESC_SIZE_ZS, 64, &va_fbd);
+   uint32_t *tsd = Az(hw, KB_LS_SIZE, 64, &va_tsd);
    if (!smp || !tctx || !fbd || !tsd)
       return -ENOMEM;
    kb_draw_local_storage_none(tsd);

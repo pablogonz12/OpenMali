@@ -160,6 +160,9 @@ meta_upload_shader(void *u, const uint8_t *bin, uint32_t size, uint64_t *va)
    return 0;
 }
 
+static uint64_t g_alloc_bytes;   /* test statistic: bytes asked of hw_alloc (MALI_ALLOC_STATS=<file> writes the running total at each submit) */
+static uint64_t g_zero_bytes;    /* test statistic: bytes of those that hw_alloc memset to zero (the second number in that file) */
+
 #define ARENA_BYTES (32u << 20)   /* per-frame descriptor arena: ~4.5 KB per draw (two 2 KiB driver sets); 1 MiB capped a frame at ~230 draws */
 #define HEAP_CHUNK (2u << 20)
 
@@ -200,14 +203,16 @@ hw_alloc_ovf(struct mali_hwctx *h, size_t n, size_t al, uint64_t *va, bool zero)
       o = 0;
    }
    h->ovf_off = o + n;
-   if (zero)
+   if (zero) {
       memset((char *)cur->cpu + o, 0, n);
+      g_zero_bytes += n;
+   }
    if (va)
       *va = cur->gpu_va + o;
    return (char *)cur->cpu + o;
 }
 
-static uint64_t g_alloc_bytes;   /* test statistic: bytes asked of hw_alloc (MALI_ALLOC_STATS=<file> writes the running total at each submit) */
+
 
 static void *
 hw_alloc_x(void *u, size_t n, size_t al, uint64_t *va, bool zero)
@@ -229,8 +234,10 @@ hw_alloc_x(void *u, size_t n, size_t al, uint64_t *va, bool zero)
    }
    if (!p)
       return hw_alloc_ovf(h, n, al, va, zero);
-   if (zero)
+   if (zero) {
       memset(p, 0, n);
+      g_zero_bytes += n;
+   }
    return p;
 }
 
@@ -387,7 +394,7 @@ hw_submit_multi(void *u, const uint64_t *cs, unsigned n, unsigned nframes)
       const char *sf = getenv("MALI_ALLOC_STATS");
       FILE *fp = sf ? fopen(sf, "w") : NULL;
       if (fp) {
-         fprintf(fp, "%llu\n", (unsigned long long)g_alloc_bytes);
+         fprintf(fp, "%llu %llu\n", (unsigned long long)g_alloc_bytes, (unsigned long long)g_zero_bytes);
          fclose(fp);
       }
    }
@@ -535,9 +542,20 @@ mali_hw_init(struct mali_device *dev)
    h->ar.bo.gpu_va = h->arena.gpu_va;
    h->ar.bo.size = h->arena.size;
 
+   /* Tiler hierarchy mask: derived from the tile the FBD actually carries instead of the literal 0xfe, so the two cannot
+    * drift apart. mali_render.c sets the FBD "Effective Tile Size" from env->tile_log2 only on v13 (64x64) and for 4x MSAA
+    * (16x16); on v11 kb_fb_pack's default 32x32 applies, where 0xfe is the matching mask (levels 32x32 and up). v13 keeps
+    * 0: PanVK prefers letting the hardware decide there (pan_desc.c: "On v12+, the hierarchy_mask is deprecated"), and that
+    * is the value proven on the X8. MALI_HMASK_OLD=1 restores the old literal 0xfe on every arch for the phone A/B. */
+   const char *hmo = getenv("MALI_HMASK_OLD");
+   const bool hmask_old = hmo && hmo[0] == '1';
+   const unsigned hmask = hmask_old ? 0xfe : (arch == 13 ? 0 : kb_tiler_hmask_from_tile(10));
+   if (getenv("MALI_PIPE_DBG"))
+      fprintf(stderr, "mali_vk: tiler hmask 0x%x (arch %u, FBD tile %ux%u)%s\n", hmask, arch,
+              arch == 13 ? 64 : 32, arch == 13 ? 64 : 32, hmask_old ? ", MALI_HMASK_OLD=1" : "");
    struct mali_hw hw = {.user = h, .alloc = hw_alloc, .alloc_nz = hw_alloc_nz, .job_begin = hw_job_begin, .submit = hw_submit, .submit_multi = hw_submit_multi, .tls = hw_tls, .drain = hw_drain, .bo_wrote = hw_bo_wrote};
    hw.env = (struct mali_env){.arch = arch,
-                              .hmask = arch == 13 ? 0 : 0xfe,
+                              .hmask = hmask,
                               .tile_log2 = 12,
                               .slot = 3,
                               .tf_or = arch == 13 ? 0x40000 : 0,
