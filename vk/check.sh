@@ -186,6 +186,11 @@ run "queue teardown v13"  0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 MALI_FAKE_SLOW_U
 run "queue all v13 slow" 0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 MALI_FAKE_SLOW_US=200 $TQ --submits 1000
 # present ordering (queue-order): the commit never precedes the frame; with a fence it may (MALI_PRESENT_FENCE forces the kernel capability)
 for m in 0 1; do run "present order fence=$m" 0 MALI_BACKEND=fake MALI_FAKE_SLOW_US=100000 MALI_PRESENT_FENCE=$m $TQ --only order; done
+# Modifier-tiling render target (t_queue --only modrt): create (modifier LIST and explicit plane layout), bind
+# exportable memory, clear, and require the cleared colour at the reported offset/row pitch through the mapping and
+# through the exported dma-buf. The fake backend executes nothing, so here it only proves the creation/bind/layout
+# chain; the pixel assertions are the guest run (notes/x8-cef-fault.md, "## Modifier-tiling render target").
+run "modifier render target (fake: creation only)" 0 MALI_BACKEND=fake $TQ --only modrt
 # Stale memory marks (mali_cmd.h wrote[]/read[]): a buffer recorded against an imported dma-buf and re-recorded or
 # freed before the submit must not hand a dangling struct mali_memory to the backend. MALI_SHARED_STATS=1 is the arm
 # that crashed Xwayland on the X8 (smoke x8-1127-233142, kbase_bo_host_touch via mali_sstats_note), so it runs here
