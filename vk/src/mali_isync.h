@@ -16,10 +16,12 @@
  *
  * MALI_IMPLICIT_SYNC=0 turns all of it off. MALI_ISYNC_DBG=1 prints one line per device with the counts.
  *
- * What a submit references: the exact per-submit list does not exist (only the GPU-write marks of each command
- * buffer do, mali_cmd.h `wrote[]`), so the producer side is exact on writes and the consumer side reuses that list
- * instead of tracking reads. A command buffer whose write list overflowed (wrote_full) cannot name its buffers:
- * its submit takes the CPU wait, which is correct for any of them. */
+ * What a submit references: the producer side uses the per-command-buffer GPU-write marks (mali_cmd.h wrote[]).
+ * The consumer side uses the read marks (mali_cmd.h read[]): imported dma-bufs reached through a bound descriptor
+ * set (sampled/storage/input attachment, UBO/SSBO, texel buffer), a copy/blit source or a vertex/index buffer.
+ * Only imported BOs are recorded, so the cost is O(imported dma-bufs actually bound), not O(buffers in the frame).
+ * A command buffer whose write list overflowed (wrote_full) cannot name its buffers: its submit takes the CPU wait,
+ * which is correct for any of them. */
 #ifndef MALI_ISYNC_H
 #define MALI_ISYNC_H
 

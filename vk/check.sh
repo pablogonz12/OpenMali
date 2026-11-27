@@ -186,6 +186,10 @@ run "queue teardown v13"  0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 MALI_FAKE_SLOW_U
 run "queue all v13 slow" 0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 MALI_FAKE_SLOW_US=200 $TQ --submits 1000
 # present ordering (queue-order): the commit never precedes the frame; with a fence it may (MALI_PRESENT_FENCE forces the kernel capability)
 for m in 0 1; do run "present order fence=$m" 0 MALI_BACKEND=fake MALI_FAKE_SLOW_US=100000 MALI_PRESENT_FENCE=$m $TQ --only order; done
+# Implicit sync (mali_isync.c): a submit that only SAMPLES an imported dma-buf waits its producer's fence before it
+# runs (the Xwayland-glamor read path); MALI_IMPLICIT_SYNC=0 is the A/B arm. Both compare against a control submit.
+run "implicit sync: sampled imported BO waits" 0 MALI_BACKEND=fake MALI_FAKE_DMABUF_SYNC=1 MALI_FAKE_SLOW_US=150000 $TQ --only isync
+run "implicit sync off" 0 MALI_BACKEND=fake MALI_FAKE_DMABUF_SYNC=1 MALI_FAKE_SLOW_US=150000 MALI_IMPLICIT_SYNC=0 $TQ --only isync
 run "timeout-0 poll does not queue behind a blocking wait" 0 MALI_BACKEND=fake MALI_FAKE_SLOW_US=300000 $TQ --only poll0
 run "signal-less submit skips the fence" 0 MALI_BACKEND=fake MALI_FAULT_INJECT=5 $TQ --only nofence
 run "MALI_FENCE_ALWAYS restores it (expected fail)" 1 MALI_BACKEND=fake MALI_FAULT_INJECT=5 MALI_FENCE_ALWAYS=1 $TQ --only nofence

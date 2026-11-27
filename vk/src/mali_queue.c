@@ -624,18 +624,31 @@ mali_present_fence_ok(struct mali_device *dev)
 
 #define MALI_ISYNC_MAX_BOS 16
 
-/* The dma-bufs this submission writes that are shared outside a swapchain (mali_isync.h). Reads are recorded
- * nowhere, so this write list is also what the consumer side waits on: exact on the producer side, an
- * approximation on the consumer side (a dma-buf this frame writes is the one the other process produced).
+/* The dma-bufs this submission references that are shared outside a swapchain (mali_isync.h).
+ *   fd[]  - every shared dma-buf the submission WRITES (the producer side: attach this submit's fence to it).
+ *   imp[] - every imported dma-buf it writes OR reads through a bound descriptor set (sampled/storage/input
+ *           attachment, UBO/SSBO, vertex/index buffer) or a copy/blit source: the consumer side, which waits the
+ *           producer's fences first. O(number of imported BOs bound), whatever the frame's own buffer count is,
+ *           because mali_cmd_mark_read keeps only imported ones.
  * unlisted: a command buffer could not name all its writes (wrote_full) or the list is full - then the fence cannot
  * be attached to every shared buffer and the submit takes the CPU wait instead. */
 struct mali_isync_submit {
    int fd[MALI_ISYNC_MAX_BOS];      /* every shared dma-buf written (exported or imported) */
    unsigned n;
-   int imp[MALI_ISYNC_MAX_BOS];     /* the imported ones (somebody else's: the consumer side) */
+   int imp[MALI_ISYNC_MAX_BOS];     /* the imported ones: somebody else's, read or written here */
    unsigned nimp;
    bool unlisted;
 };
+
+static void
+submit_shared_add_imp(struct mali_isync_submit *out, int fd)
+{
+   for (unsigned q = 0; q < out->nimp; q++)
+      if (out->imp[q] == fd)
+         return;
+   if (out->nimp < MALI_ISYNC_MAX_BOS)
+      out->imp[out->nimp++] = fd;
+}
 
 static void
 submit_shared_collect(struct vk_queue_submit *submit, struct mali_isync_submit *out)
@@ -662,12 +675,15 @@ submit_shared_collect(struct vk_queue_submit *submit, struct mali_isync_submit *
          } else {
             out->unlisted = true;
          }
-         if (m->isync == MALI_ISYNC_BO_IMPORTED && !idup && !dup) {
-            if (out->nimp < MALI_ISYNC_MAX_BOS)
-               out->imp[out->nimp++] = m->bo.dmabuf_fd;
-            else
-               out->unlisted = true;
-         }
+         if (m->isync == MALI_ISYNC_BO_IMPORTED && !idup)
+            submit_shared_add_imp(out, m->bo.dmabuf_fd);
+      }
+      /* The consumer side proper: imported dma-bufs this command buffer only reads (descriptors, attachments,
+       * copy/blit sources). Without this a reader that never waits would still race the producer's frame. */
+      for (unsigned j = 0; j < cmd->nread; j++) {
+         struct mali_memory *m = cmd->read[j];
+         if (m && m->bo.dmabuf_fd >= 0)
+            submit_shared_add_imp(out, m->bo.dmabuf_fd);
       }
    }
 }

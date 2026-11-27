@@ -126,6 +126,44 @@ mali_cmd_mark_written(struct mali_cmd_buffer *cmd, struct mali_memory *mem)
    }
 }
 
+/* Implicit sync, consumer side (mali_isync.h): an imported dma-buf this command buffer reads must have its
+ * producer's fences waited before the submit. Only imported ones are recorded (a BO this driver allocated is in
+ * order with its own submits), so the list stays short whatever the frame binds. */
+void
+mali_cmd_mark_read(struct mali_cmd_buffer *cmd, struct mali_memory *mem)
+{
+   if (!mem || mem->isync != MALI_ISYNC_BO_IMPORTED)
+      return;
+   for (unsigned i = 0; i < cmd->nread; i++)
+      if (cmd->read[i] == mem)
+         return;
+   if (cmd->nread < MALI_CMD_READ_MAX)
+      cmd->read[cmd->nread++] = mem;
+   else
+      cmd->read_full = true;
+}
+
+void
+mali_cmd_mark_image_read(struct mali_cmd_buffer *cmd, VkImage i)
+{
+   if (g_res.image_mem)
+      mali_cmd_mark_read(cmd, g_res.image_mem(i));
+}
+
+void
+mali_cmd_mark_buffer_read(struct mali_cmd_buffer *cmd, VkBuffer b)
+{
+   if (g_res.buffer_mem)
+      mali_cmd_mark_read(cmd, g_res.buffer_mem(b));
+}
+
+void
+mali_cmd_mark_image_view_read(struct mali_cmd_buffer *cmd, VkImageView v)
+{
+   if (g_res.image_view_mem)
+      mali_cmd_mark_read(cmd, g_res.image_view_mem(v));
+}
+
 void
 mali_cmd_mark_buffer_written(struct mali_cmd_buffer *cmd, VkBuffer b)
 {
@@ -328,6 +366,11 @@ mali_CmdBindDescriptorSets(VkCommandBuffer h, VkPipelineBindPoint bp, VkPipeline
          mali_cmd_mark_written(cmd, ds->wrote[k]);
       if (ds && ds->wrote_full)
          cmd->wrote_full = true;
+      /* Implicit sync: the imported dma-bufs this set samples (mali_isync.h). */
+      for (unsigned k = 0; ds && k < ds->nread; k++)
+         mali_cmd_mark_read(cmd, ds->read[k]);
+      if (ds && ds->read_full)
+         cmd->read_full = true;
       if (ds->layout && ds->layout->dyn_count) {
          /* dynamic buffers: this set's dyn_start = dynamic descriptors of the lower sets of the pipeline layout (matches mali_pipeline_layout_flatten) */
          unsigned start = 0;
@@ -374,6 +417,7 @@ mali_CmdBindVertexBuffers(VkCommandBuffer h, uint32_t first, uint32_t n, const V
          return;
       }
       struct vk_buffer *buf = vk_buffer_from_handle(bufs[i]);
+      mali_cmd_mark_buffer_read(cmd, bufs[i]);   /* implicit sync: an imported vertex buffer is a read (mali_isync.h) */
       uint64_t nva = buf ? vk_buffer_address(buf, offs[i]) : 0;
       uint32_t nsz = buf ? (uint32_t)(buf->size - offs[i]) : 0;
       if (cmd->vb_va[b] != nva || cmd->vb_size[b] != nsz) {
@@ -391,6 +435,7 @@ VKAPI_ATTR void VKAPI_CALL
 mali_CmdBindIndexBuffer(VkCommandBuffer h, VkBuffer b, VkDeviceSize off, VkIndexType t)
 {
    CMD(h);
+   mali_cmd_mark_buffer_read(cmd, b);   /* implicit sync: an imported index buffer is a read (mali_isync.h) */
    struct vk_buffer *buf = vk_buffer_from_handle(b);
    if (!buf) {
       cmd->ib_va = 0;

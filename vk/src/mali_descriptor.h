@@ -49,7 +49,10 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(mali_dsl, vk.base, VkDescriptorSetLayout, VK_OBJE
 
 struct mali_dyn_buf { uint64_t va, size; };
 
-#define MALI_DSET_WROTE_MAX 8   /* D3D11 FL11_0 exposes at most 8 UAVs per shader; overflow falls back to a full sweep */
+#define MALI_DSET_WROTE_MAX 8
+/* imported dma-bufs this set samples (implicit sync, mali_isync.h): bounded by what a frame reads from other
+ * processes, not by the buffer count of the set. */
+#define MALI_DSET_READ_MAX 8   /* D3D11 FL11_0 exposes at most 8 UAVs per shader; overflow falls back to a full sweep */
 
 struct mali_memory;
 
@@ -68,6 +71,10 @@ struct mali_dset {
    struct mali_memory *wrote[MALI_DSET_WROTE_MAX];
    unsigned nwrote;
    bool wrote_full;
+   /* Implicit sync: imported dma-bufs this set reads; handed to the command buffer at bind. */
+   struct mali_memory *read[MALI_DSET_READ_MAX];
+   unsigned nread;
+   bool read_full;
 };
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(mali_dset, base, VkDescriptorSet, VK_OBJECT_TYPE_DESCRIPTOR_SET)
@@ -88,6 +95,8 @@ VkResult mali_dsl_create(struct vk_device *dev, unsigned arch, const VkDescripto
 void mali_dset_write(struct mali_dset *set, const VkWriteDescriptorSet *w);
 /* M15: remember that a storage descriptor of this set can write `mem` (called from write_one). */
 void mali_dset_mark_write(struct mali_dset *set, struct mali_memory *mem);
+/* Implicit sync: record that a descriptor of this set reads `mem` (imported dma-bufs only; mali_isync.h). */
+void mali_dset_mark_read(struct mali_dset *set, struct mali_memory *mem);
 void mali_dset_copy(struct mali_dset *dst, const VkCopyDescriptorSet *c, struct mali_dset *src);
 void mali_dset_update_template(struct mali_dset *set, const struct vk_descriptor_update_template *t, const void *data);
 /* Hardware Buffer descriptor of dynamic buffer i of the set with the dynamic offset applied (written by CmdBindDescriptorSets). */
