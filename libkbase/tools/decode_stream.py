@@ -88,8 +88,13 @@ def interp(q, mem, out, depth=0, regs=None, ctx=None):
         elif op == 20:  # LOAD_MULTIPLE: first dst 55:48, addr pair 47:40, mask 31:16, off 15:0 (signed)
             ap = (w >> 40) & 0xff; base = regs.get(ap, 0) | regs.get(ap + 1, 0) << 32
             off = struct.unpack('<h', struct.pack('<H', w & 0xffff))[0]; m = (w >> 16) & 0xffff
+            # the mask names REGISTERS (a + bit); the words are packed in register order from the base address, so the
+            # k-th set bit takes memory word k (mask 0x1b loads r{a}, r{a+1}, r{a+2}, r{a+3} from words 0..3)
+            k = 0
             for b in range(16):
-                if m >> b & 1: regs[a + b] = struct.unpack('<I', mem.read(base + off + 4 * b, 4))[0]
+                if m >> b & 1:
+                    regs[a + b] = struct.unpack('<I', mem.read(base + off + 4 * k, 4))[0]
+                    k += 1
         elif op == 32 and depth < 4:  # CALL: addr pair 47:40... (Mesa: addr reg 47:40? we follow the tracer's convention)
             ra, rb = (w >> 40) & 0xff, (w >> 32) & 0xff
             base = regs.get(ra, 0) | regs.get(ra + 1, 0) << 32; ln = regs.get(rb, 0)
