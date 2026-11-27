@@ -100,6 +100,9 @@ struct mali_backend_ops {
    /* Wait for a sync_file: 0 signalled, -ETIMEDOUT, -EIO = GPU fault (device lost). timeout_ms < 0 =
     * forever. Safe to call from several threads. */
    int (*fence_wait)(struct mali_kdev *kdev, int fence_fd, int timeout_ms);
+   /* Same wait without the device->CPU cache sweep: for an implicit-sync handoff wait, where the CPU is not going to
+    * read the memory the GPU wrote (mali_isync.c). NULL falls back to fence_wait. 0, -ETIMEDOUT, -EIO. */
+   int (*fence_wait_pure)(struct mali_kdev *kdev, int fence_fd, int timeout_ms);
    bool (*device_lost)(struct mali_kdev *kdev);
    /* VK_KHR_calibrated_timestamps: current GPU timestamp counter in ticks (period = gpu.ts_hz). 0 or -errno. */
    int (*gpu_timestamp)(struct mali_kdev *kdev, uint64_t *ticks);

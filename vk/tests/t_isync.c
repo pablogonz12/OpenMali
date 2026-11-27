@@ -30,7 +30,9 @@ struct fake_kernel {
    int export_r;        /* 0, -ENOTTY or a soft error (-EMFILE) */
    int wait_r;          /* what fence_wait answers: 0 or -EIO */
    int export_fd;       /* the sync_file the export hands out (-1 = none pending) */
-   unsigned imports, exports, waits;
+   unsigned imports, exports, waits, polls, blocked;
+   bool pending;        /* the fence is not signalled yet: a 0-timeout poll answers TIMEOUT */
+   bool fast_poll;      /* the fence is signalled (a poll answers 0, no blocking wait) */
    int last_flags;      /* flags of the last import/export */
    int last_fence;      /* sync_fd of the last import */
    int last_fd_closed;  /* the sync_file the consumer was given: closed by it? */
@@ -64,9 +66,21 @@ static int
 fake_wait(struct mali_kdev *kdev, int fence_fd, int timeout_ms)
 {
    struct fake_kernel *k = (struct fake_kernel *)kdev;
+   if (timeout_ms == 0) {
+      k->polls++;
+      if (k->wait_r < 0)
+         return k->wait_r;
+      return k->pending ? -ETIMEDOUT : 0;   /* a fence that has not been signalled yet */
+   }
    k->waits++;
-   (void)fence_fd; (void)timeout_ms;
-   return k->wait_r;
+   if (k->wait_r < 0)
+      return k->wait_r;
+   if (timeout_ms < 0) {
+      k->blocked++;
+      k->pending = false;
+   }
+   (void)fence_fd;
+   return 0;
 }
 
 static const struct mali_backend_ops fake_ops = {
@@ -138,7 +152,8 @@ main(void)
    mali_isync_dev_init(&d3);
    struct fake_kernel k4 = {.import_r = 0, .export_r = 0, .export_fd = fd0};
    mali_isync_consumer(&d3, &fake_ops, (struct mali_kdev *)&k4, fds, 2);
-   EXPECT(k4.exports == 2 && k4.waits == 2, "consumer: one export and one wait per dma-buf (%u/%u)", k4.exports, k4.waits);
+   EXPECT(k4.exports == 2 && k4.polls == 2 && k4.blocked == 0, "consumer: one export and one polled fence per dma-buf (%u/%u)",
+          k4.exports, k4.polls);
    EXPECT(k4.last_flags == MALI_DMA_BUF_SYNC_READ, "consumer: READ fence");
    EXPECT(fcntl(k4.export_fd, F_GETFD) >= 0, "consumer keeps the original fd");
 
@@ -148,6 +163,37 @@ main(void)
    EXPECT(mali_isync_producer(&d3, &fake_ops, (struct mali_kdev *)&k5, fds, 0, true, fd0) == MALI_ISYNC_CPU_WAIT,
           "wrote_full: the submit waits its fence");
    EXPECT(k5.imports == 0 && k5.waits == 1, "wrote_full: no import, one wait (%u/%u)", k5.imports, k5.waits);
+
+   /* 7b: the consumer polls the exported fence first; a pending one is waited for, a signalled one is not */
+   {
+      struct mali_isync_dev d4;
+      mali_isync_dev_init(&d4);
+      struct fake_kernel kp = {.import_r = 0, .export_r = 0, .export_fd = fd0, .pending = true};
+      mali_isync_consumer(&d4, &fake_ops, (struct mali_kdev *)&kp, fds, 1);
+      EXPECT(kp.polls == 1 && kp.blocked == 1, "consumer polls first, then blocks on a pending fence (%u/%u)",
+             kp.polls, kp.blocked);
+      struct fake_kernel ks = {.import_r = 0, .export_r = 0, .export_fd = fd0};
+      mali_isync_consumer(&d4, &fake_ops, (struct mali_kdev *)&ks, fds, 1);
+      EXPECT(ks.polls == 1 && ks.blocked == 0, "consumer does not block on a signalled fence (%u/%u)",
+             ks.polls, ks.blocked);
+      mali_isync_dev_finish(&d4);
+   }
+
+   /* 7c: MALI_IMPLICIT_SYNC_COMM filters by /proc/self/comm (this test's comm contains its name) */
+   {
+      setenv("MALI_IMPLICIT_SYNC_COMM", "t_isync", 1);
+      struct mali_isync_dev dm;
+      mali_isync_dev_init(&dm);
+      EXPECT(mali_isync_enabled(&dm), "MALI_IMPLICIT_SYNC_COMM matching this process keeps it on");
+      mali_isync_dev_finish(&dm);
+      setenv("MALI_IMPLICIT_SYNC_COMM", "no-such-process-comm", 1);
+      mali_isync_dev_init(&dm);
+      EXPECT(!mali_isync_enabled(&dm), "MALI_IMPLICIT_SYNC_COMM not matching turns it off");
+      EXPECT(mali_isync_plan_producer(&dm, 2, false) == MALI_ISYNC_NONE, "filtered out: producer plans nothing");
+      EXPECT(mali_isync_plan_consumer(&dm, 2) == MALI_ISYNC_NONE, "filtered out: consumer plans nothing");
+      mali_isync_dev_finish(&dm);
+      unsetenv("MALI_IMPLICIT_SYNC_COMM");
+   }
 
    /* 8: no fence to wait (-1): the CPU-wait path must not crash or call the backend with -1 */
    struct fake_kernel k6 = {.import_r = -ENOTTY, .export_r = -ENOTTY, .export_fd = -1};
@@ -195,7 +241,8 @@ main(void)
    EXPECT(mali_isync_consumer_ex(&d7, &fake_ops, (struct mali_kdev *)&kb, fds, 1, MALI_DMA_BUF_SYNC_WRITE) == 0,
           "consumer WRITE export succeeds");
    EXPECT(kb.last_flags == MALI_DMA_BUF_SYNC_WRITE, "an imported write asks for WRITE, i.e. the readers' fences too");
-   EXPECT(kb.exports == 1 && kb.waits == 1, "consumer WRITE: one export and one wait (%u/%u)", kb.exports, kb.waits);
+   EXPECT(kb.exports == 1 && kb.polls == 1 && kb.blocked == 0, "consumer WRITE: one export and one polled fence (%u/%u)",
+          kb.exports, kb.polls);
    mali_isync_dev_finish(&d6);
    mali_isync_dev_finish(&d7);
 

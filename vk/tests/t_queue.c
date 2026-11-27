@@ -589,6 +589,7 @@ test_syncfile(void)
 
 /* ---- WSI audit regressions ------------------------------------------------------------------------ */
 static PFN_vkBindImageMemory2KHR BindImageMemory2KHR_;   /* only loaded for --only wsiimg (needs VK_KHR_bind_memory2) */
+static PFN_vkCmdPipelineBarrier2 CmdPipelineBarrier2_;   /* --only isync-store: the foreign-queue handoff barrier */
 
 /* memory fd validation: bad/non-exportable inputs are refused with the spec's error */
 static int
@@ -1141,6 +1142,95 @@ test_stale(void)
    return 1;
 }
 
+/* Implicit sync, producer side (mali_isync.c): only the submit that HANDS a shared dma-buf off waits - here a
+ * buffer barrier that releases it to VK_QUEUE_FAMILY_FOREIGN_EXT, what zink emits for an exported dma-buf at batch
+ * flush. The fake kernel is the X4's 5.10 here (MALI_FAKE_DMABUF_SYNC unset: IMPORT_SYNC_FILE answers ENOTTY), so
+ * the producer's only sync is the CPU wait, and it must be paid on this submit and not on an ordinary one. */
+static int
+test_isync_store(uint32_t slow_us)
+{
+   const VkDeviceSize sz = 4096;
+   const VkExternalMemoryHandleTypeFlagBits ht = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+   VkExportMemoryAllocateInfo exp = {.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+                                     .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+   VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &exp, .allocationSize = sz, .memoryTypeIndex = 0};
+   while (!(memprops.memoryTypes[ai.memoryTypeIndex].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
+          ai.memoryTypeIndex < memprops.memoryTypeCount - 1)
+      ai.memoryTypeIndex++;
+   VkDeviceMemory mem;
+   CHECK(AllocateMemory(dev, &ai, NULL, &mem) == VK_SUCCESS, "exportable alloc");
+   VkMemoryGetFdInfoKHR gi = {.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR, .memory = mem, .handleType = ht};
+   int fd = -1;
+   CHECK(GetMemoryFdKHR(dev, &gi, &fd) == VK_SUCCESS && fd >= 0, "export (producer side marked)");
+   close(fd);   /* the driver dup()ed it; the app's copy is done */
+
+   VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = sz,
+                            .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
+   VkBuffer buf;
+   CHECK(CreateBuffer(dev, &bi, NULL, &buf) == VK_SUCCESS, "buffer");
+   CHECK(BindBufferMemory(dev, buf, mem, 0) == VK_SUCCESS, "bind");
+
+   VkCommandPoolCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+   VkCommandPool pool;
+   CHECK(CreateCommandPool(dev, &cpi, NULL, &pool) == VK_SUCCESS, "cmd pool");
+   VkCommandBufferAllocateInfo cbi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = pool,
+                                      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 2};
+   VkCommandBuffer cb[2];
+   CHECK(AllocateCommandBuffers(dev, &cbi, &cb[0]) == VK_SUCCESS, "cb");
+   VkCommandBufferBeginInfo bgi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+   for (int i = 0; i < 2; i++) {
+      CHECK(BeginCommandBuffer(cb[i], &bgi) == VK_SUCCESS, "begin");
+      CmdFillBuffer(cb[i], buf, 0, sz, (uint32_t)(i + 1));
+      if (i == 0) {
+         /* the handoff: release the dma-buf to the foreign queue family (zink's exported-dmabuf barrier) */
+         VkBufferMemoryBarrier2 bb = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+                                      .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                      .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+                                      .dstStageMask = VK_PIPELINE_STAGE_2_NONE,
+                                      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT,
+                                      .buffer = buf, .offset = 0, .size = sz};
+         VkDependencyInfo dep = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .bufferMemoryBarrierCount = 1,
+                                 .pBufferMemoryBarriers = &bb};
+         CmdPipelineBarrier2_(cb[i], &dep);
+      }
+      CHECK(EndCommandBuffer(cb[i]) == VK_SUCCESS, "end");
+   }
+
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   VkFence f;
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   struct timespec t0, t1;
+   long long base = 0, ms = 0;
+   /* Time vkQueueSubmit itself: the plain submit returns at once (the fence retires later), the handoff submit
+    * blocks in its CPU wait for the frame it is giving away. */
+   for (int i = 0; i < 2; i++) {
+      VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb[i]};
+      clock_gettime(CLOCK_MONOTONIC, &t0);
+      CHECK(QueueSubmit(queue, 1, &si, f) == VK_SUCCESS, "submit");
+      clock_gettime(CLOCK_MONOTONIC, &t1);
+      long long d = (t1.tv_sec - t0.tv_sec) * 1000ll + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+      if (i == 0) ms = d; else base = d;
+      CHECK(WaitForFences(dev, 1, &f, VK_TRUE, 10000000000ull) == VK_SUCCESS, "wait");
+      CHECK(ResetFences(dev, 1, &f) == VK_SUCCESS, "reset");
+   }
+   const long long extra = ms - base;
+   const char *off = getenv("MALI_IMPLICIT_SYNC");
+   const bool disabled = off && !strcmp(off, "0");
+   if (disabled)
+      CHECK(extra < (long long)(slow_us / 1000) / 2, "MALI_IMPLICIT_SYNC=0: no wait on the handoff submit (extra %lld ms)", extra);
+   else
+      CHECK(extra >= (long long)(slow_us / 1000) / 2, "handoff submit waited its fence, the plain one did not (extra %lld ms)", extra);
+   printf("{\"test\":\"isync-store\",\"handoff_submit_ms\":%lld,\"plain_submit_ms\":%lld,\"implicit_sync\":%d,\"ok\":true}\n",
+          extra, base, disabled ? 0 : 1);
+
+   DestroyFence(dev, f, NULL);
+   DestroyCommandPool(dev, pool, NULL);
+   DestroyBuffer(dev, buf, NULL);
+   FreeMemory(dev, mem, NULL);
+   return 1;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1164,7 +1254,8 @@ main(int argc, char **argv)
    if (!gipa || !negotiate || negotiate(&iv)) { printf("{\"fail\":\"icd entry\"}\n"); return 1; }
 
    PFN_vkCreateInstance CreateInstance = (PFN_vkCreateInstance)gipa(NULL, "vkCreateInstance");
-   const VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .apiVersion = (g_only && !strcmp(g_only, "wsiimg")) ? VK_API_VERSION_1_1 : VK_API_VERSION_1_0};
+   const VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+                                 .apiVersion = (g_only && (!strcmp(g_only, "wsiimg") || !strcmp(g_only, "isync-store"))) ? VK_API_VERSION_1_3 : VK_API_VERSION_1_0};
    VkInstanceCreateInfo ici = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app};
    const char *iext[] = {"VK_KHR_get_physical_device_properties2", "VK_KHR_external_memory_capabilities",
                          "VK_KHR_external_semaphore_capabilities", "VK_KHR_external_fence_capabilities"};
@@ -1201,6 +1292,11 @@ main(int argc, char **argv)
    if (CreateDevice(pd, &di, NULL, &dev) != VK_SUCCESS) { printf("{\"fail\":\"CreateDevice\"}\n"); return 1; }
 #define LOAD(n) n = (PFN_vk##n)GDPA(dev, "vk" #n); if (!n) { printf("{\"fail\":\"missing vk" #n "\"}\n"); return 1; }
    DEV_FNS(LOAD)
+   if (g_only && !strcmp(g_only, "isync-store")) {
+      CmdPipelineBarrier2_ = (PFN_vkCmdPipelineBarrier2)GDPA(dev, "vkCmdPipelineBarrier2");
+      if (!CmdPipelineBarrier2_) CmdPipelineBarrier2_ = (PFN_vkCmdPipelineBarrier2)GDPA(dev, "vkCmdPipelineBarrier2KHR");
+      if (!CmdPipelineBarrier2_) { printf("{\"fail\":\"missing vkCmdPipelineBarrier2\"}\n"); return 1; }
+   }
    if (wsiimg) {
       BindImageMemory2KHR_ = (PFN_vkBindImageMemory2KHR)GDPA(dev, "vkBindImageMemory2");
       if (!BindImageMemory2KHR_) BindImageMemory2KHR_ = (PFN_vkBindImageMemory2KHR)GDPA(dev, "vkBindImageMemory2KHR");
@@ -1221,6 +1317,8 @@ main(int argc, char **argv)
    if (ok && g_only && !strcmp(g_only, "isync"))
       ok &= test_isync(getenv("MALI_FAKE_SLOW_US") ? (uint32_t)atoi(getenv("MALI_FAKE_SLOW_US")) : 150000u);
    if (ok && g_only && !strcmp(g_only, "stale")) ok &= test_stale();
+   if (ok && g_only && !strcmp(g_only, "isync-store"))
+      ok &= test_isync_store(getenv("MALI_FAKE_SLOW_US") ? (uint32_t)atoi(getenv("MALI_FAKE_SLOW_US")) : 150000u);
    if (ok && CASE_ON("idle")) ok &= test_idle();
    if (ok && CASE_ON("binary")) ok &= test_binary();
    if (ok && CASE_ON("timeline")) ok &= test_timeline(500);

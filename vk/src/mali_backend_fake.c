@@ -639,6 +639,7 @@ const struct mali_backend_ops mali_backend_fake = {
    .va_cpu = fake_va_cpu,
    .submit_signal = fake_submit_signal,
    .fence_wait = fake_fence_wait,
+   .fence_wait_pure = fake_fence_wait,   /* no cache model on the fake: the same wait */
    .device_lost = fake_device_lost,
    .gpu_timestamp = fake_gpu_timestamp,
    .submit_cs = fake_submit_cs,

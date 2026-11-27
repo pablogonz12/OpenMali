@@ -668,6 +668,42 @@ kbase_fence_wait(struct mali_kdev *k, int fence_fd, int timeout_ms)
    }
 }
 
+/* The same wait without the device->CPU sweep (mem_sync_bos): an implicit-sync handoff wait only needs the GPU to
+ * have finished, nobody on this CPU reads the result. Blocking on the notification fd with 100 ms slices keeps it
+ * interruptible by the other waiters' wait_lock turns and by a device loss. */
+static int
+kbase_fence_wait_pure(struct mali_kdev *k, int fence_fd, int timeout_ms)
+{
+   struct timespec t0;
+   clock_gettime(CLOCK_MONOTONIC, &t0);
+   for (;;) {
+      struct timespec t1;
+      clock_gettime(CLOCK_MONOTONIC, &t1);
+      long long el = (t1.tv_sec - t0.tv_sec) * 1000ll + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+      long long left = timeout_ms < 0 ? 1000000 : timeout_ms - el;
+      if (left < 0)
+         left = 0;
+      int slice = left > 100 ? 100 : (int)left;
+      pthread_mutex_lock(&k->wait_lock);
+      int r = kb_fence_wait(k->ctx, fence_fd, slice);
+      pthread_mutex_unlock(&k->wait_lock);
+      if (r == 0)
+         return 0;
+      if (r == -EIO) {
+         k->lost = true;
+         return -EIO;
+      }
+      if (r == -ETIMEDOUT && kb_queue_faulted(&k->queue)) {
+         k->lost = true;
+         return -EIO;
+      }
+      if (r != -ETIMEDOUT)
+         return r;
+      if (timeout_ms >= 0 && left <= slice)
+         return -ETIMEDOUT;
+   }
+}
+
 static bool
 kbase_device_lost(struct mali_kdev *k)
 {
@@ -855,6 +891,7 @@ const struct mali_backend_ops mali_backend_kbase = {
    .bo_export = kbase_bo_export,
    .submit_signal = kbase_submit_signal,
    .fence_wait = kbase_fence_wait,
+   .fence_wait_pure = kbase_fence_wait_pure,
    .device_lost = kbase_device_lost,
    .gpu_timestamp = kbase_gpu_timestamp,
    .host_sync = kbase_host_sync,

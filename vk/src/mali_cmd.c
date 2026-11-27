@@ -146,6 +146,36 @@ mali_cmd_mark_read(struct mali_cmd_buffer *cmd, struct mali_memory *mem)
       cmd->read_full = true;
 }
 
+/* Implicit sync, producer side (mali_isync.h): the buffer this submit gives away. A reset or a freed memory must not
+ * leave a stale mark behind, hence the guard at collect time (mali_queue.c) and the filter here. */
+void
+mali_cmd_mark_handoff(struct mali_cmd_buffer *cmd, struct mali_memory *mem)
+{
+   if (!mem || (mem->isync != MALI_ISYNC_BO_EXPORTED && mem->isync != MALI_ISYNC_BO_IMPORTED))
+      return;
+   for (unsigned i = 0; i < cmd->nhandoff; i++)
+      if (cmd->handoff[i] == mem)
+         return;
+   if (cmd->nhandoff < MALI_CMD_HANDOFF_MAX)
+      cmd->handoff[cmd->nhandoff++] = mem;
+   else
+      cmd->handoff_full = true;
+}
+
+void
+mali_cmd_mark_handoff_image(struct mali_cmd_buffer *cmd, VkImage i)
+{
+   if (g_res.image_mem)
+      mali_cmd_mark_handoff(cmd, g_res.image_mem(i));
+}
+
+void
+mali_cmd_mark_buffer_handoff(struct mali_cmd_buffer *cmd, VkBuffer b)
+{
+   if (g_res.buffer_mem)
+      mali_cmd_mark_handoff(cmd, g_res.buffer_mem(b));
+}
+
 void
 mali_cmd_mark_image_read(struct mali_cmd_buffer *cmd, VkImage i)
 {
@@ -222,6 +252,8 @@ reset_state(struct mali_cmd_buffer *cmd)
     * an imported dma-buf that its owner has freed since. */
    cmd->nread = 0;
    cmd->read_full = false;
+   cmd->nhandoff = 0;
+   cmd->handoff_full = false;
    mali_meta_cmd_forget(cmd);
 }
 
@@ -1251,8 +1283,12 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       return;
    }
    /* M15: the colour target is GPU-written in this frame */
-   if (!no_col && g_res.image_view_mem)
+   if (!no_col && g_res.image_view_mem) {
       mali_cmd_mark_written(cmd, g_res.image_view_mem(ca->imageView));
+      /* Implicit sync, producer side, fallback rule: the frame's final store into a shared colour attachment is a
+       * handoff even without a foreign-queue release barrier (mali_isync.h). */
+      mali_cmd_mark_handoff(cmd, g_res.image_view_mem(ca->imageView));
+   }
    if (!no_col)
       load = is_load_op(ca->loadOp);
    if (load) {

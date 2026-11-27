@@ -625,7 +625,9 @@ mali_present_fence_ok(struct mali_device *dev)
 #define MALI_ISYNC_MAX_BOS 16
 
 /* The dma-bufs this submission references that are shared outside a swapchain (mali_isync.h).
- *   fd[]   - every shared dma-buf the submission WRITES (the producer side: attach this submit's fence to it).
+ *   fd[]   - the shared dma-bufs the submission HANDS OFF (a foreign-queue release barrier or a final colour store,
+ *            mali_cmd.h handoff[]): the producer side. Waiting on every submit that merely writes a shared BO made
+ *            the X4 drop from ~1030 to ~490 frames per 20 s, i.e. as expensive as MALI_SYNC_SUBMIT=1.
  *   impw[] - imported dma-bufs it WRITES: the consumer side, and the export must ask for WRITE, which is the fence
  *            of the current readers and writers (a plain READ export would not wait an app that is still reading it).
  *   impr[] - imported dma-bufs it only READS through a bound descriptor set (sampled/input attachment, UBO/SSBO,
@@ -634,8 +636,8 @@ mali_present_fence_ok(struct mali_device *dev)
  *            keeps only imported ones.
  * A list that runs over MALI_ISYNC_MAX_BOS is not dropped: the dependency is waited on the spot (submit_shared_wait),
  * before any GPU work is submitted. d/be/kdev/err carry what that needs.
- * unlisted: a command buffer could not name all its writes (wrote_full) or the write list is full - then the fence
- * cannot be attached to every shared buffer and the submit takes the CPU wait instead. */
+ * unlisted: a command buffer could not name all its handoffs (handoff_full) - then the fence cannot be attached to
+ * every buffer it gives away and the submit takes the CPU wait instead. */
 struct mali_isync_submit {
    int fd[MALI_ISYNC_MAX_BOS];      /* every shared dma-buf written (exported or imported) */
    unsigned n;
@@ -708,31 +710,38 @@ submit_shared_collect(struct vk_queue_submit *submit, struct mali_isync_submit *
    out->err = 0;
    for (uint32_t i = 0; i < submit->command_buffer_count; i++) {
       struct mali_cmd_buffer *cmd = mali_cmd_buffer_from_vk(submit->command_buffers[i]);
-      if (cmd->wrote_full)
+      /* Producer side: only what this command buffer hands off. */
+      if (cmd->handoff_full)
          out->unlisted = true;
-      for (unsigned j = 0; j < cmd->nwrote; j++) {
-         struct mali_memory *m = cmd->wrote[j];
+      for (unsigned j = 0; j < cmd->nhandoff; j++) {
+         struct mali_memory *m = cmd->handoff[j];
          /* A mark is a record-time pointer: the app may have freed the memory before this submit. Only fds are
           * passed on, so the guard is released before the sync ioctls. */
          if (!mali_memory_guard(m))
             continue;
-         if (m->bo.dmabuf_fd < 0 || (m->isync != MALI_ISYNC_BO_EXPORTED && m->isync != MALI_ISYNC_BO_IMPORTED)) {
-            mali_memory_unguard();
-            continue;
-         }
          const int fd = m->bo.dmabuf_fd;
-         const bool imported = m->isync == MALI_ISYNC_BO_IMPORTED;
          mali_memory_unguard();
+         if (fd < 0)
+            continue;
          if (!submit_shared_find(out->fd, out->n, fd)) {
             if (out->n < MALI_ISYNC_MAX_BOS)
                out->fd[out->n++] = fd;
             else
                out->unlisted = true;
          }
-         if (imported)
+      }
+      /* Consumer side: imported dma-bufs this command buffer writes (WRITE export: the current readers too) ... */
+      for (unsigned j = 0; j < cmd->nwrote; j++) {
+         struct mali_memory *m = cmd->wrote[j];
+         if (!mali_memory_guard(m))
+            continue;
+         const int fd = m->bo.dmabuf_fd;
+         const bool imported = m->isync == MALI_ISYNC_BO_IMPORTED;
+         mali_memory_unguard();
+         if (imported && fd >= 0)
             submit_shared_add_impw(out, fd);
       }
-      /* The consumer side proper: imported dma-bufs this command buffer only reads (descriptors, attachments,
+      /* ... and the ones it only reads (descriptors, attachments,
        * copy/blit sources). Without this a reader that never waits would still race the producer's frame. */
       for (unsigned j = 0; j < cmd->nread; j++) {
          struct mali_memory *m = cmd->read[j];

@@ -50,6 +50,7 @@ struct mali_isync_dev {
    int import_ok;          /* -1 unknown, 0 ENOTTY (no implicit fences here), 1 the kernel took a fence */
    int export_ok;          /* -1 unknown, 0 ENOTTY, 1 the kernel handed one out */
    unsigned stat_fence, stat_cpu_wait, stat_wait, stat_err;
+   unsigned stat_polled, stat_blocked;   /* consumer: fence already signalled (0-timeout poll) vs a real wait */
 };
 
 void mali_isync_dev_init(struct mali_isync_dev *d);

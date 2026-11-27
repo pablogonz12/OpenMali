@@ -13,12 +13,31 @@ mali_isync_dev_init(struct mali_isync_dev *d)
 {
    pthread_mutex_init(&d->lock, NULL);
    /* Read at device creation: MALI_IMPLICIT_SYNC=0 turns the whole mechanism off, and the plan functions are pure
-    * (they never touch the environment). */
+    * (they never touch the environment). MALI_IMPLICIT_SYNC_COMM=<substring> applies it only in the processes whose
+    * /proc/self/comm contains it, which is how the racing link is found: the Steam UI's frame is produced by
+    * steamwebhelper and consumed by Xwayland (both zink on this driver), and only one of them needs to wait. */
    const char *e = getenv("MALI_IMPLICIT_SYNC");
    d->enabled = !(e && !strcmp(e, "0"));
+   const char *want = getenv("MALI_IMPLICIT_SYNC_COMM");
+   if (d->enabled && want && *want) {
+      char comm[64] = {0};
+      FILE *f = fopen("/proc/self/comm", "r");
+      size_t n = 0;
+      if (f) {
+         n = fread(comm, 1, sizeof comm - 1, f);
+         fclose(f);
+      }
+      comm[n] = 0;
+      char *nl = strchr(comm, '\n');
+      if (nl)
+         *nl = 0;
+      if (!strstr(comm, want))
+         d->enabled = 0;
+   }
    d->import_ok = -1;
    d->export_ok = -1;
    d->stat_fence = d->stat_cpu_wait = d->stat_wait = d->stat_err = 0;
+   d->stat_polled = d->stat_blocked = 0;
 }
 
 void
@@ -26,8 +45,9 @@ mali_isync_dev_finish(struct mali_isync_dev *d)
 {
    const char *e = getenv("MALI_ISYNC_DBG");
    if (e && *e && strcmp(e, "0") && (d->stat_fence || d->stat_cpu_wait || d->stat_wait || d->stat_err))
-      fprintf(stderr, "PROF/isync fence=%u cpu_wait=%u wait=%u err=%u import=%d export=%d\n",
-              d->stat_fence, d->stat_cpu_wait, d->stat_wait, d->stat_err, d->import_ok, d->export_ok);
+      fprintf(stderr, "PROF/isync fence=%u cpu_wait=%u wait=%u err=%u polled=%u blocked=%u import=%d export=%d enabled=%d\n",
+              d->stat_fence, d->stat_cpu_wait, d->stat_wait, d->stat_err, d->stat_polled, d->stat_blocked,
+              d->import_ok, d->export_ok, d->enabled);
    pthread_mutex_destroy(&d->lock);
 }
 
@@ -108,7 +128,9 @@ mali_isync_producer_ex(struct mali_isync_dev *d, const struct mali_backend_ops *
           * result is the caller's: a -EIO here means the GPU faulted and the queue must report DEVICE_LOST
           * rather than VK_SUCCESS (mali_queue.c). */
          pthread_mutex_unlock(&d->lock);
-         int wrc = be->fence_wait(kdev, fence_fd, -1);
+         /* A pure wait: nothing on this CPU is going to read the GPU-written memory, so the device->CPU cache
+          * sweep a normal fence wait runs (kbase_fence_wait -> mem_sync) is pure cost here. */
+         int wrc = (be->fence_wait_pure ? be->fence_wait_pure : be->fence_wait)(kdev, fence_fd, -1);
          if (wait_rc)
             *wait_rc = wrc;
          return a;
@@ -154,8 +176,20 @@ mali_isync_consumer_ex(struct mali_isync_dev *d, const struct mali_backend_ops *
       if (r != 0)
          return r;   /* -ENOMEM/-EMFILE/...: stop the submission, there is no fence to wait */
       if (sf >= 0) {
-         /* No KCPU fence wait for a foreign fence in a submit: wait it on the CPU (poll) before submitting. */
-         int w = be->fence_wait(kdev, sf, -1);
+         /* No KCPU fence wait for a foreign fence in a submit: wait it on the CPU before submitting. Poll with a
+          * zero timeout first - once the producer has retired its fence is already signalled and this costs one
+          * syscall instead of a waiter slot (MALI_ISYNC_DBG=1 reports polled vs blocked). */
+         int w = be->fence_wait(kdev, sf, 0);
+         if (w == 0) {
+            pthread_mutex_lock(&d->lock);
+            d->stat_polled++;
+            pthread_mutex_unlock(&d->lock);
+         } else if (w == -ETIMEDOUT) {
+            pthread_mutex_lock(&d->lock);
+            d->stat_blocked++;
+            pthread_mutex_unlock(&d->lock);
+            w = be->fence_wait(kdev, sf, -1);
+         }
          close(sf);
          if (w < 0)
             return w;
