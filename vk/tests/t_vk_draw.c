@@ -3,7 +3,7 @@
  * render pass, framebuffer, command buffer, queue submit, fence, host readback). Loader-free: dlopens the
  * ICD like t_queue --direct. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_draw --direct <icd.so> [--loop N] [--loop-reset] [--only triangle|two|depth|rot|idx16|idx32|scissor|viewport|multivp|clearatt|ring|pushfs|ubo|descupd|sets8|texture|depth16|depth32s8|stencil]
+ *   t_vk_draw --direct <icd.so> [--loop N] [--loop-reset] [--only triangle|two|depth|rot|idx16|idx32|scissor|viewport|multivp|clearatt|ring|pushfs|ubo|descupd|sets8|texture|depth16|depth32s8|stencil|indirect_gpu|inpass_compute]
  *             [--spv-dir dir]
  * Pixel checks are skipped on the fake backend (MALI_BACKEND=fake): it renders nothing.
  * --loop N repeats the triangle case N times; --loop-reset reuses one command buffer via
@@ -102,7 +102,7 @@ static struct st_state g_st2;  /* second pipeline (s->pipe2) for the LOAD pass: 
 
 /* MODE_SHAREIDX stays BELOW MODE_PUSHFS: the >= MODE_PUSHFS test means "the full-screen indexed quad", and that branch must not bind
  * an index buffer of its own before the share_idx draws (the point of that case is the exact index-buffer register sequence). */
-enum { MODE_TRI, MODE_IDX16, MODE_IDX32, MODE_CLEARATT, MODE_CLEARQUAD, MODE_SCISSOR, MODE_VPORT, MODE_MVP, MODE_SHAREIDX, MODE_PUSHFS, MODE_TEX, MODE_UBO, MODE_DESCUPD, MODE_MDI, MODE_SETS8, MODE_INDGPU };
+enum { MODE_TRI, MODE_IDX16, MODE_IDX32, MODE_CLEARATT, MODE_CLEARQUAD, MODE_SCISSOR, MODE_VPORT, MODE_MVP, MODE_SHAREIDX, MODE_PUSHFS, MODE_TEX, MODE_UBO, MODE_DESCUPD, MODE_MDI, MODE_SETS8, MODE_INDGPU, MODE_INPASS };
 
 #define CASE_ON(n) ((!g_only || !strcmp(g_only, n)) && !case_skipped(n))
 /* MALI_SKIP_CASES="a,b": cases to leave out (farm --env route: lets one failing case be isolated without a phone shell) */
@@ -427,7 +427,7 @@ scene_create(struct scene *s, int depth)
                                   1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1, 1, 1, 1, 1,
                                   0, 0, 0, 1, 1, 0, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1};
    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 256,
-                            .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT};
+                            .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | (mode == MODE_INPASS ? VK_BUFFER_USAGE_STORAGE_BUFFER_BIT : 0)};
    for (int i = 0; i < 2; i++)
       CHECK(CreateBuffer(dev, &bi, NULL, &s->vb[i]) == VK_SUCCESS, "vertex buffer");
    GetBufferMemoryRequirements(dev, s->vb[0], &mr);
@@ -437,7 +437,10 @@ scene_create(struct scene *s, int depth)
    CHECK(AllocateMemory(dev, &va, NULL, &s->vbmem) == VK_SUCCESS, "vb mem");
    uint8_t *vp;
    CHECK(MapMemory(dev, s->vbmem, 0, VK_WHOLE_SIZE, 0, (void **)&vp) == VK_SUCCESS, "map vb");
-   memcpy(vp, pos, sizeof pos);
+   if (mode == MODE_INPASS)
+      memset(vp, 0, stride);   /* the positions exist only on the GPU: a kernel inside the pass writes them */
+   else
+      memcpy(vp, pos, sizeof pos);
    memcpy(vp + stride, colr, sizeof colr);
    UnmapMemory(dev, s->vbmem);
    CHECK(BindBufferMemory(dev, s->vb[0], s->vbmem, 0) == VK_SUCCESS, "bind vb0");
@@ -649,7 +652,7 @@ scene_create(struct scene *s, int depth)
    VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
    CHECK(CreateCommandPool(dev, &pci, NULL, &s->pool) == VK_SUCCESS, "pool");
 
-   if (mode == MODE_INDGPU) {
+   if (mode == MODE_INDGPU || mode == MODE_INPASS) {
       /* One VkDrawIndirectCommand the GPU writes: {vertexCount, instanceCount, firstVertex, firstInstance}. The host
        * zeroes it and does not touch it again, so the draw is empty unless the command stream itself reads it after the
        * compute job has run. */
@@ -670,21 +673,26 @@ scene_create(struct scene *s, int depth)
       }
       CHECK(BindBufferMemory(dev, s->args, s->argsmem, 0) == VK_SUCCESS, "bind args");
 
-      s->csm = load_spv("indargs.comp.spv");
-      CHECK(s->csm, "load indargs.comp.spv");
-      VkDescriptorSetLayoutBinding csb = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                          .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT};
+      const unsigned nb = mode == MODE_INPASS ? 2 : 1;   /* INPASS: binding 1 = the vertex buffer (storage + vertex usage) */
+      s->csm = load_spv(mode == MODE_INPASS ? "inpass.comp.spv" : "indargs.comp.spv");
+      CHECK(s->csm, "load the compute shader");
+      VkDescriptorSetLayoutBinding csb[2] = {{.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                              .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT},
+                                             {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                              .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT}};
       VkDescriptorSetLayoutCreateInfo cdli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-                                              .bindingCount = 1, .pBindings = &csb};
+                                              .bindingCount = nb, .pBindings = csb};
       CHECK(CreateDescriptorSetLayout(dev, &cdli, NULL, &s->cdsl) == VK_SUCCESS, "compute dsl");
+      VkPushConstantRange cpcr = {.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .offset = 0, .size = 12};
       VkPipelineLayoutCreateInfo cpli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-                                         .setLayoutCount = 1, .pSetLayouts = &s->cdsl};
+                                         .setLayoutCount = 1, .pSetLayouts = &s->cdsl,
+                                         .pushConstantRangeCount = mode == MODE_INPASS, .pPushConstantRanges = &cpcr};
       CHECK(CreatePipelineLayout(dev, &cpli, NULL, &s->clayout) == VK_SUCCESS, "compute layout");
       VkComputePipelineCreateInfo cpci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = s->clayout,
                                           .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                                                     .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = s->csm, .pName = "main"}};
       CHECK(CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpci, NULL, &s->cpipe) == VK_SUCCESS, "compute pipeline");
-      VkDescriptorPoolSize cps = {.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1};
+      VkDescriptorPoolSize cps = {.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = nb};
       VkDescriptorPoolCreateInfo cpci2 = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1,
                                           .poolSizeCount = 1, .pPoolSizes = &cps};
       CHECK(CreateDescriptorPool(dev, &cpci2, NULL, &s->cpool) == VK_SUCCESS, "compute pool");
@@ -692,9 +700,12 @@ scene_create(struct scene *s, int depth)
                                           .descriptorSetCount = 1, .pSetLayouts = &s->cdsl};
       CHECK(AllocateDescriptorSets(dev, &cdai, &s->cset) == VK_SUCCESS, "compute set");
       VkDescriptorBufferInfo cbi = {.buffer = s->args, .offset = 0, .range = 64};
-      VkWriteDescriptorSet cw = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = s->cset, .dstBinding = 0,
-                                 .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &cbi};
-      UpdateDescriptorSets(dev, 1, &cw, 0, NULL);
+      VkDescriptorBufferInfo cvi = {.buffer = s->vb[0], .offset = 0, .range = 256};
+      VkWriteDescriptorSet cw[2] = {{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = s->cset, .dstBinding = 0,
+                                     .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &cbi},
+                                    {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = s->cset, .dstBinding = 1,
+                                     .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &cvi}};
+      UpdateDescriptorSets(dev, nb, cw, 0, NULL);
    }
    return 1;
 }
@@ -1553,6 +1564,121 @@ test_indirect_gpu(void)
       CHECK(cmd[0] == 3 && cmd[1] == 1 && cmd[2] == 0 && cmd[3] == 0,
             "compute job wrote {vertexCount %u, instanceCount %u, firstVertex %u, firstInstance %u}", cmd[0], cmd[1], cmd[2], cmd[3]);
    int ok = report("indirect_gpu", &s, 8192.0, 1.0, 0);
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return ok;
+}
+
+
+/* ---- inpass_compute (compute-in-pass.md, rung 1/2): a kernel inside a render pass feeds the draw after it ----
+ * One pass, clear, then per draw: dispatch inpass.comp (writes vertices into vb[0] and a VkDrawIndirectCommand into the args
+ * buffer), then vkCmdDrawIndirect reads both. Both buffers start zeroed, so a kernel that did not run (or ran too late, or whose
+ * output the draw did not see) draws nothing. The driver has no API-level way to take a vkCmdDispatch inside a pass (Vulkan
+ * forbids it): MALI_PRE_HOIST=1 is the test knob that makes it hoist the dispatch to the head of the pass' frame, which is
+ * the mechanism the tessellation and geometry-shader lanes call. Knob off: the dispatch is refused by name (end fails). */
+struct ip_draw { uint32_t mode, vbase, ai; int skip; };
+static int
+inpass_frame(struct scene *s, VkFence fence, const struct ip_draw *d, int nd, VkResult *end_res)
+{
+   VkCommandBuffer cb;
+   VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = s->pool,
+                                     .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+   CHECK(AllocateCommandBuffers(dev, &ai, &cb) == VK_SUCCESS, "alloc cb");
+   VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                  .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+   CHECK(BeginCommandBuffer(cb, &bi) == VK_SUCCESS, "begin");
+   VkClearValue cv = {.color = {{0, 0, 0, 0}}};
+   VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = s->rp, .framebuffer = s->fb,
+                               .renderArea = {{0, 0}, {W, H}}, .clearValueCount = 1, .pClearValues = &cv};
+   CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+   CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->pipe);
+   VkViewport vp = {0, 0, W, H, 0.0f, 1.0f};
+   VkRect2D sc = {{0, 0}, {W, H}};
+   CmdSetViewport(cb, 0, 1, &vp);
+   CmdSetScissor(cb, 0, 1, &sc);
+   CmdPushConstants(cb, s->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, ID);
+   for (int i = 0; i < nd; i++) {
+      uint32_t pc[3] = {d[i].skip ? 9u : d[i].mode, d[i].vbase, d[i].ai};
+      CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, s->cpipe);
+      CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, s->clayout, 0, 1, &s->cset, 0, NULL);
+      CmdPushConstants(cb, s->clayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 12, pc);
+      CmdDispatch(cb, 1, 1, 1);
+      VkBuffer vbs[2] = {s->vb[0], s->vb[1]};
+      VkDeviceSize offs[2] = {(VkDeviceSize)d[i].vbase * 16, 0};
+      CmdBindVertexBuffers(cb, 0, 2, vbs, offs);
+      CmdDrawIndirect(cb, s->args, (VkDeviceSize)d[i].ai * 16, 1, 16);
+   }
+   CmdEndRenderPass(cb);
+   VkMemoryBarrier2 hb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+      .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+      .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT, .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
+   VkDependencyInfo hd = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &hb};
+   CmdPipelineBarrier2(cb, &hd);
+   VkResult er = EndCommandBuffer(cb);
+   if (end_res) {
+      *end_res = er;
+      if (er != VK_SUCCESS) { FreeCommandBuffers(dev, s->pool, 1, &cb); return 1; }
+   } else
+      CHECK(er == VK_SUCCESS, "end = %d (the in-pass dispatch was refused)", er);
+   VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+   VkResult r = QueueSubmit(queue, 1, &si, fence);
+   CHECK(r == VK_SUCCESS, "submit = %d", r);
+   r = WaitForFences(dev, 1, &fence, VK_TRUE, 20000000000ull);
+   CHECK(r == VK_SUCCESS, "wait = %d", r);
+   ResetFences(dev, 1, &fence);
+   FreeCommandBuffers(dev, s->pool, 1, &cb);
+   VkMappedMemoryRange mr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = s->colmem, .offset = 0, .size = VK_WHOLE_SIZE};
+   InvalidateMappedMemoryRanges(dev, 1, &mr);
+   return 1;
+}
+
+/* coverage check that also takes an expected 0 (report() divides by the expectation) */
+static int
+ip_cov(const char *name, struct scene *s, uint32_t expect, double tolpct)
+{
+   if (g_fake) {
+      printf("{\"test\":\"%s\",\"skipped\":\"fake backend\",\"ok\":true}\n", name);
+      return 1;
+   }
+   uint32_t cov = count_cov(s);
+   double err = expect ? fabs((double)cov - expect) / expect * 100.0 : (double)cov;
+   CHECK(err <= tolpct, "%s coverage %u expected %u", name, cov, expect);
+   printf("{\"test\":\"%s\",\"coverage\":%u,\"expect\":%u,\"ok\":true}\n", name, cov, expect);
+   return 1;
+}
+
+static int
+test_inpass_compute(void)
+{
+   struct scene s = {.mode = MODE_INPASS};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   if (!scene_create(&s, 0)) return 0;
+   g_hostread = 1;
+   int ok = 1;
+   VkResult er;
+   /* 5 (first, so a red tree names the refusal): knob off, the dispatch inside the pass is refused by name */
+   unsetenv("MALI_PRE_HOIST");
+   { struct ip_draw d = {0, 0, 0, 0}; ok &= inpass_frame(&s, f, &d, 1, &er); }
+   CHECK(ok && er != VK_SUCCESS, "knob off: a dispatch inside a render pass must be refused (end = %d)", er);
+   setenv("MALI_PRE_HOIST", "1", 1);
+   /* 2: the control that can fail - the kernel does nothing, the args stay zero, nothing is drawn */
+   { struct ip_draw d = {0, 0, 0, 1}; ok &= ok && inpass_frame(&s, f, &d, 1, NULL); }
+   ok &= ok && ip_cov("inpass_skipped", &s, 0, 0.0);
+   /* 1: kernel writes 3 vertices + {3,1,0,0}; the draw uses them: the "triangle" case, 8192 px */
+   { struct ip_draw d = {0, 0, 0, 0}; ok &= ok && inpass_frame(&s, f, &d, 1, NULL); }
+   ok &= ok && ip_cov("inpass_one", &s, 8192, 1.0);
+   /* 3: two kernels, two draws, disjoint vertex ranges and args slots, left and right half, in wave order */
+   { struct ip_draw d[2] = {{2, 0, 0, 0}, {3, 8, 1, 0}}; ok &= ok && inpass_frame(&s, f, d, 2, NULL); }
+   ok &= ok && ip_cov("inpass_two", &s, 13107, 2.0);
+   /* 4: staleness: the same buffers again, the kernel now writes 6 vertices / count 6: 8192 + 2048. A missing L2 clean before
+    * the CS LOAD of the args, or a missing vertex-cache invalidate, draws the previous frame's 3 vertices (8192) here. */
+   { struct ip_draw d = {0, 0, 0, 0}; ok &= ok && inpass_frame(&s, f, &d, 1, NULL); }
+   ok &= ok && ip_cov("inpass_frame1", &s, 8192, 1.0);
+   { struct ip_draw d = {1, 0, 0, 0}; ok &= ok && inpass_frame(&s, f, &d, 1, NULL); }
+   ok &= ok && ip_cov("inpass_stale", &s, 10240, 1.0);
+   unsetenv("MALI_PRE_HOIST");
    scene_destroy(&s);
    DestroyFence(dev, f, NULL);
    return ok;
@@ -3444,6 +3570,7 @@ main(int argc, char **argv)
    int ok = 1;
    if (CASE_ON("triangle") || CASE_ON("rot")) ok &= test_triangle();
    if (ok && g_only && CASE_ON("indirect_gpu")) ok &= test_indirect_gpu();
+   if (ok && g_only && CASE_ON("inpass_compute")) ok &= test_inpass_compute();
    if (ok && g_only && CASE_ON("blitreplay")) ok &= test_blitreplay();   /* --only only: it allocates two 800x600 images */
    if (ok && g_only && CASE_ON("blitwin")) { setenv("BLITREPLAY", "6", 1); ok &= test_blitreplay(); unsetenv("BLITREPLAY"); }   /* the twin control: our own shaders */
    if (ok && CASE_ON("sparse_loc")) { g_sparse = 1; ok &= test_triangle(); g_sparse = 0; }   /* same triangle as "triangle" through attribute locations 0 and 2 */

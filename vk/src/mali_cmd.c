@@ -915,10 +915,74 @@ is_load_op(VkAttachmentLoadOp op)
    return op == VK_ATTACHMENT_LOAD_OP_LOAD;
 }
 
+/* The pre block API (compute-in-pass.md), for the tessellation and geometry-shader lanes.
+ *
+ * Appends one kernel to the pre block of the render pass being recorded (`cmd->cur.pre`): it runs at the head of the pass' own
+ * frame, before draw 0, never between draws. Valid only while `cmd->in_render`. Kernels of one `wave` have no dependency on each
+ * other; waves run in ascending order with one wait between them (the dependent kernels of one draw take consecutive waves:
+ * tessellation VS pre-pass, TCS, tessellate-count, prefix-sum, tessellate; geometry: VS pre-pass, count, prefix-sum, main).
+ * `sync_cs`: a later wave LOADs a job size (indirect grid) this kernel writes. The kernel's output reaches the draw through memory
+ * that the draw record names (a VkDrawIndirectCommand: record_indirect, the draw's `ind_va`; vertices/indices: its buffers); the
+ * block ends with a flush, so no further synchronisation is needed or allowed. Returns 0, or a negative errno (-EINVAL outside a
+ * pass, -ENOMEM). The dispatch is copied; its `groups` must be non-zero unless `indirect_va` is set. */
+int
+mali_cmd_pre_dispatch(struct mali_cmd_buffer *cmd, const struct mali_dispatch *d, unsigned wave, bool sync_cs)
+{
+   struct mali_frame *f = &cmd->cur;
+   if (!cmd->in_render || wave > 255)
+      return -EINVAL;
+   if (f->npre == f->cappre) {
+      unsigned nc = f->cappre ? f->cappre * 2 : 4;
+      struct mali_pre *np = realloc(f->pre, nc * sizeof *np);
+      if (!np) {
+         vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
+         return -ENOMEM;
+      }
+      f->pre = np;
+      f->cappre = nc;
+   }
+   f->pre[f->npre].d = *d;
+   f->pre[f->npre].wave = (uint8_t)wave;
+   f->pre[f->npre].sync_cs = sync_cs;
+   f->npre++;
+   return 0;
+}
+
+/* The dispatch the compute state bound right now describes (push constants, sets, dynamic offsets are snapshots). */
+static void
+snapshot_dispatch(struct mali_cmd_buffer *cmd, struct mali_dispatch *d, uint32_t x, uint32_t y, uint32_t z, uint64_t indirect_va)
+{
+   memset(d, 0, sizeof *d);
+   d->cs = cmd->cs;
+   d->cs_va = cmd->cs_va;
+   memcpy(d->push, cmd->push_cs, sizeof d->push);
+   d->nsets = cmd->nsets;
+   memcpy(d->set_va, cmd->set_va, sizeof d->set_va);
+   memcpy(d->set_bytes, cmd->set_bytes, sizeof d->set_bytes);
+   d->ndyn = cmd->ndyn;
+   memcpy(d->dyn_desc, cmd->dyn_desc, sizeof d->dyn_desc);
+   d->groups[0] = x;
+   d->groups[1] = y;
+   d->groups[2] = z;
+   d->indirect_va = indirect_va;
+}
+
 static void
 record_dispatch(struct mali_cmd_buffer *cmd, uint32_t x, uint32_t y, uint32_t z, uint64_t indirect_va)
 {
    struct mali_frame f;
+   if (cmd->in_render && cmd->cs) {
+      /* Vulkan forbids a dispatch inside a render pass: the API never gets here. MALI_PRE_HOIST=1 is the test knob that lets the
+       * falsifier (t_vk_draw --only inpass_compute) put a kernel into the pre block through the one door the app API has. Every
+       * dispatch takes its own wave, in recording order, so a later kernel may read what an earlier one wrote. */
+      const char *e = getenv("MALI_PRE_HOIST");
+      if (e && *e && strcmp(e, "0") && cmd->cs->bin_size) {
+         struct mali_dispatch d;
+         snapshot_dispatch(cmd, &d, x, y, z, indirect_va);
+         mali_cmd_pre_dispatch(cmd, &d, cmd->cur.npre < 255 ? cmd->cur.npre : 255, false);
+         return;
+      }
+   }
    if (cmd->in_render || !cmd->cs) {
       unsupported(cmd, "dispatch inside a rendering or without a compute pipeline");
       return;
@@ -927,18 +991,7 @@ record_dispatch(struct mali_cmd_buffer *cmd, uint32_t x, uint32_t y, uint32_t z,
       return;   /* an empty compute shader does nothing observable */
    memset(&f, 0, sizeof f);
    f.compute = true;
-   f.disp.cs = cmd->cs;
-   f.disp.cs_va = cmd->cs_va;
-   memcpy(f.disp.push, cmd->push_cs, sizeof f.disp.push);
-   f.disp.nsets = cmd->nsets;
-   memcpy(f.disp.set_va, cmd->set_va, sizeof f.disp.set_va);
-   memcpy(f.disp.set_bytes, cmd->set_bytes, sizeof f.disp.set_bytes);
-   f.disp.ndyn = cmd->ndyn;
-   memcpy(f.disp.dyn_desc, cmd->dyn_desc, sizeof f.disp.dyn_desc);
-   f.disp.groups[0] = x;
-   f.disp.groups[1] = y;
-   f.disp.groups[2] = z;
-   f.disp.indirect_va = indirect_va;
+   snapshot_dispatch(cmd, &f.disp, x, y, z, indirect_va);
    push_frame(cmd, &f);
 }
 

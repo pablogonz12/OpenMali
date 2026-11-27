@@ -115,6 +115,7 @@ mali_cmd_buffer_from_vk(struct vk_command_buffer *cmd)
 
 /* M12/M13 hooks (mali_cmd.c): append a finished frame / an ops frame; ops recorded inside a render pass are deferred until it ends. */
 void mali_cmd_push_frame(struct mali_cmd_buffer *cmd, const struct mali_frame *f);
+int mali_cmd_pre_dispatch(struct mali_cmd_buffer *cmd, const struct mali_dispatch *d, unsigned wave, bool sync_cs);   /* kernel at the head of the pass' frame; see mali_cmd.c */
 /* Same, but a frame recorded while a render pass is open is queued and pushed when the pass ends: transfer work
  * recorded inside a pass executes after it, in submission order, which is what Vulkan requires. */
 void mali_cmd_push_frame_deferred(struct mali_cmd_buffer *cmd, const struct mali_frame *f);
