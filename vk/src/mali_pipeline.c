@@ -826,6 +826,7 @@ target_of(const struct mali_image *img, VkImageAspectFlags aspect, unsigned leve
       out->has_s = true;
       out->s_va = img->va + mali_image_subresource_offset(sp, level, layer);
       out->s_row_stride = sp->slice[level].row_stride;
+      out->s_surface_stride = sp->slice[level].surface_stride;
       if ((out->s_va & 63) || (out->s_row_stride & 15))
          return -EINVAL;
    }
