@@ -471,6 +471,10 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
    /* VK_EXT_transform_feedback: on by default, MALI_EXPERIMENTAL_TF=0 opts out (mali_tf.h), and the same switch drives the
     * limits, the features and the UBO counts above. geometryStreams stays false (one stream, no geometry stage). */
    enabled.EXT_transform_feedback = mali_experimental_tf();
+   /* MALI_NO_MODIFIER_COMM: the A/B switch (mali_image.c). Hidden from enumeration AND from the modifier-list
+    * queries below, so zink never sees a modifier to ask for. */
+   if (mali_modifier_disabled())
+      enabled.EXT_image_drm_format_modifier = false;
    /* Also advertise when the app hands us a stand-in: SessionService.kt:1044-1053 exports
     * DD_OPEN_DRIVER=1 + DD_DRM_STANDIN=/dev/mali0 in open-driver mode, and /dev/mali0 is a misc char device that
     * mali_drm_find_node() cannot match at init (no /dev/dri alias yet). Without the extension gamescope stops at

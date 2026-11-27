@@ -39,6 +39,22 @@ mark_dst_img(struct mali_cmd_buffer *cmd, struct mali_image *img)
    mali_cmd_mark_image_written(cmd, mali_image_to_handle(img));
 }
 
+/* Implicit sync, consumer side (mali_isync.h): a copy/blit source is a read, so an imported dma-buf arriving from
+ * another process has its producer's fence waited before this submit. */
+static void
+mark_src_buf(struct mali_cmd_buffer *cmd, struct vk_buffer *b)
+{
+   if (b)
+      mali_cmd_mark_buffer_read(cmd, vk_buffer_to_handle(b));
+}
+
+static void
+mark_src_img(struct mali_cmd_buffer *cmd, struct mali_image *img)
+{
+   if (img)
+      mali_cmd_mark_image_read(cmd, mali_image_to_handle(img));
+}
+
 /* ---- per command buffer persistent memory (descriptor sets, staged update data) ---- */
 static pthread_mutex_t g_tab_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct tab_ent { const void *cmd; struct mali_meta_mem mem; } *g_tab;
@@ -236,6 +252,7 @@ mali_CmdCopyBuffer2(VkCommandBuffer h, const VkCopyBufferInfo2 *ci)
    struct mali_meta_list l = { 0 };
    int r = 0;
    mark_dst_buf(cmd, dst);
+   mark_src_buf(cmd, src);
    for (uint32_t i = 0; i < ci->regionCount && !r; i++) {
       const VkBufferCopy2 *g = &ci->pRegions[i];
       struct mali_meta_surf s, d;
@@ -254,6 +271,7 @@ mali_CmdCopyImage2(VkCommandBuffer h, const VkCopyImageInfo2 *ci)
    struct mali_meta_list l = { 0 };
    int r = 0;
    mark_dst_img(cmd, di);
+   mark_src_img(cmd, si);
    for (uint32_t i = 0; i < ci->regionCount && !r; i++) {
       const VkImageCopy2 *g = &ci->pRegions[i];
       /* D+S images are two planes: a region naming both aspects copies the depth plane, then the stencil plane */
@@ -297,6 +315,7 @@ mali_CmdCopyBufferToImage2(VkCommandBuffer h, const VkCopyBufferToImageInfo2 *ci
    struct mali_meta_list l = { 0 };
    int r = 0;
    mark_dst_img(cmd, img);
+   mark_src_buf(cmd, buf);
    for (uint32_t i = 0; i < ci->regionCount && !r; i++) {
       const VkBufferImageCopy2 *g = &ci->pRegions[i];
       struct mali_meta_surf s, d;
@@ -327,6 +346,7 @@ mali_CmdCopyImageToBuffer2(VkCommandBuffer h, const VkCopyImageToBufferInfo2 *ci
    struct mali_meta_list l = { 0 };
    int r = 0;
    mark_dst_buf(cmd, buf);
+   mark_src_img(cmd, img);
    for (uint32_t i = 0; i < ci->regionCount && !r; i++) {
       const VkBufferImageCopy2 *g = &ci->pRegions[i];
       struct mali_meta_surf s, d;
@@ -595,6 +615,7 @@ mali_meta_blit_views(VkCommandBuffer h, const VkBlitImageInfo2 *ci, VkFormat src
    struct mali_meta_list l = { 0 };
    int r = 0;
    mark_dst_img(cmd, di);
+   mark_src_img(cmd, si);
    for (uint32_t i = 0; i < ci->regionCount && !r; i++)
       r = ci->filter == VK_FILTER_NEAREST ?
           mali_meta_plan_blit_views(&l, si, di, &ci->pRegions[i], src_view, dst_view) :

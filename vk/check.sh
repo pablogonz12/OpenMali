@@ -186,12 +186,53 @@ run "queue teardown v13"  0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 MALI_FAKE_SLOW_U
 run "queue all v13 slow" 0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 MALI_FAKE_SLOW_US=200 $TQ --submits 1000
 # present ordering (queue-order): the commit never precedes the frame; with a fence it may (MALI_PRESENT_FENCE forces the kernel capability)
 for m in 0 1; do run "present order fence=$m" 0 MALI_BACKEND=fake MALI_FAKE_SLOW_US=100000 MALI_PRESENT_FENCE=$m $TQ --only order; done
+# Modifier-tiling render target (t_queue --only modrt): create (modifier LIST and explicit plane layout), bind
+# exportable memory, clear, and require the cleared colour at the reported offset/row pitch through the mapping and
+# through the exported dma-buf. The fake backend executes nothing, so here it only proves the creation/bind/layout
+# chain; the pixel assertions are the guest run (notes/x8-cef-fault.md, "## Modifier-tiling render target").
+run "modifier render target (fake: creation only)" 0 MALI_BACKEND=fake $TQ --only modrt
+# Stale memory marks (mali_cmd.h wrote[]/read[]): a buffer recorded against an imported dma-buf and re-recorded or
+# freed before the submit must not hand a dangling struct mali_memory to the backend. MALI_SHARED_STATS=1 is the arm
+# that crashed Xwayland on the X8 (smoke x8-1127-233142, kbase_bo_host_touch via mali_sstats_note), so it runs here
+# with the sink on: no shared_ line may name a BO whose memory is gone.
+rm -f "$OUT"/sstats-stale-*.log
+run "stale memory marks" 0 MALI_BACKEND=fake MALI_FAKE_DMABUF_SYNC=1 MALI_SHARED_STATS=1 MALI_WAIT_DBG=$OUT/sstats-stale $TQ --only stale
+if grep -q '^shared_' "$OUT"/sstats-stale-*.log 2>/dev/null; then
+   echo "FAIL  MALI_SHARED_STATS sampled a freed BO"; grep -h '^shared_' "$OUT"/sstats-stale-*.log | head -3 | sed 's/^/        /'; fail=1
+else
+   echo "ok    MALI_SHARED_STATS: no line for a BO whose memory was freed before the submit"
+fi
+rm -f "$OUT"/sstats-stale-*.log
+# Implicit sync (mali_isync.c): a submit that only SAMPLES an imported dma-buf waits its producer's fence before it
+# runs (the Xwayland-glamor read path); MALI_IMPLICIT_SYNC=0 is the A/B arm. Both compare against a control submit.
+run "implicit sync: sampled imported BO waits" 0 MALI_BACKEND=fake MALI_FAKE_DMABUF_SYNC=1 MALI_FAKE_SLOW_US=150000 MALI_IMPLICIT_SYNC=1 $TQ --only isync
+run "implicit sync off" 0 MALI_BACKEND=fake MALI_FAKE_DMABUF_SYNC=1 MALI_FAKE_SLOW_US=150000 MALI_IMPLICIT_SYNC=0 $TQ --only isync
+# MALI_SHARED_STATS=1 (mali_sstats.c) on the same submit: the diagnostic samples BOs it finds shared and must not
+# change the result. Its BO here is 4 KiB, i.e. under the 64 KiB floor, so nothing is logged (t_sstats has the lines).
+rm -f "$OUT"/sstats-*.log
+run "implicit sync, MALI_SHARED_STATS=1" 0 MALI_BACKEND=fake MALI_FAKE_DMABUF_SYNC=1 MALI_FAKE_SLOW_US=150000 MALI_SHARED_STATS=1 MALI_WAIT_DBG=$OUT/sstats $TQ --only isync
+if [ -e "$OUT"/sstats-*.log ] && grep -q shared "$OUT"/sstats-*.log; then echo "FAIL  MALI_SHARED_STATS sampled a 4 KiB BO (floor is 64 KiB)"; fail=1; else echo "ok    MALI_SHARED_STATS: nothing sampled under the 64 KiB floor"; fi
+rm -f "$OUT"/sstats-*.log
 run "timeout-0 poll does not queue behind a blocking wait" 0 MALI_BACKEND=fake MALI_FAKE_SLOW_US=300000 $TQ --only poll0
 run "signal-less submit skips the fence" 0 MALI_BACKEND=fake MALI_FAULT_INJECT=5 $TQ --only nofence
 run "MALI_FENCE_ALWAYS restores it (expected fail)" 1 MALI_BACKEND=fake MALI_FAULT_INJECT=5 MALI_FENCE_ALWAYS=1 $TQ --only nofence
 for n in 1 50; do run "fault inject $n" 0 MALI_BACKEND=fake MALI_FAULT_INJECT=$n $TQ --only fault; done
 # WSI audit regressions: fd validation, sync export waits for a queued signal, DRM modifier/bind checks, failed submit still signals
 for c in wsifd syncexport wsiimg; do run "wsi $c" 0 MALI_BACKEND=fake $TQ --only $c; done
+for d in 0 1; do run "wait debug=$d" 0 MALI_BACKEND=fake MALI_WAIT_DBG=$d $TQ --only waitdebug; done
+wait_debug_dir=$(mktemp -d)
+run "wait debug=file" 0 MALI_BACKEND=fake MALI_WAIT_DBG="$wait_debug_dir/w" $TQ --only waitdebug
+run "external image debug exercise" 0 MALI_BACKEND=fake MALI_WAIT_DBG="$wait_debug_dir/image" $TQ --only wsiimg
+if grep -q 'result function=vkCreateImage .*count=2' "$wait_debug_dir"/image-*.log &&
+   grep -q 'external_image .*format=.*extent=64x64x1' "$wait_debug_dir"/image-*.log &&
+   grep -q 'external_plane index=0 offset=0 pitch=' "$wait_debug_dir"/image-*.log; then
+   echo "ok    external image debug records"
+else
+   echo "FAIL  external image debug records"; fail=1
+fi
+rm -f "$wait_debug_dir"/w-*.log
+rm -f "$wait_debug_dir"/image-*.log
+rmdir "$wait_debug_dir"
 run "wsi failsignal" 0 MALI_BACKEND=fake MALI_FAULT_INJECT=5 $TQ --only failsignal
 
 # M15: frame profiler (mali_fprof.c) on the fake backend. The last case leaves MALI_FRAME_PROF unset and requires
@@ -372,8 +413,8 @@ rm -f "$GDIR/geom.jsonl"
 if [ "$SAN" = 1 ]; then
    echo "skip  build-t_*.sh tests (not sanitized)"
 else
-   for t in afbc arena bbox bc cmd compile desc hmask image memsync meta qpool query txf txf_cc; do run "t_$t" 0 "$V/tests/build-t_$t.sh"; done
-   for t in bc bopool cmd compile desc image memsync meta qpool query txf txf_cc; do run "t_$t" 0 "$V/tests/build-t_$t.sh"; done
+   for t in afbc arena bbox bc cmd compile desc hmask image isync memsync meta qpool query rpstats sstats txf txf_cc; do run "t_$t" 0 "$V/tests/build-t_$t.sh"; done
+   for t in bc bopool cmd compile desc image isync memsync meta qpool query rpstats sstats txf txf_cc; do run "t_$t" 0 "$V/tests/build-t_$t.sh"; done
    # Unity 2023.2 capability probe: every format it hands to vkCreateImage, and the swapchain contract (surface rows only when the tree
    # has a WSI platform; the plain build skips them with a message, the x11 run is tests/xwsi-host.sh's job).
    for g in v11 v13; do run "unity_caps $g" 0 OUT_DIR="$OUT" "$V/tests/build-t_unity_caps.sh" $g; done

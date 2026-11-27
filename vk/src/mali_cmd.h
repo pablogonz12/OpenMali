@@ -21,6 +21,9 @@
 #include "mali_private.h"
 
 #define MALI_CMD_WROTE_MAX 64
+/* dma-bufs imported from another process that this command buffer samples: the consumer side of implicit sync
+ * (mali_isync.h). Only imported BOs are listed, so the list is short whatever the frame binds. */
+#define MALI_CMD_READ_MAX 16
 
 struct mali_cmd_buffer;
 /* The reason is copied when retained for rate limiting. */
@@ -110,6 +113,16 @@ struct mali_cmd_buffer {
    struct mali_memory *wrote[MALI_CMD_WROTE_MAX];
    unsigned nwrote;
    bool wrote_full;
+   /* Implicit sync, consumer side: imported dma-bufs this command buffer reads (sampled/storage/input-attachment
+    * descriptors, copy/blit sources, vertex/index buffers). A submit waits their fences before it runs. */
+   struct mali_memory *read[MALI_CMD_READ_MAX];
+   unsigned nread;
+   bool read_full;
+   /* MALI_RP_STATS (mali_rpstats.h): the pass being recorded. Started where the attachment is known (CmdBeginRendering,
+    * CmdClearColorImage), finished by mali_cmd_push_frame, which owns the frame (draws, extent). Zeroed between
+    * passes, so it can only ever describe the pass it belongs to. */
+   struct mali_rp_pass rp;
+   bool rp_open;
 };
 
 static inline struct mali_cmd_buffer *
@@ -130,6 +143,12 @@ void mali_cmd_set_occlusion(struct mali_cmd_buffer *cmd, uint64_t va, unsigned m
 void mali_cmd_mark_written(struct mali_cmd_buffer *cmd, struct mali_memory *mem);
 /* Same, by handle, through the resolvers (NULL-safe; a no-op where the resolver is not installed, e.g. unit tests). */
 void mali_cmd_mark_buffer_written(struct mali_cmd_buffer *cmd, VkBuffer b);
+/* Implicit sync: record that this command buffer reads `mem`. Only imported (foreign) dma-bufs are kept; the submit
+ * waits their fences (mali_isync.h). Overflow sets read_full: the buffer is then not waited for. */
+void mali_cmd_mark_read(struct mali_cmd_buffer *cmd, struct mali_memory *mem);
+void mali_cmd_mark_image_read(struct mali_cmd_buffer *cmd, VkImage i);
+void mali_cmd_mark_buffer_read(struct mali_cmd_buffer *cmd, VkBuffer b);
+void mali_cmd_mark_image_view_read(struct mali_cmd_buffer *cmd, VkImageView v);
 
 /* VK_EXT_transform_feedback (stage 2): recorded and validated here; the streamout job itself is not implemented yet. */
 void mali_CmdBindTransformFeedbackBuffersEXT(VkCommandBuffer h, uint32_t first, uint32_t count, const VkBuffer *buffers,

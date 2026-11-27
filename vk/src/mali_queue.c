@@ -3,6 +3,7 @@
  * buffers arrive with M8. vk_queue runs in DEFERRED mode (emulated timeline semaphores), so this is
  * called from the runtime's submit thread, one submission at a time. */
 #include "mali_queue.h"
+#include "mali_wait_debug.h"
 #include "mali_fprof.h"
 #include <time.h>
 static double prof_now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec * 1e3 + t.tv_nsec / 1e6; }
@@ -22,6 +23,10 @@ static double prof_acc[6]; static unsigned prof_n;
 #include "mali_meta.h"
 #include "mali_soft.h"
 #include "vk_command_buffer.h"
+
+/* MALI_RP_STATS: defined with the submit path below, used by mali_queue_device_init. */
+static bool rp_lock_live(const void *owner);
+static void rp_unlock(void);
 
 /* ---- M9: frame resources ---- */
 #define MALI_MAX_INFLIGHT 3u
@@ -599,6 +604,10 @@ mali_queue_device_init(struct mali_device *dev)
    pthread_condattr_setclock(&ca, CLOCK_MONOTONIC);
    pthread_cond_init(&dev->sync_cv, &ca);
    pthread_condattr_destroy(&ca);
+   mali_isync_dev_init(&dev->isync);
+   mali_sstats_init(&dev->sstats);
+   mali_rpstats_init(&dev->rps, rp_lock_live, rp_unlock);
+   mali_rpstats_set_current(&dev->rps);
    return VK_SUCCESS;
 }
 
@@ -608,6 +617,10 @@ mali_queue_device_finish(struct mali_device *dev)
    if (dev->present_fence_fd >= 0)
       close(dev->present_fence_fd);
    dev->present_fence_fd = -1;
+   mali_isync_dev_finish(&dev->isync);
+   mali_sstats_finish(&dev->sstats);
+   mali_rpstats_set_current(NULL);
+   mali_rpstats_finish(&dev->rps);
    pthread_cond_destroy(&dev->sync_cv);
    pthread_mutex_destroy(&dev->sync_lock);
 }
@@ -647,8 +660,226 @@ mali_present_fence_ok(struct mali_device *dev)
    return __atomic_load_n(&w->cached_sync_file_import_export_result, __ATOMIC_RELAXED) == UINT32_MAX;   /* wsi stores result - 1; VK_SUCCESS -> UINT32_MAX */
 }
 
-static VkResult mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint32_t *imported);
+#define MALI_ISYNC_MAX_BOS 16
 
+/* The dma-bufs this submission references that are shared outside a swapchain (mali_isync.h).
+ *   fd[]   - every shared dma-buf the submission WRITES (the producer side: attach this submit's fence to it).
+ *   impw[] - imported dma-bufs it WRITES: the consumer side, and the export must ask for WRITE, which is the fence
+ *            of the current readers and writers (a plain READ export would not wait an app that is still reading it).
+ *   impr[] - imported dma-bufs it only READS through a bound descriptor set (sampled/input attachment, UBO/SSBO,
+ *            vertex/index buffer) or a copy/blit source: the consumer side, exported with READ (wait the producer).
+ *            O(number of imported BOs bound), whatever the frame's own buffer count is, because mali_cmd_mark_read
+ *            keeps only imported ones.
+ * A list that runs over MALI_ISYNC_MAX_BOS is not dropped: the dependency is waited on the spot (submit_shared_wait),
+ * before any GPU work is submitted. d/be/kdev/err carry what that needs.
+ * unlisted: a command buffer could not name all its writes (wrote_full) or the write list is full - then the fence
+ * cannot be attached to every shared buffer and the submit takes the CPU wait instead. */
+struct mali_isync_submit {
+   int fd[MALI_ISYNC_MAX_BOS];      /* every shared dma-buf written (exported or imported) */
+   unsigned n;
+   int impw[MALI_ISYNC_MAX_BOS];    /* imported and written here */
+   unsigned nimpw;
+   int impr[MALI_ISYNC_MAX_BOS];    /* imported, read-only here */
+   unsigned nimpr;
+   bool unlisted;
+   /* what an over-cap dependency must be waited with, and the first failure */
+   struct mali_isync_dev *d;
+   const struct mali_backend_ops *be;
+   struct mali_kdev *kdev;
+   int err;
+};
+
+/* Wait one imported dma-buf now (it did not fit a list): same CPU wait the batched path does, before the submit. */
+static void
+submit_shared_wait(struct mali_isync_submit *out, int fd, unsigned dir)
+{
+   if (out->err || !out->d)
+      return;
+   int r = mali_isync_consumer_ex(out->d, out->be, out->kdev, &fd, 1, dir);
+   if (r < 0)
+      out->err = r;
+}
+
+static bool
+submit_shared_find(const int *l, unsigned n, int fd)
+{
+   for (unsigned q = 0; q < n; q++)
+      if (l[q] == fd)
+         return true;
+   return false;
+}
+
+/* an imported dma-buf this submit writes goes to impw only: the WRITE export already waits its readers */
+static void
+submit_shared_add_impw(struct mali_isync_submit *out, int fd)
+{
+   if (submit_shared_find(out->impw, out->nimpw, fd))
+      return;
+   for (unsigned q = 0; q < out->nimpr; q++)
+      if (out->impr[q] == fd) {
+         out->impr[q] = out->impr[--out->nimpr];   /* read-only entry superseded by the write */
+         break;
+      }
+   if (out->nimpw < MALI_ISYNC_MAX_BOS)
+      out->impw[out->nimpw++] = fd;
+   else
+      submit_shared_wait(out, fd, MALI_DMA_BUF_SYNC_WRITE);
+}
+
+static void
+submit_shared_add_impr(struct mali_isync_submit *out, int fd)
+{
+   if (submit_shared_find(out->impw, out->nimpw, fd) || submit_shared_find(out->impr, out->nimpr, fd))
+      return;
+   if (out->nimpr < MALI_ISYNC_MAX_BOS)
+      out->impr[out->nimpr++] = fd;
+   else
+      submit_shared_wait(out, fd, MALI_DMA_BUF_SYNC_READ);
+}
+
+static void
+submit_shared_collect(struct vk_queue_submit *submit, struct mali_isync_submit *out)
+{
+   /* the caller has already zeroed it and set d/be/kdev: only the lists start empty */
+   out->n = out->nimpw = out->nimpr = 0;
+   out->unlisted = false;
+   out->err = 0;
+   for (uint32_t i = 0; i < submit->command_buffer_count; i++) {
+      struct mali_cmd_buffer *cmd = mali_cmd_buffer_from_vk(submit->command_buffers[i]);
+      if (cmd->wrote_full)
+         out->unlisted = true;
+      for (unsigned j = 0; j < cmd->nwrote; j++) {
+         struct mali_memory *m = cmd->wrote[j];
+         /* A mark is a record-time pointer: the app may have freed the memory before this submit. Only fds are
+          * passed on, so the guard is released before the sync ioctls. */
+         if (!mali_memory_guard(m))
+            continue;
+         if (m->bo.dmabuf_fd < 0 || (m->isync != MALI_ISYNC_BO_EXPORTED && m->isync != MALI_ISYNC_BO_IMPORTED)) {
+            mali_memory_unguard();
+            continue;
+         }
+         const int fd = m->bo.dmabuf_fd;
+         const bool imported = m->isync == MALI_ISYNC_BO_IMPORTED;
+         mali_memory_unguard();
+         if (!submit_shared_find(out->fd, out->n, fd)) {
+            if (out->n < MALI_ISYNC_MAX_BOS)
+               out->fd[out->n++] = fd;
+            else
+               out->unlisted = true;
+         }
+         if (imported)
+            submit_shared_add_impw(out, fd);
+      }
+      /* The consumer side proper: imported dma-bufs this command buffer only reads (descriptors, attachments,
+       * copy/blit sources). Without this a reader that never waits would still race the producer's frame. */
+      for (unsigned j = 0; j < cmd->nread; j++) {
+         struct mali_memory *m = cmd->read[j];
+         if (!mali_memory_guard(m))
+            continue;
+         const int fd = m->bo.dmabuf_fd;
+         mali_memory_unguard();
+         if (fd >= 0)
+            submit_shared_add_impr(out, fd);
+      }
+   }
+}
+
+/* MALI_SHARED_STATS: the shared BOs one submit names, as memory. struct mali_isync_submit keeps the fds the sync
+ * needs; the diagnostic samples bytes, so it needs the struct mali_memory the fd came from. */
+struct mali_stats_submit {
+   struct mali_memory *wrote[MALI_ISYNC_MAX_BOS]; /* exported or imported dma-bufs this submit writes */
+   unsigned nwrote;
+   struct mali_memory *read[MALI_ISYNC_MAX_BOS];  /* imported dma-bufs it reads (cmd->read[] keeps only those) */
+   unsigned nread;
+};
+
+static void
+submit_stats_add(struct mali_memory **list, unsigned *n, struct mali_memory *m)
+{
+   for (unsigned i = 0; i < *n; i++)
+      if (list[i] == m)
+         return;
+   if (*n < MALI_ISYNC_MAX_BOS)
+      list[(*n)++] = m;
+}
+
+/* Sample one mark's BO: only under the live registry guard, so a memory freed between record and submit is skipped
+ * instead of reaching bo_host_touch (the X8 Xwayland SIGSEGV, smoke x8-1127-233142). */
+static void
+stats_note_mem(struct mali_device *dev, struct mali_memory *m, enum mali_sstats_kind kind, uint64_t seq)
+{
+   if (!mali_memory_guard(m))
+      return;
+   mali_sstats_note(&dev->sstats, mali_device_pdev(dev)->backend, dev->kdev, &m->bo, kind, seq);
+   mali_memory_unguard();
+}
+
+/* Only called when MALI_SHARED_STATS is on: it walks every command buffer's marks. */
+static void
+submit_stats_collect(struct vk_queue_submit *submit, struct mali_stats_submit *out)
+{
+   memset(out, 0, sizeof *out);
+   for (uint32_t i = 0; i < submit->command_buffer_count; i++) {
+      struct mali_cmd_buffer *cmd = mali_cmd_buffer_from_vk(submit->command_buffers[i]);
+      for (unsigned j = 0; j < cmd->nwrote; j++) {
+         struct mali_memory *m = cmd->wrote[j];
+         if (!mali_memory_guard(m))
+            continue;
+         const bool shared = m->bo.dmabuf_fd >= 0 &&
+                             (m->isync == MALI_ISYNC_BO_EXPORTED || m->isync == MALI_ISYNC_BO_IMPORTED);
+         mali_memory_unguard();
+         if (shared)
+            submit_stats_add(out->wrote, &out->nwrote, m);
+      }
+      for (unsigned j = 0; j < cmd->nread; j++) {
+         struct mali_memory *m = cmd->read[j];
+         if (!mali_memory_guard(m))
+            continue;
+         const bool shared = m->bo.dmabuf_fd >= 0;
+         mali_memory_unguard();
+         if (shared)
+            submit_stats_add(out->read, &out->nread, m);
+      }
+   }
+}
+
+/* Consumer side: what this process is about to sample, read before the submit records the draws that read it. */
+static void
+submit_stats_consumer(struct mali_device *dev, const struct mali_stats_submit *st, uint64_t seq)
+{
+   for (unsigned i = 0; i < st->nread; i++)
+      stats_note_mem(dev, st->read[i], MALI_SSTATS_READ, seq);
+}
+
+/* Producer side: this process's output. The sample may only be taken once the submit has retired (fence_wait) and
+ * after the device->CPU cache sync, or it reads whatever was in the buffer before the frame. */
+static void
+submit_stats_producer(struct mali_device *dev, const struct mali_stats_submit *st, int fence_fd, uint64_t seq)
+{
+   const struct mali_backend_ops *be = mali_device_pdev(dev)->backend;
+   if (!st->nwrote)
+      return;
+   if (fence_fd >= 0 && be->fence_wait)
+      (void)be->fence_wait(dev->kdev, fence_fd, -1);
+   for (unsigned i = 0; i < st->nwrote; i++)
+      stats_note_mem(dev, st->wrote[i], MALI_SSTATS_WRITE, seq);
+}
+
+/* MALI_RP_STATS: an attachment's BO is sampled only under the live-VkDeviceMemory guard, so memory the app freed
+ * after recording is skipped instead of reaching bo_host_touch (the X8 crash class, mali_memory.c). */
+static bool
+rp_lock_live(const void *owner)
+{
+   return mali_memory_guard((struct mali_memory *)owner);
+}
+
+static void
+rp_unlock(void)
+{
+   mali_memory_unguard();
+}
+
+static VkResult mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint32_t *imported);
 /* A submission that loses the queue still signals what it was to signal, except the signals that already took the
  * GPU fence (index < imported): those complete with the work. Waiters (a present's acquire, a fence wait) would
  * otherwise block on a sync that nothing completes; with the queue lost they then observe DEVICE_LOST instead of
@@ -656,6 +887,8 @@ static VkResult mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_subm
 static VkResult
 mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
 {
+   struct mali_device *dev = container_of(vq->base.device, struct mali_device, vk);
+   mali_wait_heartbeat(dev, 1, 0);
    uint32_t imported = 0;
    VkResult res = mali_queue_submit_impl(vq, submit, &imported);
    if (res != VK_SUCCESS && vk_queue_is_lost(vq)) {
@@ -675,7 +908,7 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
    const struct mali_backend_ops *be = mali_device_pdev(dev)->backend;
 
    if (vk_queue_is_lost(vq))
-      return VK_ERROR_DEVICE_LOST;
+      return (mali_wait_event("device_lost site=mali_queue.c:663"), VK_ERROR_DEVICE_LOST);
    if (vk_queue_submit_has_bind(submit))
       return vk_error(vq, VK_ERROR_FEATURE_NOT_PRESENT); /* sparse: not supported */
 
@@ -698,10 +931,42 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
       }
       VkResult r = vk_sync_wait(&dev->vk, w->sync, w->wait_value, VK_SYNC_WAIT_COMPLETE, UINT64_MAX);
       if (r != VK_SUCCESS)
-         return vk_queue_set_lost(vq, "queue wait failed: %d", r);
+         return (mali_wait_event("device_lost site=mali_queue.c:686"), vk_queue_set_lost(vq, "queue wait failed: %d", r));
    }
 
    double p1 = prof_now();
+   /* Implicit sync, consumer side: an imported dma-buf may still be being written by its producer's GPU work
+    * (mali_isync.c). On a kernel without the sync-file ioctls (5.10, ENOTTY) this is a no-op and the producer's
+    * side CPU wait is what covers it. */
+   struct mali_isync_submit shared;
+   memset(&shared, 0, sizeof shared);
+   shared.d = &dev->isync;
+   shared.be = be;
+   shared.kdev = dev->kdev;
+   submit_shared_collect(submit, &shared);
+   /* MALI_SHARED_STATS (mali_sstats.c): one seq per submit, and the consumer sample of every imported dma-buf this
+    * submit reads, taken right after the implicit-sync wait so the bytes are what the GPU will sample. */
+   const bool stats = mali_sstats_on(&dev->sstats);
+   const uint64_t stats_seq = stats ? mali_sstats_next(&dev->sstats) : 0;
+   struct mali_stats_submit sstats;
+   if (stats)
+      submit_stats_collect(submit, &sstats);
+   enum mali_isync_action isync = mali_isync_plan_producer(&dev->isync, shared.n, shared.unlisted);
+   /* No GPU work has been submitted yet, so a dependency that cannot be waited fails the submission cleanly (the
+    * caller's signals are not signalled, as for any vkQueueSubmit error). */
+   if (shared.err)
+      return vk_error(vq, shared.err == -ENOMEM || shared.err == -EMFILE ? VK_ERROR_OUT_OF_HOST_MEMORY
+                                                                       : VK_ERROR_DEVICE_LOST);
+   int isync_rc = 0;
+   if (shared.nimpw)
+      isync_rc = mali_isync_consumer_ex(&dev->isync, be, dev->kdev, shared.impw, shared.nimpw, MALI_DMA_BUF_SYNC_WRITE);
+   if (isync_rc == 0 && shared.nimpr)
+      isync_rc = mali_isync_consumer_ex(&dev->isync, be, dev->kdev, shared.impr, shared.nimpr, MALI_DMA_BUF_SYNC_READ);
+   if (isync_rc < 0)
+      return vk_error(vq, isync_rc == -ENOMEM || isync_rc == -EMFILE ? VK_ERROR_OUT_OF_HOST_MEMORY
+                                                                   : VK_ERROR_DEVICE_LOST);
+   if (stats)
+      submit_stats_consumer(dev, &sstats, stats_seq);
    if (submit->command_buffer_count && be->host_sync)
       be->host_sync(dev->kdev);
    /* Recorded frames: each is built, submitted and retired in order (mali_cmd_submit -> hw_submit). */
@@ -709,7 +974,7 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
       VkResult cr = mali_cmd_submit(submit->command_buffers[i]);
       if (cr == VK_ERROR_DEVICE_LOST && getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: frame submit lost\n");
       if (cr == VK_ERROR_DEVICE_LOST)
-         return vk_queue_set_lost(vq, "frame submit failed");
+         return (mali_wait_event("device_lost site=mali_queue.c:697"), vk_queue_set_lost(vq, "frame submit failed"));
       if (cr != VK_SUCCESS)
          return vk_error(vq, cr);
    }
@@ -724,11 +989,11 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
       always = getenv("MALI_FENCE_ALWAYS") != NULL;
    bool light = mali_ops_take_light(&dev->hw->light_pending);
    int r = 0;
-   if (submit->signal_count || light || always)
+   if (submit->signal_count || light || always || isync != MALI_ISYNC_NONE)   /* isync needs the fence (attach or wait) */
       r = be->submit_signal(dev->kdev, &fd);
    if (r != 0) {
       if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: submit_signal failed: %d\n", r);
-      return vk_queue_set_lost(vq, "queue submit failed: %d", r);
+      return (mali_wait_event("device_lost site=mali_queue.c:716"), vk_queue_set_lost(vq, "queue submit failed: %d", r));
    }
 
    VkResult res = VK_SUCCESS;
@@ -755,13 +1020,34 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
       dev->present_fence_fd = d;
       pthread_mutex_unlock(&dev->sync_lock);
    }
+   /* Implicit sync, producer side: attach this submission's fence as a write fence to every shared dma-buf it
+    * writes, or (5.10) wait the submission out before returning (mali_isync.c). */
+   int isync_wait = 0;
+   if (isync != MALI_ISYNC_NONE)
+      mali_isync_producer_ex(&dev->isync, be, dev->kdev, shared.fd, shared.n, shared.unlisted, fd, &isync_wait);
+   /* The same submit, sampled after it retired: what this process produced is what the next stage will read. */
+   if (stats)
+      submit_stats_producer(dev, &sstats, fd, stats_seq);
+   /* MALI_RP_STATS: the passes recorded into this submission, sampled once it has retired. */
+   if (mali_rpstats_on(&dev->rps)) {
+      if (fd >= 0 && be->fence_wait)
+         (void)be->fence_wait(dev->kdev, fd, -1);
+      mali_rpstats_flush(&dev->rps, be, dev->kdev);
+   }
    close(fd);
+   if (isync_wait < 0) {
+      /* 5.10 path: the submit's own fence was the only thing keeping a consumer out of these buffers and waiting it
+       * failed (GPU fault). The work is in flight but its writes are not known to be finished: report DEVICE_LOST
+       * instead of VK_SUCCESS, as the submit_signal failure path above does. */
+      if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: isync fallback wait failed: %d\n", isync_wait);
+      return vk_queue_set_lost(vq, "isync fallback wait failed: %d", isync_wait);
+   }
    /* M15: vk_common's present submit has no command buffers, the image acquire semaphores as waits and the render
     * semaphore as signal (an app's fence-only submit has no waits, so it is not counted). */
    if (dev->hw && dev->hw->fp.on && submit->command_buffer_count == 0 && submit->wait_count > 0 && submit->signal_count > 0)
       mali_fprof_present(&dev->hw->fp);
    if (res != VK_SUCCESS)
-      return vk_queue_set_lost(vq, "queue signal import failed: %d", res); /* GPU work is in flight, its fence is lost */
+      return (mali_wait_event("device_lost site=mali_queue.c:749"), vk_queue_set_lost(vq, "queue signal import failed: %d", res)); /* GPU work is in flight, its fence is lost */
    if (getenv("MALI_PROF")) {
       double p3 = prof_now();
       prof_acc[0] += p1 - p0; prof_acc[1] += p2 - p1; prof_acc[2] += p3 - p2;
@@ -778,7 +1064,7 @@ mali_device_check_status(struct vk_device *vk)
    struct mali_device *dev = container_of(vk, struct mali_device, vk);
 
    if (mali_device_pdev(dev)->backend->device_lost(dev->kdev))
-      return VK_ERROR_DEVICE_LOST;
+      return (mali_wait_event("device_lost site=mali_queue.c:766"), VK_ERROR_DEVICE_LOST);
    return VK_SUCCESS;
 }
 

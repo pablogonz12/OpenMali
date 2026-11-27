@@ -66,7 +66,7 @@ if [ -z "${MALI_NO_CCACHE:-}" ] && command -v ccache >/dev/null 2>&1; then
    mkdir -p "$CCACHE_DIR"
 fi
 SRCS="$V/src/mali_instance.c $V/src/mali_physical_device.c $V/src/mali_device.c
-      $V/src/mali_memory.c $V/src/mali_sync.c $V/src/mali_queue.c $V/src/mali_fprof.c
+      $V/src/mali_memory.c $V/src/mali_sync.c $V/src/mali_queue.c $V/src/mali_isync.c $V/src/mali_sstats.c $V/src/mali_rpstats.c $V/src/mali_fprof.c
       $V/src/mali_backend_fake.c $V/src/mali_backend_kbase.c
       $V/src/mali_format.c $V/src/mali_image.c $V/src/mali_buffer.c $V/src/mali_sampler.c
       $V/src/mali_descriptor.c $V/src/mali_descriptor_lower.c $V/src/mali_pipeline_layout.c

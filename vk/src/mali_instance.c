@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 #include "mali_private.h"
+#include "mali_wait_debug.h"
 
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
@@ -362,6 +363,7 @@ mali_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
 {
    struct mali_instance *instance;
    VkResult result;
+   (void)mali_wait_debug();
 
    if (mali_trace_fd >= 0) {
       const VkApplicationInfo *ai = pCreateInfo->pApplicationInfo;

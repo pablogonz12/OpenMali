@@ -3,11 +3,13 @@
  * CPU mapping, write-combined); type 1: HOST_VISIBLE|CACHED (cached CPU mapping, explicit
  * flush/invalidate). The memory is always CPU mapped; vkMapMemory only hands out the pointer. */
 #include "mali_queue.h"
+#include "mali_wait_debug.h"
 
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "mali_dmabuf.h"
@@ -111,8 +113,84 @@ mali_memory_pool_release(void *pdev, size_t size)
    mem_release(pdev, size);
 }
 
-VKAPI_ATTR VkResult VKAPI_CALL
-mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
+/* ---- live VkDeviceMemory registry (mali_queue.h) -------------------------------------------------------------
+ * A command buffer's wrote[]/read[] marks are raw struct mali_memory * taken at RECORD time; the app may free the
+ * memory before it submits (illegal in Vulkan, but zink does it on a swapchain rebuild and we crashed: X8 smoke
+ * x8-1127-233142, SIGSEGV in kbase_bo_host_touch via mali_sstats_note). This registry says whether a mark still
+ * points at a live memory, and mali_memory_guard() holds the same lock, so vkFreeMemory cannot release the struct
+ * between the check and the backend call. Chained buckets: O(1) average, contention only on submit and free. */
+#define MALI_LIVE_BUCKETS 1024u
+static pthread_mutex_t live_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct mali_memory *live_head[MALI_LIVE_BUCKETS];
+
+static unsigned
+live_hash(const struct mali_memory *m)
+{
+   uintptr_t v = (uintptr_t)m;
+   return (unsigned)((v >> 4) * 2654435761u) & (MALI_LIVE_BUCKETS - 1);
+}
+
+/* The lock must be held. */
+static struct mali_memory *
+live_find(const struct mali_memory *m)
+{
+   for (struct mali_memory *p = live_head[live_hash(m)]; p; p = p->live_next)
+      if (p == m)
+         return p;
+   return NULL;
+}
+
+static void
+live_add(struct mali_memory *m)
+{
+   pthread_mutex_lock(&live_lock);
+   unsigned h = live_hash(m);
+   m->live_next = live_head[h];
+   live_head[h] = m;
+   pthread_mutex_unlock(&live_lock);
+}
+
+static void
+live_remove(struct mali_memory *m)
+{
+   pthread_mutex_lock(&live_lock);
+   struct mali_memory **pp = &live_head[live_hash(m)];
+   while (*pp && *pp != m)
+      pp = &(*pp)->live_next;
+   if (*pp) {
+      *pp = m->live_next;
+      m->live_next = NULL;
+   }
+   pthread_mutex_unlock(&live_lock);
+}
+
+bool
+mali_memory_live(const struct mali_memory *m)
+{
+   pthread_mutex_lock(&live_lock);
+   bool live = live_find(m) != NULL;
+   pthread_mutex_unlock(&live_lock);
+   return live;
+}
+
+bool
+mali_memory_guard(struct mali_memory *m)
+{
+   pthread_mutex_lock(&live_lock);
+   if (m && live_find(m))
+      return true;
+   pthread_mutex_unlock(&live_lock);
+   return false;
+}
+
+void
+mali_memory_unguard(void)
+{
+   pthread_mutex_unlock(&live_lock);
+}
+
+static VkResult
+mali_allocate_memory_impl(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
                     const VkAllocationCallbacks *pAllocator, VkDeviceMemory *pMemory)
 {
    VK_FROM_HANDLE(mali_device, dev, _device);
@@ -148,6 +226,7 @@ mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
    int r;
 
    mem->bo.dmabuf_fd = -1;
+   mem->isync = MALI_ISYNC_BO_NONE;
    if (imp && imp->handleType != 0) {
       if (imp->handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT &&
           imp->handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT) {
@@ -162,8 +241,12 @@ mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
          r = (sz > 0 && (uint64_t)sz < pAllocateInfo->allocationSize) ? -EINVAL : 0;
          if (r == 0)
             r = be->bo_import(dev->kdev, imp->fd, pAllocateInfo->allocationSize, flags, &mem->bo);
-         if (r == 0)
+         if (r == 0) {
             close(imp->fd); /* ownership moves to the memory on success */
+            /* Somebody else's dma-buf: we may be its consumer, so a submit that uses it waits its fences
+             * (mali_isync.c). A swapchain image is an import too; mali_wsi.c re-marks those as WSI. */
+            mem->isync = MALI_ISYNC_BO_IMPORTED;
+         }
       }
    } else {
       const bool export = mem->vk.export_handle_types != 0;
@@ -178,8 +261,28 @@ mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
    }
 
    /* mem_used was reserved before the allocation (mem_reserve); it must not be added again here. */
+   live_add(mem);   /* from here the record-time marks may find it (mali_memory_live) */
    *pMemory = mali_memory_to_handle(mem);
    return VK_SUCCESS;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+mali_AllocateMemory(VkDevice device, const VkMemoryAllocateInfo *info,
+                    const VkAllocationCallbacks *allocator, VkDeviceMemory *memory)
+{
+   const VkImportMemoryFdInfoKHR *imp = vk_find_struct_const(info->pNext, IMPORT_MEMORY_FD_INFO_KHR);
+   int fd = imp ? imp->fd : -1;
+   struct stat st;
+   long long fd_size = mali_wait_debug() && fd >= 0 && fstat(fd, &st) == 0 ? (long long)st.st_size : -1;
+   VkResult r = mali_allocate_memory_impl(device, info, allocator, memory);
+   mali_wait_result("vkAllocateMemory", r, "size=%llu type=%u import_fd=%d handle=%u fd_size=%lld",
+                    (unsigned long long)info->allocationSize, info->memoryTypeIndex, fd,
+                    imp ? (unsigned)imp->handleType : 0, fd_size);
+   if (imp && imp->handleType)
+      mali_wait_event("dmabuf_import fd=%d fd_size=%lld allocation_size=%llu handle=%u result=%d memory=%p",
+                      fd, fd_size, (unsigned long long)info->allocationSize, (unsigned)imp->handleType,
+                      r, r == VK_SUCCESS ? (void *)(uintptr_t)*memory : NULL);
+   return r;
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -190,6 +293,10 @@ mali_FreeMemory(VkDevice _device, VkDeviceMemory _mem, const VkAllocationCallbac
 
    if (!mem)
       return;
+   /* Out of the registry first: from here a record-time mark (mali_cmd.h wrote[]/read[]) is a dead pointer to this
+    * function's callers, and mali_memory_guard() refuses it. Whoever is sampling right now holds the lock, so this
+    * waits for that read to finish before the BO behind it goes away. */
+   live_remove(mem);
    mali_device_pdev(dev)->backend->bo_free(dev->kdev, &mem->bo);
    /* A BO the kbase pool kept is still committed (kbase_bo_free only moves it to the free list), so its charge stays
     * until the pool really frees it or hands it to the next allocation; that is the pool's release callback. */
@@ -285,8 +392,8 @@ mali_GetDeviceMemoryCommitment(VkDevice device, VkDeviceMemory memory, VkDeviceS
    *pCommittedMemoryInBytes = 0; /* no lazily allocated memory type */
 }
 
-VKAPI_ATTR VkResult VKAPI_CALL
-mali_GetMemoryFdKHR(VkDevice _device, const VkMemoryGetFdInfoKHR *pGetFdInfo, int *pFd)
+static VkResult
+mali_get_memory_fd_impl(VkDevice _device, const VkMemoryGetFdInfoKHR *pGetFdInfo, int *pFd)
 {
    VK_FROM_HANDLE(mali_device, dev, _device);
    VK_FROM_HANDLE(mali_memory, mem, pGetFdInfo->memory);
@@ -307,8 +414,26 @@ mali_GetMemoryFdKHR(VkDevice _device, const VkMemoryGetFdInfoKHR *pGetFdInfo, in
    int fd = mali_device_pdev(dev)->backend->bo_export(dev->kdev, &mem->bo);
    if (fd < 0)
       return errno_to_vk(dev, fd);
+   /* The fd leaves this process: a submit that writes this BO must attach its fence to the dma-buf, or the
+    * consumer can sample a half-drawn frame (mali_isync.c). An imported BO stays IMPORTED (it needs both sides). */
+   if (mem->isync == MALI_ISYNC_BO_NONE)
+      mem->isync = MALI_ISYNC_BO_EXPORTED;
    *pFd = fd;
    return VK_SUCCESS;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+mali_GetMemoryFdKHR(VkDevice device, const VkMemoryGetFdInfoKHR *info, int *fd)
+{
+   VkResult r = mali_get_memory_fd_impl(device, info, fd);
+   struct stat st;
+   long long size = mali_wait_debug() && r == VK_SUCCESS && fstat(*fd, &st) == 0 ? (long long)st.st_size : -1;
+   mali_wait_result("vkGetMemoryFdKHR", r, "memory=%p handle=%u",
+                    (void *)(uintptr_t)info->memory, (unsigned)info->handleType);
+   mali_wait_event("dmabuf_export memory=%p fd=%d fd_size=%lld handle=%u result=%d",
+                   (void *)(uintptr_t)info->memory, r == VK_SUCCESS ? *fd : -1, size,
+                   (unsigned)info->handleType, r);
+   return r;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL

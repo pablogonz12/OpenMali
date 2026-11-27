@@ -381,7 +381,7 @@ mali_GetPhysicalDeviceFormatProperties2(VkPhysicalDevice pd, VkFormat format, Vk
     * zink read this to decide how to import and export images, and a zero count for a supported format is what
     * shows up as "returned zero modifiers for DRM format 0x3231564e" (NV12) before the X11/GLX swapchain fails.
     * NV12/P010 linear are two-plane layouts, everything else is one plane. */
-   const bool mod_ok = ok && (f.linear & f.optimal) != 0;
+   const bool mod_ok = ok && (f.linear & f.optimal) != 0 && !mali_modifier_disabled();
    const uint32_t mod_planes = f.ycbcr ? 2 : 1;
    const uint64_t mf = mod_ok ? (uint64_t)(f.linear & f.optimal) : 0;
    vk_foreach_struct(st, e, p->pNext) {
@@ -426,6 +426,7 @@ mali_GetPhysicalDeviceImageFormatProperties2(VkPhysicalDevice pd, const VkPhysic
    const VkPhysicalDeviceExternalImageFormatInfo *ext = vk_find_struct_const(info->pNext, PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO);
    if (ext && ext->handleType && ext->handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT) return VK_ERROR_FORMAT_NOT_SUPPORTED;
    VkImageTiling tiling = info->tiling;
+   if (tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT && mali_modifier_disabled()) return VK_ERROR_FORMAT_NOT_SUPPORTED;
    if (tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT) {
       const VkPhysicalDeviceImageDrmFormatModifierInfoEXT *mi =
          vk_find_struct_const(info->pNext, PHYSICAL_DEVICE_IMAGE_DRM_FORMAT_MODIFIER_INFO_EXT);

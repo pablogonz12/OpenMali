@@ -65,6 +65,12 @@ bool mali_format_nth(unsigned arch, unsigned i, struct mali_fmt *out);
 uint32_t mali_format_attr_word0(const struct mali_fmt *f);
 
 /* Pure image-format query (the core of vkGetPhysicalDeviceImageFormatProperties2). VK_SUCCESS or VK_ERROR_FORMAT_NOT_SUPPORTED. */
+/* MALI_NO_MODIFIER_COMM=<comm substring>: hide VK_EXT_image_drm_format_modifier from that process (zink then takes
+ * the non-modifier DRI3 path). For the X8 A/B: its surface is the only screen-size modifier image there.
+ * mali_image.c owns the switch; the enumeration (mali_physical_device.c), the modifier-list queries and image
+ * creation all ask it. */
+bool mali_modifier_disabled(void);
+
 VkResult mali_image_format_properties(unsigned arch, VkFormat format, VkImageType type, VkImageTiling tiling, VkImageUsageFlags usage,
                                       VkImageCreateFlags flags, VkImageFormatProperties *out);
 

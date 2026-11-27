@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 /* M5: image layout, plane/texture packers, VkImage and VkImageView. See mali_image.h. */
 #include "mali_image.h"
+#include "mali_wait_debug.h"
 #include "mali_msaa.h"
 
 #include <errno.h>
@@ -387,8 +388,35 @@ adopt_explicit_pitch(struct mali_image_layout *lay, uint64_t pitch, bool is_bc)
    return 0;
 }
 
-VKAPI_ATTR VkResult VKAPI_CALL
-mali_CreateImage(VkDevice _dev, const VkImageCreateInfo *ci, const VkAllocationCallbacks *alloc, VkImage *out)
+/* MALI_NO_MODIFIER_COMM: read once per process (the /proc/self/comm substring), so the extension can be hidden from
+ * one process only (chromium's GPU process) and the rest of the session keeps the DRI3 modifiers it wants. */
+bool
+mali_modifier_disabled(void)
+{
+   static int state = -1;   /* -1 unread, 0 enabled, 1 disabled */
+   if (state >= 0)
+      return state;
+   state = 0;
+   const char *want = getenv("MALI_NO_MODIFIER_COMM");
+   if (want && want[0]) {
+      char comm[32] = "";
+      FILE *f = fopen("/proc/self/comm", "r");
+      if (f) {
+         if (fgets(comm, sizeof comm, f)) {
+            size_t n = strlen(comm);
+            while (n && (comm[n - 1] == '\n' || comm[n - 1] == ' '))
+               comm[--n] = '\0';
+            if (strstr(comm, want))
+               state = 1;
+         }
+         fclose(f);
+      }
+   }
+   return state;
+}
+
+static VkResult
+mali_create_image_impl(VkDevice _dev, const VkImageCreateInfo *ci, const VkAllocationCallbacks *alloc, VkImage *out)
 {
    VK_FROM_HANDLE(mali_device, dev, _dev);
    struct mali_image_layout lay;
@@ -396,6 +424,8 @@ mali_CreateImage(VkDevice _dev, const VkImageCreateInfo *ci, const VkAllocationC
    bool is_bc;
    bool has_explicit = false;
    uint64_t explicit_pitch = 0;   /* VkImageDrmFormatModifierExplicitCreateInfoEXT row pitch (must be non-zero when has_explicit) */
+   if (ci->tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT && mali_modifier_disabled())
+      return vk_error(dev, VK_ERROR_FORMAT_NOT_SUPPORTED);
    if (ci->tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT) {
       /* Linear is the only modifier (mali_wsi_modifier): the request must allow it, and an explicit layout must
        * describe a single plane we can honour (offset 0; row pitch is the layout's, so a different one is refused). */
@@ -435,6 +465,31 @@ mali_CreateImage(VkDevice _dev, const VkImageCreateInfo *ci, const VkAllocationC
    if (ci->tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT) img->vk.drm_format_mod = mali_wsi_modifier;   /* M14: linear only */
    *out = mali_image_to_handle(img);
    return VK_SUCCESS;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+mali_CreateImage(VkDevice device, const VkImageCreateInfo *ci, const VkAllocationCallbacks *alloc, VkImage *out)
+{
+   VkResult r = mali_create_image_impl(device, ci, alloc, out);
+   const VkImageDrmFormatModifierExplicitCreateInfoEXT *me =
+      vk_find_struct_const(ci->pNext, IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT);
+   const VkExternalMemoryImageCreateInfo *ext = vk_find_struct_const(ci->pNext, EXTERNAL_MEMORY_IMAGE_CREATE_INFO);
+   mali_wait_result("vkCreateImage", r, "format=%u extent=%ux%ux%u tiling=%u external=%u",
+                    ci->format, ci->extent.width, ci->extent.height, ci->extent.depth,
+                    ci->tiling, ext ? ext->handleTypes : 0);
+   if (ext || ci->tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT) {
+      mali_wait_event("external_image image=%p format=%u extent=%ux%ux%u tiling=%u handle=%u modifier=%llu planes=%u result=%d",
+                      r == VK_SUCCESS ? (void *)(uintptr_t)*out : NULL, ci->format, ci->extent.width,
+                      ci->extent.height, ci->extent.depth, ci->tiling, ext ? ext->handleTypes : 0,
+                      (unsigned long long)(me ? me->drmFormatModifier : UINT64_MAX),
+                      me ? me->drmFormatModifierPlaneCount : 0, r);
+      if (me && me->pPlaneLayouts)
+         for (uint32_t i = 0; i < me->drmFormatModifierPlaneCount; i++)
+            mali_wait_event("external_plane index=%u offset=%llu pitch=%llu", i,
+                            (unsigned long long)me->pPlaneLayouts[i].offset,
+                            (unsigned long long)me->pPlaneLayouts[i].rowPitch);
+   }
+   return r;
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -504,7 +559,14 @@ mali_BindImageMemory2(VkDevice _dev, uint32_t n, const VkBindImageMemoryInfo *b)
       img->mem = mem;
       img->mem_off = b[i].memoryOffset;
       img->va = mem->bo.gpu_va + b[i].memoryOffset;
+      if (mem->vk.import_handle_type || mem->vk.export_handle_types)
+         mali_wait_event("image_bind image=%p memory=%p offset=%llu format=%u extent=%ux%u modifier=%llu result=0",
+                         (void *)(uintptr_t)b[i].image, (void *)(uintptr_t)b[i].memory,
+                         (unsigned long long)b[i].memoryOffset, img->vk.format,
+                         img->lay.d.extent.width, img->lay.d.extent.height,
+                         (unsigned long long)img->vk.drm_format_mod);
    }
+   mali_wait_result("vkBindImageMemory2", res, "count=%u", n);
    return res;
 }
 

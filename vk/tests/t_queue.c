@@ -3,7 +3,7 @@
  * timeline semaphores, sync_file export/import, many empty submits, device loss. Loader-free: dlopens
  * the ICD like t_icd --direct. One JSON line per case; exit 0 = all pass.
  *
- *   t_queue --direct <icd.so> [--submits N] [--burst N] [--only mem|dmabuf|submits|binary|timeline|syncfile|fault|idle|teardown]
+ *   t_queue --direct <icd.so> [--submits N] [--burst N] [--only mem|dmabuf|submits|binary|timeline|syncfile|fault|idle|stale|modrt|teardown]
  *   fault mode needs MALI_FAULT_INJECT=n in the environment (n-th submission fails).
  */
 #define _DEFAULT_SOURCE
@@ -13,12 +13,14 @@
 #include <dirent.h>
 #include <dlfcn.h>
 #include <poll.h>
+#include <stdbool.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 
 static int g_fail;
@@ -65,7 +67,10 @@ now_us(void)
    X(QueueSubmit) X(QueueWaitIdle) X(DeviceWaitIdle) X(GetSemaphoreCounterValueKHR)                   \
    X(WaitSemaphoresKHR) X(SignalSemaphoreKHR) X(GetMemoryFdKHR) X(GetSemaphoreFdKHR)                     \
    X(ImportSemaphoreFdKHR) X(GetFenceFdKHR) X(CreateBuffer) X(DestroyBuffer) X(GetBufferMemoryRequirements) \
-   X(BindBufferMemory) X(GetMemoryFdPropertiesKHR) X(CreateImage) X(DestroyImage) X(GetImageMemoryRequirements) X(GetImageSubresourceLayout) X(CreateCommandPool) X(AllocateCommandBuffers) X(BeginCommandBuffer) X(EndCommandBuffer) X(CmdFillBuffer) X(CmdCopyBuffer)
+   X(BindBufferMemory) X(BindImageMemory) X(GetMemoryFdPropertiesKHR) X(CmdClearColorImage) X(CreateImage) X(DestroyImage) X(GetImageMemoryRequirements) X(GetImageSubresourceLayout) X(CreateCommandPool) X(AllocateCommandBuffers) X(BeginCommandBuffer) X(EndCommandBuffer) X(CmdFillBuffer) X(CmdCopyBuffer) \
+   X(CreateDescriptorSetLayout) X(CreatePipelineLayout) X(CreateDescriptorPool) X(AllocateDescriptorSets) \
+   X(UpdateDescriptorSets) X(CmdBindDescriptorSets) X(DestroyPipelineLayout) X(DestroyDescriptorSetLayout) \
+   X(DestroyDescriptorPool) X(DestroyCommandPool)
 
 #define DECL(n) static PFN_vk##n n;
 DEV_FNS(DECL)
@@ -653,6 +658,55 @@ export_thread(void *p)
 /* a sync_file exported while the signalling submission is still queued (it waits for a timeline value) must
  * not come back "already signalled": the export has to wait for the submission and carry its fence */
 static int
+test_wait_debug(void)
+{
+   VkFenceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   VkFence f;
+   CHECK(CreateFence(dev, &ci, NULL, &f) == VK_SUCCESS, "create fence");
+   FILE *capture = tmpfile();
+   CHECK(capture != NULL, "tmpfile");
+   int saved = dup(STDERR_FILENO);
+   CHECK(saved >= 0 && dup2(fileno(capture), STDERR_FILENO) >= 0, "capture stderr");
+   VkResult r = WaitForFences(dev, 1, &f, VK_TRUE, 2500000000ull);
+   fflush(stderr);
+   dup2(saved, STDERR_FILENO);
+   close(saved);
+   const char *e = getenv("MALI_WAIT_DBG");
+   if (e && e[0] == '/') {
+      char comm[16] = "?";
+      FILE *fcomm = fopen("/proc/self/comm", "r");
+      CHECK(fcomm && fgets(comm, sizeof(comm), fcomm), "read comm");
+      fclose(fcomm);
+      comm[strcspn(comm, "\n")] = 0;
+      char path[4096];
+      snprintf(path, sizeof(path), "%s-%s-%ld.log", e, comm, (long)getpid());
+      fclose(capture);
+      capture = fopen(path, "r");
+      CHECK(capture != NULL, "open diagnostic file");
+   }
+   rewind(capture);
+   char line[512];
+   int entries = 0, done = 0, startup = 0, flags = 0;
+   while (fgets(line, sizeof(line), capture)) {
+      if (strstr(line, "mali_wait: sync_wait ") && strstr(line, "not submitted for"))
+         entries++;
+      if (strstr(line, "mali_wait: sync_wait ") && strstr(line, "done after"))
+         done++;
+      if (strstr(line, "mali_wait: startup ") && strstr(line, "mali-open "))
+         startup++;
+      if (strstr(line, "mali_wait: bo_flags backend=fake extra=unavailable coherent_local=unavailable override="))
+         flags++;
+   }
+   fclose(capture);
+   DestroyFence(dev, f, NULL);
+   int expected = e && (!strcmp(e, "1") || e[0] == '/');
+   CHECK(r == VK_TIMEOUT && entries == expected && done == expected &&
+         (!(e && e[0] == '/') || (startup == 1 && flags >= 1)),
+         "wait result=%d entries=%d done=%d startup=%d flags=%d expected=%d", r, entries, done, startup, flags, expected);
+   return 1;
+}
+
+static int
 test_syncexport(void)
 {
    VkSemaphoreTypeCreateInfo ti = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
@@ -910,6 +964,354 @@ test_nofence(void)
    return 1;
 }
 
+/* Implicit sync, consumer side (mali_isync.c): a submit that only READS an imported dma-buf - here through a
+ * uniform buffer descriptor, the way Xwayland's glamor samples the client's buffer - must wait the producer's
+ * fence before it runs. The fake kernel hands out a fence that stays pending for MALI_FAKE_SLOW_US, so the wait is
+ * the submit's duration. With MALI_IMPLICIT_SYNC=0 the same submit returns at once (the A/B arm).
+ * Needs MALI_FAKE_DMABUF_SYNC=1 (a kernel with the sync-file ioctls; 5.10 returns ENOTTY and the producer's CPU
+ * wait is what covers it - see t_isync). */
+static int
+test_isync(uint32_t slow_us)
+{
+   const VkDeviceSize sz = 4096;
+   const VkExternalMemoryHandleTypeFlagBits ht = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+   VkExportMemoryAllocateInfo exp = {.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+                                     .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+   VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &exp, .allocationSize = sz, .memoryTypeIndex = 0};
+   while (!(memprops.memoryTypes[ai.memoryTypeIndex].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
+          ai.memoryTypeIndex < memprops.memoryTypeCount - 1)
+      ai.memoryTypeIndex++;
+   VkDeviceMemory prod;
+   CHECK(AllocateMemory(dev, &ai, NULL, &prod) == VK_SUCCESS, "exportable alloc");
+   VkMemoryGetFdInfoKHR gi = {.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR, .memory = prod, .handleType = ht};
+   int fd = -1;
+   CHECK(GetMemoryFdKHR(dev, &gi, &fd) == VK_SUCCESS && fd >= 0, "export (producer side marked)");
+
+   const VkDeviceSize unpk = 0;
+   VkImportMemoryFdInfoKHR imp = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR, .handleType = ht, .fd = fd};
+   VkMemoryAllocateInfo ai2 = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &imp, .allocationSize = sz,
+                               .memoryTypeIndex = ai.memoryTypeIndex};
+   VkDeviceMemory cons;
+   CHECK(AllocateMemory(dev, &ai2, NULL, &cons) == VK_SUCCESS, "import alloc (consumer side marked)");
+   (void)unpk;
+
+   /* the imported handle type must be declared on the buffer too, or binding that memory is invalid API usage */
+   VkExternalMemoryBufferCreateInfo emb = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO, .handleTypes = ht};
+   VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = &emb, .size = sz,
+                            .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT};
+   VkBuffer buf;
+   CHECK(CreateBuffer(dev, &bi, NULL, &buf) == VK_SUCCESS, "buffer");
+   CHECK(BindBufferMemory(dev, buf, cons, 0) == VK_SUCCESS, "bind");
+
+   VkDescriptorSetLayoutBinding lb = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                      .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT};
+   VkDescriptorSetLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &lb};
+   VkDescriptorSetLayout dsl;
+   CHECK(CreateDescriptorSetLayout(dev, &li, NULL, &dsl) == VK_SUCCESS, "set layout");
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dsl};
+   VkPipelineLayout pl;
+   CHECK(CreatePipelineLayout(dev, &pli, NULL, &pl) == VK_SUCCESS, "pipeline layout");
+   VkDescriptorPoolSize ps = {.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &ps};
+   VkDescriptorPool dp;
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &dp) == VK_SUCCESS, "pool");
+   VkDescriptorSetAllocateInfo dsa = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dp,
+                                      .descriptorSetCount = 1, .pSetLayouts = &dsl};
+   VkDescriptorSet set;
+   CHECK(AllocateDescriptorSets(dev, &dsa, &set) == VK_SUCCESS, "set");
+   VkDescriptorBufferInfo dbi = {.buffer = buf, .offset = 0, .range = sz};
+   VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 0,
+                             .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &dbi};
+   UpdateDescriptorSets(dev, 1, &w, 0, NULL);   /* the read mark (mali_resources.c) */
+
+   VkCommandPoolCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+   VkCommandPool pool;
+   CHECK(CreateCommandPool(dev, &cpi, NULL, &pool) == VK_SUCCESS, "cmd pool");
+   VkCommandBufferAllocateInfo cbi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = pool,
+                                      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+   VkCommandBuffer cb;
+   CHECK(AllocateCommandBuffers(dev, &cbi, &cb) == VK_SUCCESS, "cb");
+   VkCommandBufferBeginInfo bgi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+   CHECK(BeginCommandBuffer(cb, &bgi) == VK_SUCCESS, "begin");
+   CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pl, 0, 1, &set, 0, NULL);
+   CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "end");
+
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   VkFence f;
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+   /* Every submit pays the fake's own fence delay (MALI_FAKE_SLOW_US), so compare against a control submit recorded
+    * on a command buffer that touches no imported BO: the difference is what the implicit sync costs. */
+   VkCommandBufferAllocateInfo cbi2 = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = pool,
+                                       .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+   VkCommandBuffer cb2;
+   CHECK(AllocateCommandBuffers(dev, &cbi2, &cb2) == VK_SUCCESS, "cb control");
+   CHECK(BeginCommandBuffer(cb2, &bgi) == VK_SUCCESS, "begin control");
+   CHECK(EndCommandBuffer(cb2) == VK_SUCCESS, "end control");
+   VkSubmitInfo si2 = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb2};
+   struct timespec t0, t1;
+   clock_gettime(CLOCK_MONOTONIC, &t0);
+   CHECK(QueueSubmit(queue, 1, &si2, f) == VK_SUCCESS, "submit control");
+   CHECK(WaitForFences(dev, 1, &f, VK_TRUE, 10000000000ull) == VK_SUCCESS, "wait control");
+   clock_gettime(CLOCK_MONOTONIC, &t1);
+   long long base = (t1.tv_sec - t0.tv_sec) * 1000ll + (t1.tv_nsec - t0.tv_nsec) / 1000000;
+   CHECK(ResetFences(dev, 1, &f) == VK_SUCCESS, "reset");
+   clock_gettime(CLOCK_MONOTONIC, &t0);
+   CHECK(QueueSubmit(queue, 1, &si, f) == VK_SUCCESS, "submit");
+   CHECK(WaitForFences(dev, 1, &f, VK_TRUE, 10000000000ull) == VK_SUCCESS, "wait");
+   clock_gettime(CLOCK_MONOTONIC, &t1);
+   long long ms = (t1.tv_sec - t0.tv_sec) * 1000ll + (t1.tv_nsec - t0.tv_nsec) / 1000000 - base;
+   const char *off = getenv("MALI_IMPLICIT_SYNC");
+   const bool disabled = off && !strcmp(off, "0");
+   if (disabled)
+      CHECK(ms < (long long)(slow_us / 1000) / 2, "MALI_IMPLICIT_SYNC=0: no wait for a sampled imported BO (extra %lld ms over %lld)",
+            ms, base);
+   else
+      CHECK(ms >= (long long)(slow_us / 1000) / 2, "sampled imported BO: the submit waited its producer's fence (extra %lld ms over %lld)",
+            ms, base);
+   printf("{\"test\":\"isync\",\"extra_ms\":%lld,\"control_ms\":%lld,\"implicit_sync\":%d,\"ok\":true}\n",
+          ms, base, disabled ? 0 : 1);
+
+   DestroyFence(dev, f, NULL);
+   DestroyCommandPool(dev, pool, NULL);
+   DestroyDescriptorPool(dev, dp, NULL);
+   DestroyPipelineLayout(dev, pl, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
+   DestroyBuffer(dev, buf, NULL);
+   FreeMemory(dev, cons, NULL);
+   FreeMemory(dev, prod, NULL);
+   return 1;
+}
+
+/* Stale memory marks: a command buffer keeps raw VkDeviceMemory pointers from RECORD time (mali_cmd.h wrote[] for
+ * M15, read[] for implicit sync), and an app that frees the memory before it submits - illegal Vulkan, which zink does
+ * on a swapchain rebuild - leaves those marks dangling. Both the implicit-sync collect and MALI_SHARED_STATS read
+ * them at submit, and mali_cmd_submit itself hands wrote[] to bo_wrote: the X8 crashed exactly there on 2026-11-27
+ * (smoke x8-1127-233142, SIGSEGV in kbase_bo_host_touch via mali_sstats_note). A submission must survive marks that
+ * point at freed memory, and one line must never be printed for them.
+ *
+ * Two shapes, each with the memory freed between record and submit:
+ *   record -> free -> submit           (the dangling mark itself)
+ *   record -> reset -> free -> submit  (a reset buffer must not keep the previous frame's marks; the reset clears
+ *                                       them, which is the bug that was found)
+ * The BOs are 128 KiB so MALI_SHARED_STATS would sample them if they were still believed to be live. */
+static int
+test_stale(void)
+{
+   const VkDeviceSize sz = 128u * 1024u;
+   for (int phase = 0; phase < 2; phase++) {
+      const bool by_reset = phase == 1;
+      VkExportMemoryAllocateInfo exp = {.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+                                        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+      VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &exp, .allocationSize = sz,
+                                 .memoryTypeIndex = 0};
+      while (!(memprops.memoryTypes[ai.memoryTypeIndex].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
+             ai.memoryTypeIndex < memprops.memoryTypeCount - 1)
+         ai.memoryTypeIndex++;
+      VkDeviceMemory prod;
+      CHECK(AllocateMemory(dev, &ai, NULL, &prod) == VK_SUCCESS, "phase %d: exportable alloc", phase);
+      VkMemoryGetFdInfoKHR gi = {.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR, .memory = prod,
+                                 .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+      int fd = -1;
+      CHECK(GetMemoryFdKHR(dev, &gi, &fd) == VK_SUCCESS && fd >= 0, "phase %d: export", phase);
+      VkImportMemoryFdInfoKHR imp = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
+                                     .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, .fd = fd};
+      VkMemoryAllocateInfo ai2 = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &imp,
+                                  .allocationSize = sz, .memoryTypeIndex = ai.memoryTypeIndex};
+      VkDeviceMemory cons;
+      CHECK(AllocateMemory(dev, &ai2, NULL, &cons) == VK_SUCCESS, "phase %d: import", phase);
+      VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = sz,
+                               .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+      VkBuffer buf;
+      CHECK(CreateBuffer(dev, &bi, NULL, &buf) == VK_SUCCESS, "phase %d: buffer", phase);
+      CHECK(BindBufferMemory(dev, buf, cons, 0) == VK_SUCCESS, "phase %d: bind", phase);
+
+      /* A read mark (the descriptor set) and a write mark (the fill) on the same imported BO. */
+      VkDescriptorSetLayoutBinding lb = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                         .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT};
+      VkDescriptorSetLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                                            .bindingCount = 1, .pBindings = &lb};
+      VkDescriptorSetLayout dsl;
+      CHECK(CreateDescriptorSetLayout(dev, &li, NULL, &dsl) == VK_SUCCESS, "phase %d: set layout", phase);
+      VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1,
+                                        .pSetLayouts = &dsl};
+      VkPipelineLayout pl;
+      CHECK(CreatePipelineLayout(dev, &pli, NULL, &pl) == VK_SUCCESS, "phase %d: pipeline layout", phase);
+      VkDescriptorPoolSize ps = {.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1};
+      VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1,
+                                        .poolSizeCount = 1, .pPoolSizes = &ps};
+      VkDescriptorPool dp;
+      CHECK(CreateDescriptorPool(dev, &dpi, NULL, &dp) == VK_SUCCESS, "phase %d: pool", phase);
+      VkDescriptorSetAllocateInfo dsa = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dp,
+                                         .descriptorSetCount = 1, .pSetLayouts = &dsl};
+      VkDescriptorSet set;
+      CHECK(AllocateDescriptorSets(dev, &dsa, &set) == VK_SUCCESS, "phase %d: set", phase);
+      VkDescriptorBufferInfo dbi = {.buffer = buf, .offset = 0, .range = sz};
+      VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 0,
+                                .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                .pBufferInfo = &dbi};
+      UpdateDescriptorSets(dev, 1, &w, 0, NULL);
+
+      VkCommandPoolCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+      VkCommandPool pool;
+      CHECK(CreateCommandPool(dev, &cpi, NULL, &pool) == VK_SUCCESS, "phase %d: pool", phase);
+      VkCommandBufferAllocateInfo cbi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = pool,
+                                         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+      VkCommandBuffer cb;
+      CHECK(AllocateCommandBuffers(dev, &cbi, &cb) == VK_SUCCESS, "phase %d: cb", phase);
+      VkCommandBufferBeginInfo bgi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+      CHECK(BeginCommandBuffer(cb, &bgi) == VK_SUCCESS, "phase %d: begin", phase);
+      CmdFillBuffer(cb, buf, 0, sz, 0x04040404u);
+      CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pl, 0, 1, &set, 0, NULL);
+      CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "phase %d: end", phase);
+      if (by_reset) {
+         /* Re-record: the marks of the frame above must go with it, still live here on purpose. */
+         CHECK(BeginCommandBuffer(cb, &bgi) == VK_SUCCESS, "phase %d: re-begin", phase);
+         CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "phase %d: re-end", phase);
+      }
+
+      /* The app frees the memory and the buffer before it submits what referenced them. */
+      DestroyBuffer(dev, buf, NULL);
+      FreeMemory(dev, cons, NULL);
+      FreeMemory(dev, prod, NULL);
+
+      VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+      VkFence f;
+      CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "phase %d: fence", phase);
+      VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+      CHECK(QueueSubmit(queue, 1, &si, f) == VK_SUCCESS, "phase %d: submit with freed marks", phase);
+      CHECK(WaitForFences(dev, 1, &f, VK_TRUE, 10000000000ull) == VK_SUCCESS, "phase %d: wait", phase);
+      DestroyFence(dev, f, NULL);
+      DestroyCommandPool(dev, pool, NULL);
+      DestroyDescriptorPool(dev, dp, NULL);
+      DestroyPipelineLayout(dev, pl, NULL);
+      DestroyDescriptorSetLayout(dev, dsl, NULL);
+      printf("{\"test\":\"stale\",\"phase\":%d,\"by\":\"%s\",\"ok\":true}\n", phase, by_reset ? "reset" : "record");
+   }
+   return 1;
+}
+
+/* Modifier-tiling render target (mali_image.c:400-436, "M14: linear only"). The X8's Chromium GPU process is the
+ * only process that creates its screen-size image as VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT (a modifier LIST holding
+ * LINEAR), exports that memory, and then every pass into it reads back all zeros from the BO while ordinary images
+ * paint. This test does the whole chain on real hardware: create (list and explicit layout), bind exportable memory,
+ * clear to a non-zero colour, submit, wait, then read the memory both through vkMapMemory and through the exported
+ * dma-buf fd's mmap at the offset/row pitch the driver reports, and require the cleared colour to be there.
+ *
+ * Needs execution, so it prints SKIP on the fake backend and is meant for the guest (see the note by the check.sh
+ * entry). */
+static int
+test_modrt(void)
+{
+   const uint64_t linear = 0;
+   const VkClearColorValue col = {.float32 = {0.25f, 0.5f, 0.75f, 1.0f}};   /* 64,128,191,255 */
+   for (int phase = 0; phase < 2; phase++) {
+      const bool explicit_layout = phase == 1;
+      VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+                              .format = VK_FORMAT_R8G8B8A8_SRGB, .extent = {256, 128, 1}, .mipLevels = 1,
+                              .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
+                              .tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT,
+                              .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                              .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+      VkExternalMemoryImageCreateInfo ext = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
+                                             .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+      VkImageDrmFormatModifierListCreateInfoEXT ml = {
+         .sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_LIST_CREATE_INFO_EXT, .pNext = &ext,
+         .drmFormatModifierCount = 1, .pDrmFormatModifiers = &linear};
+      ci.pNext = &ml;
+      VkImage img = VK_NULL_HANDLE;
+      CHECK(CreateImage(dev, &ci, NULL, &img) == VK_SUCCESS, "phase %d: create modifier image", phase);
+
+      VkImageSubresource sr = {.aspectMask = VK_IMAGE_ASPECT_MEMORY_PLANE_0_BIT_EXT};
+      VkSubresourceLayout lay = {0};
+      GetImageSubresourceLayout(dev, img, &sr, &lay);
+      CHECK(lay.rowPitch >= 256 * 4 && lay.size >= (uint64_t)lay.rowPitch * 128, "phase %d: layout pitch %llu size %llu",
+            phase, (unsigned long long)lay.rowPitch, (unsigned long long)lay.size);
+
+      if (explicit_layout) {
+         VkSubresourceLayout pl = {.offset = lay.offset, .rowPitch = lay.rowPitch};
+         VkImageDrmFormatModifierExplicitCreateInfoEXT me = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT, .pNext = &ext,
+            .drmFormatModifier = linear, .drmFormatModifierPlaneCount = 1, .pPlaneLayouts = &pl};
+         ci.pNext = &me;
+         CHECK(CreateImage(dev, &ci, NULL, &img) == VK_SUCCESS, "phase 1: create with the explicit plane layout");
+         GetImageSubresourceLayout(dev, img, &sr, &lay);
+      }
+
+      VkMemoryRequirements mr;
+      GetImageMemoryRequirements(dev, img, &mr);
+      VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size,
+                                 .memoryTypeIndex = 0};
+      while (!(memprops.memoryTypes[ai.memoryTypeIndex].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
+             ai.memoryTypeIndex < memprops.memoryTypeCount - 1)
+         ai.memoryTypeIndex++;
+      VkExportMemoryAllocateInfo mex = {.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+                                        .pNext = ai.pNext, .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+      ai.pNext = &mex;
+      VkDeviceMemory mem;
+      CHECK(AllocateMemory(dev, &ai, NULL, &mem) == VK_SUCCESS, "phase %d: exportable memory %llu B", phase,
+            (unsigned long long)mr.size);
+      CHECK(BindImageMemory(dev, img, mem, 0) == VK_SUCCESS, "phase %d: bind", phase);
+
+      VkCommandPoolCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+      VkCommandPool pool;
+      CHECK(CreateCommandPool(dev, &cpi, NULL, &pool) == VK_SUCCESS, "phase %d: pool", phase);
+      VkCommandBufferAllocateInfo cbi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = pool,
+                                         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+      VkCommandBuffer cb;
+      CHECK(AllocateCommandBuffers(dev, &cbi, &cb) == VK_SUCCESS, "phase %d: cb", phase);
+      VkCommandBufferBeginInfo bgi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+      CHECK(BeginCommandBuffer(cb, &bgi) == VK_SUCCESS, "phase %d: begin", phase);
+      VkImageSubresourceRange rng = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .levelCount = 1, .layerCount = 1};
+      CmdClearColorImage(cb, img, VK_IMAGE_LAYOUT_GENERAL, &col, 1, &rng);
+      CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "phase %d: end", phase);
+
+      VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+      VkFence f;
+      CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "phase %d: fence", phase);
+      VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+      CHECK(QueueSubmit(queue, 1, &si, f) == VK_SUCCESS, "phase %d: submit", phase);
+      CHECK(WaitForFences(dev, 1, &f, VK_TRUE, 10000000000ull) == VK_SUCCESS, "phase %d: wait", phase);
+
+      /* The pixels must be where the driver says they are: image row `y` starts at lay.offset + y * lay.rowPitch. */
+      const char *fake = getenv("MALI_BACKEND");
+      if (fake && !strcmp(fake, "fake")) {
+         printf("{\"test\":\"modrt\",\"phase\":%d,\"skip\":\"fake backend executes nothing\"}\n", phase);
+      } else {
+         uint8_t *p = NULL;
+         CHECK(MapMemory(dev, mem, 0, VK_WHOLE_SIZE, 0, (void **)&p) == VK_SUCCESS && p, "phase %d: map", phase);
+         InvalidateMappedMemoryRanges(dev, 1, &(VkMappedMemoryRange){.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+                                                                    .memory = mem, .size = VK_WHOLE_SIZE});
+         const uint8_t *px = p + lay.offset + (uint64_t)lay.rowPitch * 17 + 5 * 4;
+         CHECK(px[0] == 64 && px[1] == 128 && px[2] == 191 && px[3] == 255,
+               "phase %d: mapped pixel at the reported layout is (%u,%u,%u,%u), want (64,128,191,255)", phase,
+               px[0], px[1], px[2], px[3]);
+         /* The same bytes through the exported descriptor, i.e. what Xwayland/DRI3 will read. */
+         VkMemoryGetFdInfoKHR gi = {.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR, .memory = mem,
+                                    .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+         int fd = -1;
+         CHECK(GetMemoryFdKHR(dev, &gi, &fd) == VK_SUCCESS && fd >= 0, "phase %d: export fd", phase);
+         void *m2 = mmap(NULL, mr.size, PROT_READ, MAP_SHARED, fd, 0);
+         CHECK(m2 != MAP_FAILED, "phase %d: mmap the exported dma-buf", phase);
+         if (m2 != MAP_FAILED) {
+            const uint8_t *qx = (const uint8_t *)m2 + lay.offset + (uint64_t)lay.rowPitch * 17 + 5 * 4;
+            CHECK(qx[0] == 64 && qx[1] == 128 && qx[2] == 191 && qx[3] == 255,
+                  "phase %d: exported dma-buf pixel is (%u,%u,%u,%u), want (64,128,191,255)", phase,
+                  qx[0], qx[1], qx[2], qx[3]);
+            munmap(m2, mr.size);
+         }
+         close(fd);
+         UnmapMemory(dev, mem);
+         printf("{\"test\":\"modrt\",\"phase\":%d,\"pass\":true}\n", phase);
+      }
+      DestroyFence(dev, f, NULL);
+      DestroyCommandPool(dev, pool, NULL);
+      DestroyImage(dev, img, NULL);
+      FreeMemory(dev, mem, NULL);
+   }
+   return 1;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -987,6 +1389,10 @@ main(int argc, char **argv)
       ok &= test_many_allocs();
    }
    if (ok && CASE_ON("dmabuf")) { ok &= test_dmabuf(0); ok &= test_dmabuf(1); }
+   if (ok && g_only && !strcmp(g_only, "isync"))
+      ok &= test_isync(getenv("MALI_FAKE_SLOW_US") ? (uint32_t)atoi(getenv("MALI_FAKE_SLOW_US")) : 150000u);
+   if (ok && g_only && !strcmp(g_only, "stale")) ok &= test_stale();
+   if (ok && g_only && !strcmp(g_only, "modrt")) ok &= test_modrt();
    if (ok && CASE_ON("idle")) ok &= test_idle();
    if (ok && CASE_ON("binary")) ok &= test_binary();
    if (ok && CASE_ON("timeline")) ok &= test_timeline(500);
@@ -998,6 +1404,7 @@ main(int argc, char **argv)
    if (ok && g_only && !strcmp(g_only, "fault")) ok &= test_fault();
    if (ok && g_only && !strcmp(g_only, "wsifd")) ok &= test_wsifd();
    if (ok && g_only && !strcmp(g_only, "syncexport")) ok &= test_syncexport();
+   if (ok && g_only && !strcmp(g_only, "waitdebug")) ok &= test_wait_debug();
    if (ok && g_only && !strcmp(g_only, "wsiimg")) ok &= test_wsiimg();
    if (ok && g_only && !strcmp(g_only, "failsignal")) ok &= test_failsignal();
    if (ok && g_only && !strcmp(g_only, "nofence")) ok &= test_nofence();
