@@ -506,6 +506,14 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .privateData = true,
       .bufferDeviceAddress = true, /* t_vk_feat bda */
       .shaderSampledImageArrayDynamicIndexing = true, .runtimeDescriptorArray = true,    /* t_vk_feat didx */
+      /* descriptorIndexing stays false: the sub-feature claims below are main's, unchanged, but the umbrella is what DXVK
+       * requires and dEQP-VK.descriptor_indexing.* on hardware (X8 G925, 2026-11-22) fails all 50 sampled-image / sampler
+       * / combined-image-sampler cases - only one of the four array rows renders, the rest read zero - so advertising it
+       * would be a claim dEQP refutes on the day it was made. The lowering is implemented and unit-tested (partially-bound
+       * arrays select the Null Descriptor, mali_descriptor_lower.c:75-84; t_desc, t_vk_feat didx/didxoob); the 50 failures
+       * are the frontier. Withdrawing the five sub-feature claims too would make VUID-03830 hold but costs 5 t_dxvk_caps
+       * rows (DXVK_MISSING 3 -> 8), so that is a separate decision. DXVK_MISSING stays 3. Notes:
+       * M/notes/descriptor-indexing.md. */
       .shaderSampledImageArrayNonUniformIndexing = true, .descriptorBindingPartiallyBound = true,
       .descriptorBindingSampledImageUpdateAfterBind = true, .descriptorBindingUpdateUnusedWhilePending = true,
       .multiDrawIndirect = true,

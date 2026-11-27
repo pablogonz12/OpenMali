@@ -40,6 +40,9 @@ export MALI_DIRTY_CHECK=1   # trap: build_draw_descs aborts when the record-time
 # 2026-11-22 robustness2: the list grew 47 -> 49 because robustness2.robustBufferAccess2/nullDescriptor are DXVK 3.1.1
 # requirements (DXVK-GAP.md:11) that t_dxvk_caps never counted; robustBufferAccess2 is advertised now (vk_feat robust2,
 # X4 6/6), so the honest count is 3/49 where main's 47-row list read 3.
+# 2026-11-22 descidx: stays 3. The descriptor-indexing lowering is implemented and unit-tested (t_desc, t_vk_feat didx/
+# didxoob) but descriptorIndexing is NOT advertised: dEQP-VK.descriptor_indexing.* on hardware (X8 G925) gives 53
+# NotSupported / 50 Fail / 0 Pass. Still false: geometryShader, shaderCullDistance, descriptorIndexing.
 DXVK_MISSING=3
 DXVK_MISSING_MSAA=$DXVK_MISSING
 LOADER_ENV="VK_DRIVER_FILES=$OUT/mali_icd.json VK_ICD_FILENAMES=$OUT/mali_icd.json VK_LOADER_LAYERS_DISABLE=~all~"

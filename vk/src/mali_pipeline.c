@@ -10,6 +10,7 @@
 #include "mali_cmd.h"
 #include "mali_soft.h"
 #include "mali_cs_emit.h"
+#include "mali_descriptor.h"
 #include "mali_entrypoints.h"
 #include "mali_image.h"
 #include "vk_enum_to_str.h"
