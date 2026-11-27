@@ -233,7 +233,7 @@ run_case(const char *name, int kind, const char *spv, unsigned local, unsigned g
                uint32_t acc = 0;
                for (unsigned l = 0; l < local; l++) {
                   acc += s[g * local + l];
-                  if (d[g * local + l] != acc) { if (!bad) first = g * 256 + l; bad++; }
+                  if (d[g * local + l] != acc) { if (!bad) first = g * local + l; bad++; }
                }
             }
             CHECK(bad == 0, "scan: %u of %u wrong, first at %u: got %u", bad, N, first, d[first]);

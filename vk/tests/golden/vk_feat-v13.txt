@@ -17477,8 +17477,8 @@ kick dev0 #157  (94 instructions)
   BO779 FREED len=0x1000 flags=0x100
   BO780 FREED len=0x1000 flags=0x0
   BO781 FREED len=0x1000 flags=0x0
-  BO782 live len=0x10000 flags=0x100
-  BO783 live len=0x1000 flags=0x100
+  BO782 FREED len=0x10000 flags=0x100
+  BO783 FREED len=0x1000 flags=0x100
   BO784 FREED len=0x4000 flags=0x100
   BO785 FREED len=0x1000 flags=0x0
   BO786 FREED len=0x1000 flags=0x0

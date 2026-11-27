@@ -37,6 +37,7 @@ static PFN_vkGetImageSubresourceLayout g_gsl;
 static PFN_vkResetFences g_rf;
 static PFN_vkResetCommandBuffer g_rcb;
 static PFN_vkEnumerateDeviceExtensionProperties g_edep;
+static int g_image2dview_enabled;
 static VkBool32 g_mirror, g_bda, g_didx;
 static int g_modless;  /* VK_KHR_maintenance5 (test maint5): stages carry a chained VkShaderModuleCreateInfo, module == VK_NULL_HANDLE */
 static int g_ib2;      /* test maint5: vkCmdBindIndexBuffer2KHR instead of vkCmdBindIndexBuffer */
@@ -3506,8 +3507,7 @@ test_privdata(void)
  * (zink_screen.c:610-612), per-stage samplers/sampled images -> GL_MAX_TEXTURE_IMAGE_UNITS (:643-646), storage buffers
  * -> GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS (:648-650), storage images -> GL_MAX_IMAGE_UNITS (:671-674). */
 /* VK_EXT_image_2d_view_of_3d (GL 4.2's texture views): a 2D view of one slice of a 3D image must be creatable and
- * bindable. PanVK advertises image2DViewOf3D on this class of GPU; the slice layout already exists here for the core
- * VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT path, so the failure before this was the create flag/feature only. */
+ * bindable as a storage image. This checks setup only, not shader access or slice contents. */
 static int
 test_image2dview(void)
 {
@@ -3524,7 +3524,8 @@ test_image2dview(void)
       for (uint32_t i = 0; i < en; i++)
          if (!strcmp(e[i].extensionName, VK_EXT_IMAGE_2D_VIEW_OF_3D_EXTENSION_NAME)) have = 1;
    free(e);
-   CHECK(have, "VK_EXT_image_2d_view_of_3d absent from the device extension list");
+    CHECK(have, "VK_EXT_image_2d_view_of_3d absent from the device extension list");
+   CHECK(g_image2dview_enabled, "image2DViewOf3D was not enabled at device creation");
 
    /* a 3D image split into four 2D slices, viewable without the core 2D_ARRAY_COMPATIBLE flag */
    VkImageCreateInfo ici = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -3532,7 +3533,7 @@ test_image2dview(void)
                             .imageType = VK_IMAGE_TYPE_3D, .format = VK_FORMAT_R8G8B8A8_UNORM,
                             .extent = {16, 16, 4}, .mipLevels = 1, .arrayLayers = 1,
                             .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
-                            .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                            .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
    VkImage img;
    CHECK(CreateImage(dev, &ici, NULL, &img) == VK_SUCCESS, "3D image with VK_IMAGE_CREATE_2D_VIEW_COMPATIBLE_BIT_EXT");
@@ -3549,15 +3550,12 @@ test_image2dview(void)
                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 2, 1}};
    VkImageView view;
    CHECK(CreateImageView(dev, &vi, NULL, &view) == VK_SUCCESS, "2D view of slice 2 of the 3D image");
-   VkSamplerCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
-   VkSampler smp;
-   CHECK(CreateSampler(dev, &sci, NULL, &smp) == VK_SUCCESS, "sampler");
-   VkDescriptorSetLayoutBinding lb = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                                      .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT};
+   VkDescriptorSetLayoutBinding lb = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                      .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT};
    VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &lb};
    VkDescriptorSetLayout dsl;
    CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl");
-   VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
+   VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1};
    VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &ps};
    VkDescriptorPool pool;
    CHECK(CreateDescriptorPool(dev, &dpi, NULL, &pool) == VK_SUCCESS, "dpool");
@@ -3565,15 +3563,14 @@ test_image2dview(void)
                                       .descriptorSetCount = 1, .pSetLayouts = &dsl};
    VkDescriptorSet set;
    CHECK(AllocateDescriptorSets(dev, &dai, &set) == VK_SUCCESS, "alloc set");
-   VkDescriptorImageInfo ii = {smp, view, VK_IMAGE_LAYOUT_GENERAL};
+   VkDescriptorImageInfo ii = {VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL};
    VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 0,
-                             .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii};
+                             .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &ii};
    UpdateDescriptorSets(dev, 1, &w, 0, NULL);
-   printf("{\"test\":\"image2dview\",\"ext\":\"%s\",\"image2DViewOf3D\":true,\"slice\":2,\"3d\":\"16x16x4\",\"ok\":true}\n",
+   printf("{\"test\":\"image2dview\",\"ext\":\"%s\",\"image2DViewOf3D\":true,\"slice\":2,\"3d\":\"16x16x4\",\"scope\":\"storage descriptor setup only; no shader readback\",\"ok\":true}\n",
           VK_EXT_IMAGE_2D_VIEW_OF_3D_EXTENSION_NAME);
    DestroyDescriptorPool(dev, pool, NULL);
    DestroyDescriptorSetLayout(dev, dsl, NULL);
-   DestroySampler(dev, smp, NULL);
    DestroyImageView(dev, view, NULL);
    DestroyImage(dev, img, NULL);
    FreeMemory(dev, imem, NULL);
@@ -3739,6 +3736,8 @@ test_gl43caps(void)
    DestroyImageView(dev, view, NULL);
    DestroyImage(dev, img, NULL);
    FreeMemory(dev, imem, NULL);
+   hbuf_destroy(&ubo);
+   hbuf_destroy(&ssbo);
    return 1;
 }
 
@@ -4373,7 +4372,25 @@ main(int argc, char **argv)
       ftf.geometryStreams = q.geometryStreams;
    }
    if (g_tf) { ftf.pNext = e2.pNext; e2.pNext = &ftf; }
-   const char *dexts[8]; uint32_t ndx = 0;
+   VkPhysicalDeviceImage2DViewOf3DFeaturesEXT e3d = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_2D_VIEW_OF_3D_FEATURES_EXT};
+   {
+      VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &e3d};
+      GetPhysicalDeviceFeatures2(pd, &q);
+      uint32_t n = 0;
+      int have = 0;
+      if (g_edep && g_edep(pd, NULL, &n, NULL) == VK_SUCCESS) {
+         VkExtensionProperties *ext = calloc(n ? n : 1, sizeof *ext);
+         if (ext && g_edep(pd, NULL, &n, ext) == VK_SUCCESS)
+            for (uint32_t i = 0; i < n; i++)
+               if (!strcmp(ext[i].extensionName, VK_EXT_IMAGE_2D_VIEW_OF_3D_EXTENSION_NAME)) have = 1;
+         free(ext);
+      }
+      g_image2dview_enabled = have && e3d.image2DViewOf3D;
+      e3d.sampler2DViewOf3D = VK_FALSE;
+      if (g_image2dview_enabled) { e3d.pNext = e2.pNext; e2.pNext = &e3d; }
+   }
+   const char *dexts[9]; uint32_t ndx = 0;
    if (g_pv_last) dexts[ndx++] = "VK_EXT_provoking_vertex";
    if (g_div || g_div0) dexts[ndx++] = "VK_EXT_vertex_attribute_divisor";
    if (g_lr_rect) dexts[ndx++] = "VK_EXT_line_rasterization";
@@ -4382,6 +4399,7 @@ main(int argc, char **argv)
    if (rb2.nullDescriptor) dexts[ndx++] = "VK_EXT_robustness2";
    dexts[ndx++] = "VK_EXT_private_data";
    if (g_tf) dexts[ndx++] = "VK_EXT_transform_feedback";
+   if (g_image2dview_enabled) dexts[ndx++] = VK_EXT_IMAGE_2D_VIEW_OF_3D_EXTENSION_NAME;
    e13.privateData = f13.privateData;
    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &e2, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi,
                             .enabledExtensionCount = ndx, .ppEnabledExtensionNames = dexts};
