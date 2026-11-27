@@ -3,11 +3,13 @@
  * CPU mapping, write-combined); type 1: HOST_VISIBLE|CACHED (cached CPU mapping, explicit
  * flush/invalidate). The memory is always CPU mapped; vkMapMemory only hands out the pointer. */
 #include "mali_queue.h"
+#include "mali_wait_debug.h"
 
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "mali_dmabuf.h"
@@ -111,8 +113,8 @@ mali_memory_pool_release(void *pdev, size_t size)
    mem_release(pdev, size);
 }
 
-VKAPI_ATTR VkResult VKAPI_CALL
-mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
+static VkResult
+mali_allocate_memory_impl(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
                     const VkAllocationCallbacks *pAllocator, VkDeviceMemory *pMemory)
 {
    VK_FROM_HANDLE(mali_device, dev, _device);
@@ -180,6 +182,25 @@ mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
    /* mem_used was reserved before the allocation (mem_reserve); it must not be added again here. */
    *pMemory = mali_memory_to_handle(mem);
    return VK_SUCCESS;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+mali_AllocateMemory(VkDevice device, const VkMemoryAllocateInfo *info,
+                    const VkAllocationCallbacks *allocator, VkDeviceMemory *memory)
+{
+   const VkImportMemoryFdInfoKHR *imp = vk_find_struct_const(info->pNext, IMPORT_MEMORY_FD_INFO_KHR);
+   int fd = imp ? imp->fd : -1;
+   struct stat st;
+   long long fd_size = mali_wait_debug() && fd >= 0 && fstat(fd, &st) == 0 ? (long long)st.st_size : -1;
+   VkResult r = mali_allocate_memory_impl(device, info, allocator, memory);
+   mali_wait_result("vkAllocateMemory", r, "size=%llu type=%u import_fd=%d handle=%u fd_size=%lld",
+                    (unsigned long long)info->allocationSize, info->memoryTypeIndex, fd,
+                    imp ? (unsigned)imp->handleType : 0, fd_size);
+   if (imp && imp->handleType)
+      mali_wait_event("dmabuf_import fd=%d fd_size=%lld allocation_size=%llu handle=%u result=%d memory=%p",
+                      fd, fd_size, (unsigned long long)info->allocationSize, (unsigned)imp->handleType,
+                      r, r == VK_SUCCESS ? (void *)(uintptr_t)*memory : NULL);
+   return r;
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -274,8 +295,8 @@ mali_GetDeviceMemoryCommitment(VkDevice device, VkDeviceMemory memory, VkDeviceS
    *pCommittedMemoryInBytes = 0; /* no lazily allocated memory type */
 }
 
-VKAPI_ATTR VkResult VKAPI_CALL
-mali_GetMemoryFdKHR(VkDevice _device, const VkMemoryGetFdInfoKHR *pGetFdInfo, int *pFd)
+static VkResult
+mali_get_memory_fd_impl(VkDevice _device, const VkMemoryGetFdInfoKHR *pGetFdInfo, int *pFd)
 {
    VK_FROM_HANDLE(mali_device, dev, _device);
    VK_FROM_HANDLE(mali_memory, mem, pGetFdInfo->memory);
@@ -298,6 +319,20 @@ mali_GetMemoryFdKHR(VkDevice _device, const VkMemoryGetFdInfoKHR *pGetFdInfo, in
       return errno_to_vk(dev, fd);
    *pFd = fd;
    return VK_SUCCESS;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+mali_GetMemoryFdKHR(VkDevice device, const VkMemoryGetFdInfoKHR *info, int *fd)
+{
+   VkResult r = mali_get_memory_fd_impl(device, info, fd);
+   struct stat st;
+   long long size = mali_wait_debug() && r == VK_SUCCESS && fstat(*fd, &st) == 0 ? (long long)st.st_size : -1;
+   mali_wait_result("vkGetMemoryFdKHR", r, "memory=%p handle=%u",
+                    (void *)(uintptr_t)info->memory, (unsigned)info->handleType);
+   mali_wait_event("dmabuf_export memory=%p fd=%d fd_size=%lld handle=%u result=%d",
+                   (void *)(uintptr_t)info->memory, r == VK_SUCCESS ? *fd : -1, size,
+                   (unsigned)info->handleType, r);
+   return r;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL

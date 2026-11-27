@@ -10,6 +10,7 @@
 #include <poll.h>
 #include <inttypes.h>
 #include <stdatomic.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -62,6 +63,49 @@ mali_wait_debug(void)
 {
    pthread_once(&wait_once, wait_init);
    return wait_file != NULL;
+}
+
+void
+mali_wait_event(const char *fmt, ...)
+{
+   if (!mali_wait_debug())
+      return;
+   va_list ap;
+   va_start(ap, fmt);
+   pthread_mutex_lock(&wait_file_lock);
+   fputs("mali_wait: ", wait_file);
+   vfprintf(wait_file, fmt, ap);
+   fputc('\n', wait_file);
+   pthread_mutex_unlock(&wait_file_lock);
+   va_end(ap);
+}
+
+void
+mali_wait_result(const char *function, int result, const char *fmt, ...)
+{
+   if (!result || !mali_wait_debug())
+      return;
+   static struct { const char *function; int result; uint64_t count; } counts[128];
+   pthread_mutex_lock(&wait_file_lock);
+   unsigned i;
+   for (i = 0; i < 128 && counts[i].function; i++)
+      if (counts[i].result == result && !strcmp(counts[i].function, function))
+         break;
+   if (i < 128) {
+      counts[i].function = function;
+      counts[i].result = result;
+      uint64_t count = ++counts[i].count;
+      fprintf(wait_file, "mali_wait: result function=%s result=%d count=%" PRIu64, function, result, count);
+      if (count <= 20 && fmt) {
+         va_list ap;
+         va_start(ap, fmt);
+         fputc(' ', wait_file);
+         vfprintf(wait_file, fmt, ap);
+         va_end(ap);
+      }
+      fputc('\n', wait_file);
+   }
+   pthread_mutex_unlock(&wait_file_lock);
 }
 
 void

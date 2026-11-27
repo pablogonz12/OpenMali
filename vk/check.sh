@@ -195,7 +195,16 @@ for c in wsifd syncexport wsiimg; do run "wsi $c" 0 MALI_BACKEND=fake $TQ --only
 for d in 0 1; do run "wait debug=$d" 0 MALI_BACKEND=fake MALI_WAIT_DBG=$d $TQ --only waitdebug; done
 wait_debug_dir=$(mktemp -d)
 run "wait debug=file" 0 MALI_BACKEND=fake MALI_WAIT_DBG="$wait_debug_dir/w" $TQ --only waitdebug
+run "external image debug exercise" 0 MALI_BACKEND=fake MALI_WAIT_DBG="$wait_debug_dir/image" $TQ --only wsiimg
+if grep -q 'result function=vkCreateImage .*count=2' "$wait_debug_dir"/image-*.log &&
+   grep -q 'external_image .*format=.*extent=64x64x1' "$wait_debug_dir"/image-*.log &&
+   grep -q 'external_plane index=0 offset=0 pitch=' "$wait_debug_dir"/image-*.log; then
+   echo "ok    external image debug records"
+else
+   echo "FAIL  external image debug records"; fail=1
+fi
 rm -f "$wait_debug_dir"/w-*.log
+rm -f "$wait_debug_dir"/image-*.log
 rmdir "$wait_debug_dir"
 run "wsi failsignal" 0 MALI_BACKEND=fake MALI_FAULT_INJECT=5 $TQ --only failsignal
 
