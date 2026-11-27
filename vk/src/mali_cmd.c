@@ -48,13 +48,33 @@ mali_cmd_set_hw(const struct mali_hw *hw)
 
 #define CMD(h) struct mali_cmd_buffer *cmd = mali_cmd_buffer_from_vk(vk_command_buffer_from_handle(h))
 
-static void
-unsupported(struct mali_cmd_buffer *cmd, const char *what)
+void
+mali_cmd_unsupported(struct mali_cmd_buffer *cmd, const char *what)
 {
-   if (getenv("MALI_PIPE_DBG"))
+   /* Reasons may be temporary buffers. Recording is concurrent. */
+   static char *seen[256];
+   static unsigned count;
+   static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+   bool first = true;
+   pthread_mutex_lock(&mutex);
+   for (unsigned i = 0; i < count; i++)
+      if (!strcmp(seen[i], what)) {
+         first = false;
+         break;
+      }
+   if (first && count < sizeof(seen) / sizeof(seen[0])) {
+      char *copy = strdup(what);
+      if (copy)
+         seen[count++] = copy;
+      /* On allocation failure, log this occurrence and retry next time. */
+   }
+   pthread_mutex_unlock(&mutex);
+   if (first)
       fprintf(stderr, "mali_cmd: unsupported %s\n", what);
    vk_command_buffer_set_error(&cmd->vk, VK_ERROR_FEATURE_NOT_PRESENT);
 }
+
+#define unsupported mali_cmd_unsupported
 
 /* Legal-but-unimplemented state: render the closest legal thing, log ONE line, do not poison the command buffer.
  * PanVK's only vk_command_buffer_set_error is OOM (panvk_vX_cmd_desc_state.c:82); illegal state is UNREACHABLE and

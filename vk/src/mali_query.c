@@ -130,7 +130,7 @@ mali_CmdWriteTimestamp2(VkCommandBuffer h, VkPipelineStageFlags2 stage, VkQueryP
    CMD(h);
    struct mali_query_pool *p = mali_query_pool_from_handle(pool);
    if (!mali_cmd_push_ops || p->q.type != MALI_QT_TIMESTAMP || q >= p->q.count) {
-      vk_command_buffer_set_error(&cmd->vk, VK_ERROR_FEATURE_NOT_PRESENT);
+      mali_cmd_unsupported(cmd, "timestamp query");
       return;
    }
    struct mali_op op = mali_qpool_op_timestamp(&p->q, q);
@@ -143,7 +143,7 @@ mali_CmdBeginQuery(VkCommandBuffer h, VkQueryPool pool, uint32_t q, VkQueryContr
    CMD(h);
    struct mali_query_pool *p = mali_query_pool_from_handle(pool);
    if (!mali_cmd_set_occlusion || p->q.type != MALI_QT_OCCLUSION || q >= p->q.count) {
-      vk_command_buffer_set_error(&cmd->vk, VK_ERROR_FEATURE_NOT_PRESENT);
+      mali_cmd_unsupported(cmd, "begin occlusion query");
       return;
    }
    mali_cmd_set_occlusion(cmd, mali_qpool_value_va(&p->q, q), MALI_OCC_MODE_COUNTER);
@@ -155,7 +155,7 @@ mali_CmdEndQuery(VkCommandBuffer h, VkQueryPool pool, uint32_t q)
    CMD(h);
    struct mali_query_pool *p = mali_query_pool_from_handle(pool);
    if (!mali_cmd_set_occlusion || !mali_cmd_push_ops || p->q.type != MALI_QT_OCCLUSION || q >= p->q.count) {
-      vk_command_buffer_set_error(&cmd->vk, VK_ERROR_FEATURE_NOT_PRESENT);
+      mali_cmd_unsupported(cmd, "end occlusion query");
       return;
    }
    mali_cmd_set_occlusion(cmd, 0, 0);
