@@ -213,6 +213,8 @@ for g in v11 v13; do
    run "vk_draw reset $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --loop 1000 --loop-reset
    run "vk_draw blitreplay $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only blitreplay
 done
+# hwbench: the three bottleneck microbenchmarks (fake backend: the API sequence, shader compile and submit path).
+for g in v11 v13; do run "hwbench $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_bench" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --quick --json-only; done
 
 # Geometry shaders, lane 1 (notes/gs-design.md §4). A *provable* pass-through GS is drawn by the vertex program alone
 # (zero extra work); every other GS is refused at pipeline creation, and the feature bit is NOT advertised.
