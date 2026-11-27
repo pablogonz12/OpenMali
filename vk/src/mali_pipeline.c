@@ -12,6 +12,7 @@
 #include "mali_cs_emit.h"
 #include "mali_entrypoints.h"
 #include "mali_image.h"
+#include "vk_command_buffer.h"
 #include "vk_enum_to_str.h"
 #include "mali_msaa.h"
 #include "mali_gs.h"
@@ -718,10 +719,28 @@ mali_DestroyPipeline(VkDevice d, VkPipeline pipeline, const VkAllocationCallback
    }
 }
 
-/* Every submission is serialised by the queue (a frame is built and retired before the next one), so barriers have nothing to do. */
+/* Every submission is serialised by the queue (a frame is built and retired before the next one), so barriers have
+ * nothing to do for the GPU. They are the one place where a frame says it gives a buffer away, though: a barrier
+ * that releases an image to (or acquires it from) VK_QUEUE_FAMILY_FOREIGN_EXT is the dma-buf handoff, and that is
+ * what implicit sync has to cover (mali_isync.h). zink emits exactly that for every exported dma-buf at batch
+ * flush (zink_batch.c: zink_kopper/dmabuf_exports, dstQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT). */
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdPipelineBarrier2(VkCommandBuffer cb, const VkDependencyInfo *info)
 {
+   if (!info || (!info->imageMemoryBarrierCount && !info->bufferMemoryBarrierCount))
+      return;
+   VK_FROM_HANDLE(vk_command_buffer, vkcb, cb);
+   struct mali_cmd_buffer *cmd = mali_cmd_buffer_from_vk(vkcb);
+   for (uint32_t i = 0; i < info->imageMemoryBarrierCount; i++) {
+      const VkImageMemoryBarrier2 *b = &info->pImageMemoryBarriers[i];
+      if (b->dstQueueFamilyIndex == VK_QUEUE_FAMILY_FOREIGN_EXT || b->srcQueueFamilyIndex == VK_QUEUE_FAMILY_FOREIGN_EXT)
+         mali_cmd_mark_handoff_image(cmd, b->image);
+   }
+   for (uint32_t i = 0; i < info->bufferMemoryBarrierCount; i++) {
+      const VkBufferMemoryBarrier2 *b = &info->pBufferMemoryBarriers[i];
+      if (b->dstQueueFamilyIndex == VK_QUEUE_FAMILY_FOREIGN_EXT || b->srcQueueFamilyIndex == VK_QUEUE_FAMILY_FOREIGN_EXT)
+         mali_cmd_mark_buffer_handoff(cmd, b->buffer);
+   }
 }
 
 /* ---- resolvers for mali_cmd.c ---- */

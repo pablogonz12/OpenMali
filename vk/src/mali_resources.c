@@ -3,6 +3,7 @@
  * descriptor entrypoints (the code in mali_descriptor.c is device-handle free; arch comes from the device here). */
 #include "mali_descriptor.h"
 #include "mali_entrypoints.h"
+#include "vk_descriptor_update_template.h"
 #include "mali_image.h"
 #include "mali_queue.h"
 
@@ -102,7 +103,9 @@ mali_FreeDescriptorSets(VkDevice d, VkDescriptorPool p, uint32_t n, const VkDesc
 
 /* M15: remember which memory a storage descriptor lets the GPU write, so the fence wait for a later submit only
  * CSYNCs BOs that changed (vk/MEMORY.md). Done here, in the entrypoint, and not in mali_dset_write: the core
- * helper is also driven by the unit tests with handles that are not real objects. Over-marking is harmless. */
+ * helper is also driven by the unit tests with handles that are not real objects. Over-marking is harmless.
+ * Implicit sync (mali_isync.h) uses the same walk for the read side: every descriptor that names a buffer or an
+ * image is a read of it, and mali_dset_mark_read keeps only the imported dma-bufs. */
 static void
 mark_storage_writes(uint32_t nw, const VkWriteDescriptorSet *w)
 {
@@ -114,23 +117,42 @@ mark_storage_writes(uint32_t nw, const VkWriteDescriptorSet *w)
          switch (w[i].descriptorType) {
          case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
          case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+         case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+         case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
             if (w[i].pBufferInfo && w[i].pBufferInfo[e].buffer) {
                struct mali_buffer *mb = mali_buffer_from_handle(w[i].pBufferInfo[e].buffer);
-               if (mb) mali_dset_mark_write(ds, mb->mem);
+               if (mb) {
+                  mali_dset_mark_read(ds, mb->mem);
+                  if (w[i].descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER ||
+                      w[i].descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC)
+                     mali_dset_mark_write(ds, mb->mem);
+               }
             }
             break;
+         case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+         case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+         case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
          case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
             if (w[i].pImageInfo && w[i].pImageInfo[e].imageView) {
                struct mali_image_view *iv = mali_image_view_from_handle(w[i].pImageInfo[e].imageView);
-               if (iv && iv->vk.image)
-                  mali_dset_mark_write(ds, container_of(iv->vk.image, struct mali_image, vk)->mem);
+               if (iv && iv->vk.image) {
+                  struct mali_memory *m = container_of(iv->vk.image, struct mali_image, vk)->mem;
+                  mali_dset_mark_read(ds, m);   /* sampled/storage/input: the consumer side of implicit sync */
+                  if (w[i].descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                     mali_dset_mark_write(ds, m);
+               }
             }
             break;
+         case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
          case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
             if (w[i].pTexelBufferView && w[i].pTexelBufferView[e]) {
                struct mali_buffer_view *vb = mali_buffer_view_from_handle(w[i].pTexelBufferView[e]);
-               if (vb && vb->vk.buffer)
-                  mali_dset_mark_write(ds, container_of(vb->vk.buffer, struct mali_buffer, vk)->mem);
+               if (vb && vb->vk.buffer) {
+                  struct mali_memory *m = container_of(vb->vk.buffer, struct mali_buffer, vk)->mem;
+                  mali_dset_mark_read(ds, m);
+                  if (w[i].descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER)
+                     mali_dset_mark_write(ds, m);
+               }
             }
             break;
          default: break;
@@ -147,6 +169,57 @@ mali_UpdateDescriptorSets(VkDevice d, uint32_t nw, const VkWriteDescriptorSet *w
    mali_update_descriptor_sets(&dev->vk, nw, w, nc, c);
 }
 
+/* Implicit sync: a template update binds descriptors without going through mali_UpdateDescriptorSets, so the read
+ * marks have to be collected here from the template entries (type, offset, stride in the caller's data block). Without
+ * this an imported sampled image bound through a template would never have its producer's fence waited. */
+static void
+mark_template_reads(struct mali_dset *ds, VkDescriptorUpdateTemplate templ, const void *data)
+{
+   if (!ds || !templ || !data)
+      return;
+   struct vk_descriptor_update_template *t = vk_descriptor_update_template_from_handle(templ);
+   if (!t || t->type != VK_DESCRIPTOR_UPDATE_TEMPLATE_TYPE_DESCRIPTOR_SET)
+      return;
+   for (uint32_t e = 0; e < t->entry_count; e++) {
+      const struct vk_descriptor_template_entry *en = &t->entries[e];
+      for (uint32_t i = 0; i < en->array_count; i++) {
+         const uint8_t *p = (const uint8_t *)data + en->offset + (size_t)i * en->stride;
+         switch (en->type) {
+         case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+         case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+         case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+         case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC: {
+            const VkDescriptorBufferInfo *bi = (const VkDescriptorBufferInfo *)p;
+            struct mali_buffer *mb = bi->buffer ? mali_buffer_from_handle(bi->buffer) : NULL;
+            if (mb)
+               mali_dset_mark_read(ds, mb->mem);
+            break;
+         }
+         case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+         case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+         case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+         case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE: {
+            const VkDescriptorImageInfo *ii = (const VkDescriptorImageInfo *)p;
+            struct mali_image_view *iv = ii->imageView ? mali_image_view_from_handle(ii->imageView) : NULL;
+            if (iv && iv->vk.image)
+               mali_dset_mark_read(ds, container_of(iv->vk.image, struct mali_image, vk)->mem);
+            break;
+         }
+         case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+         case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER: {
+            VkBufferView bvh;
+            memcpy(&bvh, p, sizeof bvh);
+            struct mali_buffer_view *vb = bvh ? mali_buffer_view_from_handle(bvh) : NULL;
+            if (vb && vb->vk.buffer)
+               mali_dset_mark_read(ds, container_of(vb->vk.buffer, struct mali_buffer, vk)->mem);
+            break;
+         }
+         default: break;
+         }
+      }
+   }
+}
+
 VKAPI_ATTR void VKAPI_CALL
 mali_UpdateDescriptorSetWithTemplate(VkDevice d, VkDescriptorSet set, VkDescriptorUpdateTemplate t, const void *data)
 {
@@ -156,5 +229,6 @@ mali_UpdateDescriptorSetWithTemplate(VkDevice d, VkDescriptorSet set, VkDescript
    struct mali_dset *ds = mali_dset_from_handle(set);
    if (ds)
       ds->wrote_full = true;
+   mark_template_reads(ds, t, data);
    mali_update_descriptor_set_with_template(&dev->vk, set, t, data);
 }

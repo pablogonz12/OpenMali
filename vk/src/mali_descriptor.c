@@ -414,6 +414,22 @@ mali_dset_mark_write(struct mali_dset *s, struct mali_memory *mem)
       s->wrote_full = true;
 }
 
+/* Implicit sync: an imported dma-buf this set samples has to have its producer's fences waited before the submit
+ * that samples it (mali_isync.h). Recorded per set, handed to the command buffer at bind. */
+void
+mali_dset_mark_read(struct mali_dset *s, struct mali_memory *mem)
+{
+   if (!s || !mem || mem->isync != MALI_ISYNC_BO_IMPORTED)
+      return;
+   for (unsigned i = 0; i < s->nread; i++)
+      if (s->read[i] == mem)
+         return;
+   if (s->nread < MALI_DSET_READ_MAX)
+      s->read[s->nread++] = mem;
+   else
+      s->read_full = true;
+}
+
 static void
 write_one(struct mali_dset *s, const struct mali_lbinding *b, uint32_t idx, VkDescriptorType type, const VkDescriptorImageInfo *ii,
           const VkDescriptorBufferInfo *bi, const VkBufferView *bv)
@@ -525,6 +541,11 @@ mali_dset_copy(struct mali_dset *dst, const VkCopyDescriptorSet *c, struct mali_
       mali_dset_mark_write(dst, src->wrote[i]);
    if (src->wrote_full)
       dst->wrote_full = true;
+   /* Implicit sync: the destination now reads whatever the source read */
+   for (unsigned i = 0; i < src->nread; i++)
+      mali_dset_mark_read(dst, src->read[i]);
+   if (src->read_full)
+      dst->read_full = true;
    const struct mali_lbinding *sb = &src->layout->b[c->srcBinding], *db = &dst->layout->b[c->dstBinding];
    if (sb->inline_bytes || db->inline_bytes) {   /* inline block: dstArrayElement/srcArrayElement are byte offsets, descriptorCount bytes */
       if (!sb->inline_bytes || !db->inline_bytes || c->srcArrayElement > sb->inline_bytes || c->dstArrayElement > db->inline_bytes ||

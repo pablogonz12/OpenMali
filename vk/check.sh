@@ -186,6 +186,19 @@ run "queue teardown v13"  0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 MALI_FAKE_SLOW_U
 run "queue all v13 slow" 0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 MALI_FAKE_SLOW_US=200 $TQ --submits 1000
 # present ordering (queue-order): the commit never precedes the frame; with a fence it may (MALI_PRESENT_FENCE forces the kernel capability)
 for m in 0 1; do run "present order fence=$m" 0 MALI_BACKEND=fake MALI_FAKE_SLOW_US=100000 MALI_PRESENT_FENCE=$m $TQ --only order; done
+# Stale memory marks (mali_cmd.h wrote[]/read[]): a submitted command buffer whose VkDeviceMemory was freed after
+# recording must not hand a dangling struct mali_memory to the backend (the X8's Xwayland SIGSEGV in
+# kbase_bo_host_touch, smoke x8-1127-233142).
+run "stale memory marks" 0 MALI_BACKEND=fake MALI_FAKE_DMABUF_SYNC=1 $TQ --only stale
+# Implicit sync (mali_isync.c): a submit that only SAMPLES an imported dma-buf waits its producer's fence before it
+# runs (the Xwayland-glamor read path); MALI_IMPLICIT_SYNC=0 is the A/B arm. Both compare against a control submit.
+run "implicit sync: sampled imported BO waits" 0 MALI_BACKEND=fake MALI_FAKE_DMABUF_SYNC=1 MALI_FAKE_SLOW_US=150000 MALI_IMPLICIT_SYNC=1 $TQ --only isync
+run "implicit sync off" 0 MALI_BACKEND=fake MALI_FAKE_DMABUF_SYNC=1 MALI_FAKE_SLOW_US=150000 MALI_IMPLICIT_SYNC=0 $TQ --only isync
+# Producer side, 5.10 (the fake's default: IMPORT_SYNC_FILE answers ENOTTY): the CPU wait is paid by the submit that
+# HANDS the dma-buf off (foreign-queue release) and not by an ordinary submit that writes the same BO.
+run "implicit sync: handoff submit waits (opt-in)" 0 MALI_BACKEND=fake MALI_FAKE_SLOW_US=150000 MALI_IMPLICIT_SYNC=wait $TQ --only isync-store
+run "implicit sync: default mode does not block the producer" 0 MALI_BACKEND=fake MALI_FAKE_SLOW_US=150000 $TQ --only isync-store
+run "implicit sync off (handoff)" 0 MALI_BACKEND=fake MALI_FAKE_SLOW_US=150000 MALI_IMPLICIT_SYNC=0 $TQ --only isync-store
 run "timeout-0 poll does not queue behind a blocking wait" 0 MALI_BACKEND=fake MALI_FAKE_SLOW_US=300000 $TQ --only poll0
 run "signal-less submit skips the fence" 0 MALI_BACKEND=fake MALI_FAULT_INJECT=5 $TQ --only nofence
 run "MALI_FENCE_ALWAYS restores it (expected fail)" 1 MALI_BACKEND=fake MALI_FAULT_INJECT=5 MALI_FENCE_ALWAYS=1 $TQ --only nofence
@@ -372,8 +385,8 @@ rm -f "$GDIR/geom.jsonl"
 if [ "$SAN" = 1 ]; then
    echo "skip  build-t_*.sh tests (not sanitized)"
 else
-   for t in afbc arena bbox bc cmd compile desc hmask image memsync meta qpool query txf txf_cc; do run "t_$t" 0 "$V/tests/build-t_$t.sh"; done
-   for t in bc bopool cmd compile desc image memsync meta qpool query txf txf_cc; do run "t_$t" 0 "$V/tests/build-t_$t.sh"; done
+   for t in afbc arena bbox bc cmd compile desc hmask image isync memsync meta qpool query txf txf_cc; do run "t_$t" 0 "$V/tests/build-t_$t.sh"; done
+   for t in bc bopool cmd compile desc image isync memsync meta qpool query txf txf_cc; do run "t_$t" 0 "$V/tests/build-t_$t.sh"; done
    # Unity 2023.2 capability probe: every format it hands to vkCreateImage, and the swapchain contract (surface rows only when the tree
    # has a WSI platform; the plain build skips them with a message, the x11 run is tests/xwsi-host.sh's job).
    for g in v11 v13; do run "unity_caps $g" 0 OUT_DIR="$OUT" "$V/tests/build-t_unity_caps.sh" $g; done
