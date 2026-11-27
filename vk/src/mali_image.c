@@ -530,6 +530,12 @@ mali_BindImageMemory2(VkDevice _dev, uint32_t n, const VkBindImageMemoryInfo *b)
       img->mem = mem;
       img->mem_off = b[i].memoryOffset;
       img->va = mem->bo.gpu_va + b[i].memoryOffset;
+      if (mem->vk.import_handle_type || mem->vk.export_handle_types)
+         mali_wait_event("image_bind image=%p memory=%p offset=%llu format=%u extent=%ux%u modifier=%llu result=0",
+                         (void *)(uintptr_t)b[i].image, (void *)(uintptr_t)b[i].memory,
+                         (unsigned long long)b[i].memoryOffset, img->vk.format,
+                         img->lay.d.extent.width, img->lay.d.extent.height,
+                         (unsigned long long)img->vk.drm_format_mod);
    }
    mali_wait_result("vkBindImageMemory2", res, "count=%u", n);
    return res;
