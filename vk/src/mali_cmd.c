@@ -24,6 +24,7 @@
 #include "vk_alloc.h"
 #include "vk_graphics_state.h"
 #include "util/bitset.h"
+#include "util/u_math.h"
 
 static struct mali_cmd_res_ops g_res;
 static struct mali_hw g_hw;
@@ -1305,9 +1306,71 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          psrc.samples = 4;
          psrc.sample_stride = t.surface_stride;
       }
-   } else if (ca->resolveMode != VK_RESOLVE_MODE_NONE) {
-      unsupported(cmd, "resolve of a single-sampled attachment");
-      return;
+    } else if (ca->resolveMode != VK_RESOLVE_MODE_NONE) {
+      struct mali_image_view *cv = mali_image_view_from_handle(ca->imageView);
+      struct mali_image_view *rv = mali_image_view_from_handle(ca->resolveImageView);
+      const char *why = NULL;
+      if (f->samples != 1) why = "1x resolve: source is not single-sampled";
+      else if (ca->resolveMode != VK_RESOLVE_MODE_AVERAGE_BIT) why = "1x resolve: mode is not AVERAGE";
+      else if (!cv || !rv || !cv->vk.image || !rv->vk.image) why = "1x resolve: missing view or image";
+      else if (ri->layerCount != 1) why = "1x resolve: layerCount is not one";
+      else if (ri->viewMask) why = "1x resolve: multiview is not supported";
+      else if (f->area[0] < 0 || f->area[1] < 0 || f->area[2] < 0 || f->area[3] < 0)
+         why = "1x resolve: negative render area";
+      else if (rv->vk.base_mip_level >= rv->vk.image->mip_levels)
+         why = "1x resolve: invalid resolve image level";
+      else if ((uint64_t)f->area[0] + f->area[2] > u_minify(rv->vk.image->extent.width, rv->vk.base_mip_level) ||
+               (uint64_t)f->area[1] + f->area[3] > u_minify(rv->vk.image->extent.height, rv->vk.base_mip_level))
+         why = "1x resolve: render area exceeds resolve image level";
+      if (!why) {
+         f->resolve_src = (uint64_t)(uintptr_t)cv->vk.image;
+         f->resolve_dst = (uint64_t)(uintptr_t)rv->vk.image;
+         f->resolve_level = cv->vk.base_mip_level;
+         f->resolve_layer = cv->vk.base_array_layer;
+         f->resolve_dst_level = rv->vk.base_mip_level;
+         f->resolve_dst_layer = rv->vk.base_array_layer;
+         f->resolve_1x = true;
+         /* Even DONT_CARE must be materialized for the subsequent copy. */
+         f->colour.store = true;
+      } else {
+      if (getenv("MALI_PIPE_DBG")) {
+         struct mali_image_view *v = mali_image_view_from_handle(ca->imageView);
+         struct mali_image_view *rv = mali_image_view_from_handle(ca->resolveImageView);
+         const struct vk_image *im = v ? v->vk.image : NULL;
+         const struct vk_image *rim = rv ? rv->vk.image : NULL;
+         char tuple[768];
+         snprintf(tuple, sizeof tuple,
+                  "target_samples=%u image_samples=%u view_fmt=%d image_fmt=%d view_type=%d "
+                  "mip=%u+%u layer=%u+%u extent=%ux%ux%u target_extent=%ux%u "
+                  "swizzle=%u,%u,%u,%u resolve_samples=%u resolve_fmt=%d resolve_image_fmt=%d "
+                  "load=%d store=%d resolve_mode=%d depth=%u stencil=%u",
+                  t.samples, im ? im->samples : 0, v ? v->vk.view_format : 0, im ? im->format : 0,
+                  v ? v->vk.view_type : 0, v ? v->vk.base_mip_level : 0, v ? v->vk.level_count : 0,
+                  v ? v->vk.base_array_layer : 0, v ? v->vk.layer_count : 0,
+                  im ? im->extent.width : 0, im ? im->extent.height : 0, im ? im->extent.depth : 0,
+                  t.width, t.height, v ? v->vk.swizzle.r : 0, v ? v->vk.swizzle.g : 0,
+                  v ? v->vk.swizzle.b : 0, v ? v->vk.swizzle.a : 0,
+                  rim ? rim->samples : 0, rv ? rv->vk.view_format : 0, rim ? rim->format : 0,
+                  ca->loadOp, ca->storeOp, ca->resolveMode,
+                  ri->pDepthAttachment && ri->pDepthAttachment->imageView != VK_NULL_HANDLE,
+                  ri->pStencilAttachment && ri->pStencilAttachment->imageView != VK_NULL_HANDLE);
+         static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+         static char seen[64][768];
+         static unsigned count;
+         pthread_mutex_lock(&lock);
+         unsigned i;
+         for (i = 0; i < count; i++)
+            if (!strcmp(seen[i], tuple))
+               break;
+         if (i == count && count < 64) {
+            strcpy(seen[count++], tuple);
+            fprintf(stderr, "mali_cmd: resolve diagnostic %s\n", tuple);
+         }
+         pthread_mutex_unlock(&lock);
+      }
+        unsupported(cmd, why);
+       return;
+      }
    }
    }
    struct mali_preload_src zsrc;
@@ -1450,10 +1513,55 @@ mali_CmdEndRendering(VkCommandBuffer h)
       return;
    }
    const uint64_t resolve_src = cmd->cur.resolve_src, resolve_dst = cmd->cur.resolve_dst;
+   const bool resolve_1x = cmd->cur.resolve_1x;
+   VkImageResolve2 one_region;
+   if (resolve_1x)
+      mali_resolve_region(&cmd->cur, &one_region);
    push_frame(cmd, &cmd->cur);
    memset(&cmd->cur, 0, sizeof cmd->cur);   /* the draw list now belongs to the finished frame */
    cmd->in_render = false;
-   if (resolve_src && resolve_dst) {
+   if (resolve_src && resolve_dst && resolve_1x) {
+      struct mali_image *src = (struct mali_image *)(uintptr_t)resolve_src;
+      struct mali_image *dst = (struct mali_image *)(uintptr_t)resolve_dst;
+      const bool copy = src->vk.format == dst->vk.format;
+      static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+      static struct { VkFormat src, dst; } seen[256];
+      static unsigned count;
+      pthread_mutex_lock(&lock);
+      unsigned i;
+      for (i = 0; i < count; i++)
+         if (seen[i].src == src->vk.format && seen[i].dst == dst->vk.format)
+            break;
+      if (i == count && count < 256) {
+         seen[count].src = src->vk.format;
+         seen[count++].dst = dst->vk.format;
+         fprintf(stderr, "mali_cmd: 1x resolve as %s %d->%d\n", copy ? "copy" : "blit",
+                 src->vk.format, dst->vk.format);
+      }
+      pthread_mutex_unlock(&lock);
+      if (copy) {
+         VkImageCopy2 r = {.sType = VK_STRUCTURE_TYPE_IMAGE_COPY_2,
+            .srcSubresource = one_region.srcSubresource, .srcOffset = one_region.srcOffset,
+            .dstSubresource = one_region.dstSubresource, .dstOffset = one_region.dstOffset,
+            .extent = one_region.extent};
+         VkCopyImageInfo2 ci = {.sType = VK_STRUCTURE_TYPE_COPY_IMAGE_INFO_2,
+            .srcImage = (VkImage)(uintptr_t)resolve_src, .srcImageLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .dstImage = (VkImage)(uintptr_t)resolve_dst, .dstImageLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .regionCount = 1, .pRegions = &r};
+         mali_CmdCopyImage2(h, &ci);
+      } else {
+         VkOffset3D end = {one_region.srcOffset.x + (int32_t)one_region.extent.width,
+                           one_region.srcOffset.y + (int32_t)one_region.extent.height, 1};
+         VkImageBlit2 r = {.sType = VK_STRUCTURE_TYPE_IMAGE_BLIT_2,
+            .srcSubresource = one_region.srcSubresource, .srcOffsets = {one_region.srcOffset, end},
+            .dstSubresource = one_region.dstSubresource, .dstOffsets = {one_region.dstOffset, end}};
+         VkBlitImageInfo2 bi = {.sType = VK_STRUCTURE_TYPE_BLIT_IMAGE_INFO_2,
+            .srcImage = (VkImage)(uintptr_t)resolve_src, .srcImageLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .dstImage = (VkImage)(uintptr_t)resolve_dst, .dstImageLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .regionCount = 1, .pRegions = &r, .filter = VK_FILTER_NEAREST};
+         mali_CmdBlitImage2(h, &bi);
+      }
+   } else if (resolve_src && resolve_dst) {
       /* MSAA storeOp STORE with a resolve: the samples are in memory now, resolve them in their own pass (the
        * hardware cannot write the average and the samples in one go). mali_CmdResolveImage2 plans a compute job
        * that is appended after the pass frame, which is "after the pass" on the in-order CS ring. */

@@ -1134,14 +1134,19 @@ br_destroy(struct br_res *r)
 static int
 test_degrade(const char *name)
 {
-   static const struct { VkFormat f; VkSampleCountFlagBits s; int nullslot, msaa, rt1; const char *what; } cfg[] = {
-      {VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, 1, 0, 0, "nullslot"},
-      {VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_4_BIT, 0, 1, 0, "msaa-clear"},
-      {VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, 0, 0, 1, "clear-rt1"},
+   static const struct { VkFormat f; VkSampleCountFlagBits s; int nullslot, msaa, rt1; const char *what; VkFormat resolve1; } cfg[] = {
+      {VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, 1, 0, 0, "nullslot", 0},
+      {VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_4_BIT, 0, 1, 0, "msaa-clear", 0},
+      {VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, 0, 0, 1, "clear-rt1", 0},
+      {VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, 0, 0, 0, "resolve1-copy", VK_FORMAT_R8G8B8A8_UNORM},
+      {VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, 0, 0, 0, "resolve1-blit", VK_FORMAT_R8_UNORM},
+      {VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, 0, 0, 0, "resolve1-view-reinterpret", VK_FORMAT_R8_UNORM},
    };
-   const unsigned w = 32, h = 32;
    int bad = 0;
    for (unsigned k = 0; k < sizeof cfg / sizeof cfg[0]; k++) {
+      int exact = !strcmp(cfg[k].what, "resolve1-view-reinterpret");
+      if (exact && !g_only) continue; /* avoid changing unrelated golden resource numbering */
+      const unsigned w = exact ? 512 : 32, h = exact ? 64 : 32;
       VkImage im = VK_NULL_HANDLE, res = VK_NULL_HANDLE;
       VkDeviceMemory mem = VK_NULL_HANDLE, rmem = VK_NULL_HANDLE;
       VkImageView iv = VK_NULL_HANDLE, rv = VK_NULL_HANDLE;
@@ -1166,23 +1171,26 @@ test_degrade(const char *name)
       VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = im, .viewType = VK_IMAGE_VIEW_TYPE_2D,
                                   .format = cfg[k].f, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
       if (CreateImageView(dev, &vi, NULL, &iv) != VK_SUCCESS) { g_fail = 1; break; }
-      if (cfg[k].msaa) {   /* the resolve target a 4x pass must have */
-         VkImageCreateInfo ri2 = ii;
-         ri2.samples = VK_SAMPLE_COUNT_1_BIT;
+       if (cfg[k].msaa || cfg[k].resolve1) {
+          VkImageCreateInfo ri2 = ii;
+          ri2.samples = VK_SAMPLE_COUNT_1_BIT;
+          if (cfg[k].resolve1) ri2.format = cfg[k].resolve1;
+          if (exact) ri2.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
          ri2.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
          if (CreateImage(dev, &ri2, NULL, &res) != VK_SUCCESS) { g_fail = 1; break; }
          GetImageMemoryRequirements(dev, res, &mr);
          ai.allocationSize = mr.size; ai.memoryTypeIndex = (uint32_t)memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
          if (AllocateMemory(dev, &ai, NULL, &rmem) != VK_SUCCESS || BindImageMemory(dev, res, rmem, 0) != VK_SUCCESS) { g_fail = 1; break; }
-         VkImageViewCreateInfo rvi = vi;
-         rvi.image = res;
+          VkImageViewCreateInfo rvi = vi;
+          rvi.image = res;
+          rvi.format = exact ? VK_FORMAT_R8G8B8A8_UNORM : ri2.format;
          if (CreateImageView(dev, &rvi, NULL, &rv) != VK_SUCCESS) { g_fail = 1; break; }
       }
       VkRenderingAttachmentInfo att[2];
       memset(att, 0, sizeof att);
       att[0] = (VkRenderingAttachmentInfo){.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = iv,
                                           .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
-                                          .resolveMode = cfg[k].msaa ? VK_RESOLVE_MODE_AVERAGE_BIT : VK_RESOLVE_MODE_NONE,
+                                           .resolveMode = (cfg[k].msaa || cfg[k].resolve1) ? VK_RESOLVE_MODE_AVERAGE_BIT : VK_RESOLVE_MODE_NONE,
                                           .resolveImageView = rv, .resolveImageLayout = VK_IMAGE_LAYOUT_GENERAL,
                                           .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
       att[1] = (VkRenderingAttachmentInfo){.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = VK_NULL_HANDLE,
