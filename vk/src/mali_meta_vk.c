@@ -467,7 +467,7 @@ blit_gclass(int pipe, struct gdesc *g)
 
 static int
 blit_one(struct mali_meta_list *l, const struct mali_image *si, const struct mali_image *di, const VkImageBlit2 *g, VkFilter filter, bool resolve_mode,
-         const VkImageResolve2 *rg)
+         const VkImageResolve2 *rg, VkFormat src_view, VkFormat dst_view)
 {
    VkImageSubresourceLayers ss = resolve_mode ? rg->srcSubresource : g->srcSubresource, ds = resolve_mode ? rg->dstSubresource : g->dstSubresource;
    VkOffset3D so[2], dof[2];
@@ -523,11 +523,13 @@ blit_one(struct mali_meta_list *l, const struct mali_image *si, const struct mal
 
    unsigned sn, dn;
    bool sf, df, sbgra, dbgra;
-   bool same_pix = sp->pipe == dp->pipe;
+   enum pipe_format sfmt = src_view == VK_FORMAT_UNDEFINED ? sp->pipe : vk_format_to_pipe_format(src_view);
+   enum pipe_format dfmt = dst_view == VK_FORMAT_UNDEFINED ? dp->pipe : vk_format_to_pipe_format(dst_view);
+   bool same_pix = sfmt == dfmt;
    bool plain = b.s[0] == b.d[0] && b.s[1] == b.d[1] && b.s[2] == b.d[2] && b.s[3] == b.d[3];   /* 1:1, no mirror */
-   bool cls = blit_class(sp->pipe, &sn, &sf, &sbgra) && blit_class(dp->pipe, &dn, &df, &dbgra) && sn == dn && sf == df;
+   bool cls = blit_class(sfmt, &sn, &sf, &sbgra) && blit_class(dfmt, &dn, &df, &dbgra) && sn == dn && sf == df;
    struct gdesc gs, gd;
-   bool gen = !cls && blit_gclass(sp->pipe, &gs) && blit_gclass(dp->pipe, &gd) && gs.cls == gd.cls && !(gs.cls && resolve_mode);
+   bool gen = !cls && blit_gclass(sfmt, &gs) && blit_gclass(dfmt, &gd) && gs.cls == gd.cls && !(gs.cls && resolve_mode);
    if (resolve_mode && ((!cls && !gen) || !same_pix || si->lay.d.samples < 2))
       return -EINVAL;
    if (!resolve_mode && !cls && !gen) {
@@ -598,8 +600,15 @@ blit_one(struct mali_meta_list *l, const struct mali_image *si, const struct mal
    return 0;
 }
 
-VKAPI_ATTR void VKAPI_CALL
-mali_CmdBlitImage2(VkCommandBuffer h, const VkBlitImageInfo2 *ci)
+int
+mali_meta_plan_blit_views(struct mali_meta_list *l, const struct mali_image *src, const struct mali_image *dst,
+                          const VkImageBlit2 *region, VkFormat src_view, VkFormat dst_view)
+{
+   return blit_one(l, src, dst, region, VK_FILTER_NEAREST, false, NULL, src_view, dst_view);
+}
+
+void
+mali_meta_blit_views(VkCommandBuffer h, const VkBlitImageInfo2 *ci, VkFormat src_view, VkFormat dst_view)
 {
    CMD(h);
    struct mali_image *si = mali_image_from_handle(ci->srcImage), *di = mali_image_from_handle(ci->dstImage);
@@ -608,8 +617,16 @@ mali_CmdBlitImage2(VkCommandBuffer h, const VkBlitImageInfo2 *ci)
    mark_dst_img(cmd, di);
    mark_src_img(cmd, si);
    for (uint32_t i = 0; i < ci->regionCount && !r; i++)
-      r = blit_one(&l, si, di, &ci->pRegions[i], ci->filter, false, NULL);
+      r = ci->filter == VK_FILTER_NEAREST ?
+          mali_meta_plan_blit_views(&l, si, di, &ci->pRegions[i], src_view, dst_view) :
+          blit_one(&l, si, di, &ci->pRegions[i], ci->filter, false, NULL, src_view, dst_view);
    emit(cmd, &l, r, "CmdBlitImage2");
+}
+
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdBlitImage2(VkCommandBuffer h, const VkBlitImageInfo2 *ci)
+{
+   mali_meta_blit_views(h, ci, VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -621,7 +638,7 @@ mali_CmdResolveImage2(VkCommandBuffer h, const VkResolveImageInfo2 *ci)
    int r = 0;
    mark_dst_img(cmd, di);
    for (uint32_t i = 0; i < ci->regionCount && !r; i++)
-      r = blit_one(&l, si, di, NULL, VK_FILTER_NEAREST, true, &ci->pRegions[i]);
+      r = blit_one(&l, si, di, NULL, VK_FILTER_NEAREST, true, &ci->pRegions[i], VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED);
    emit(cmd, &l, r, "CmdResolveImage2");
 }
 

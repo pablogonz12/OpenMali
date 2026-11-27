@@ -24,6 +24,9 @@
 #include "vk_alloc.h"
 #include "vk_graphics_state.h"
 #include "util/bitset.h"
+#include "util/u_math.h"
+#include "util/format/u_format.h"
+#include "vk_format.h"
 
 static struct mali_cmd_res_ops g_res;
 static struct mali_hw g_hw;
@@ -1351,8 +1354,31 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          psrc.sample_stride = t.surface_stride;
       }
    } else if (ca->resolveMode != VK_RESOLVE_MODE_NONE) {
-      unsupported(cmd, "resolve of a single-sampled attachment");
-      return;
+      struct mali_image_view *cv = mali_image_view_from_handle(ca->imageView);
+      struct mali_image_view *rv = mali_image_view_from_handle(ca->resolveImageView);
+      if (f->samples != 1 || ca->resolveMode != VK_RESOLVE_MODE_AVERAGE_BIT ||
+          !cv || !rv || !cv->vk.image || !rv->vk.image || ri->layerCount != 1 || ri->viewMask ||
+          cv->vk.base_mip_level >= cv->vk.image->mip_levels ||
+          rv->vk.base_mip_level >= rv->vk.image->mip_levels) {
+         unsupported(cmd, "resolve of a single-sampled attachment");
+         return;
+      }
+      unsigned vb = util_format_get_blocksize(vk_format_to_pipe_format(rv->vk.view_format));
+      unsigned ib = util_format_get_blocksize(vk_format_to_pipe_format(rv->vk.image->format));
+      if (vb && ib && vb != ib) {
+         /* An incompatible view cannot safely address the underlying image. */
+      } else {
+         f->resolve_src = (uint64_t)(uintptr_t)cv->vk.image;
+         f->resolve_dst = (uint64_t)(uintptr_t)rv->vk.image;
+         f->resolve_level = cv->vk.base_mip_level;
+         f->resolve_layer = cv->vk.base_array_layer;
+         f->resolve_dst_level = rv->vk.base_mip_level;
+         f->resolve_dst_layer = rv->vk.base_array_layer;
+         f->resolve_src_format = cv->vk.view_format;
+         f->resolve_dst_format = rv->vk.view_format;
+         f->resolve_1x = true;
+         f->colour.store = true;
+      }
    }
    }
    struct mali_preload_src zsrc;
@@ -1484,6 +1510,35 @@ mali_resolve_region(const struct mali_frame *f, VkImageResolve2 *r)
    r->extent = (VkExtent3D){ar[2] ? (uint32_t)ar[2] : f->width, ar[3] ? (uint32_t)ar[3] : f->height, 1};
 }
 
+bool
+mali_resolve_1x_clamp(VkImageResolve2 *r, const int32_t area[4],
+                      uint32_t sw, uint32_t sh, uint32_t dw, uint32_t dh)
+{
+   int64_t x = MAX2(area[0], 0), y = MAX2(area[1], 0);
+   int64_t ex = MIN2((int64_t)area[0] + MAX2(area[2], 0), MIN2(sw, dw));
+   int64_t ey = MIN2((int64_t)area[1] + MAX2(area[3], 0), MIN2(sh, dh));
+   if (ex <= x || ey <= y)
+      return false;
+   r->srcOffset.x = r->dstOffset.x = (int32_t)x;
+   r->srcOffset.y = r->dstOffset.y = (int32_t)y;
+   r->extent.width = (uint32_t)(ex - x);
+   r->extent.height = (uint32_t)(ey - y);
+   return true;
+}
+
+void
+mali_resolve_1x_slices(VkImageResolve2 *r, bool src3d, bool dst3d)
+{
+   if (src3d) {
+      r->srcOffset.z = r->srcSubresource.baseArrayLayer;
+      r->srcSubresource.baseArrayLayer = 0;
+   }
+   if (dst3d) {
+      r->dstOffset.z = r->dstSubresource.baseArrayLayer;
+      r->dstSubresource.baseArrayLayer = 0;
+   }
+}
+
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdEndRendering(VkCommandBuffer h)
 {
@@ -1495,14 +1550,52 @@ mali_CmdEndRendering(VkCommandBuffer h)
       return;
    }
    const uint64_t resolve_src = cmd->cur.resolve_src, resolve_dst = cmd->cur.resolve_dst;
+   const bool resolve_1x = cmd->cur.resolve_1x;
+   const VkFormat src_format = cmd->cur.resolve_src_format, dst_format = cmd->cur.resolve_dst_format;
+   VkImageResolve2 rr;
+   mali_resolve_region(&cmd->cur, &rr);
+   int32_t area[4];
+   memcpy(area, cmd->cur.area, sizeof area);
    push_frame(cmd, &cmd->cur);
    memset(&cmd->cur, 0, sizeof cmd->cur);   /* the draw list now belongs to the finished frame */
    cmd->in_render = false;
-   if (resolve_src && resolve_dst) {
+   if (resolve_src && resolve_dst && resolve_1x) {
+      struct mali_image *src = (struct mali_image *)(uintptr_t)resolve_src;
+      struct mali_image *dst = (struct mali_image *)(uintptr_t)resolve_dst;
+      uint32_t sw = u_minify(src->vk.extent.width, rr.srcSubresource.mipLevel);
+      uint32_t sh = u_minify(src->vk.extent.height, rr.srcSubresource.mipLevel);
+      uint32_t dw = u_minify(dst->vk.extent.width, rr.dstSubresource.mipLevel);
+      uint32_t dh = u_minify(dst->vk.extent.height, rr.dstSubresource.mipLevel);
+      if (mali_resolve_1x_clamp(&rr, area, sw, sh, dw, dh)) {
+         mali_resolve_1x_slices(&rr, src->vk.image_type == VK_IMAGE_TYPE_3D, dst->vk.image_type == VK_IMAGE_TYPE_3D);
+         if (src_format == dst_format) {
+            VkImageCopy2 r = {.sType = VK_STRUCTURE_TYPE_IMAGE_COPY_2,
+               .srcSubresource = rr.srcSubresource, .srcOffset = rr.srcOffset,
+               .dstSubresource = rr.dstSubresource, .dstOffset = rr.dstOffset, .extent = rr.extent};
+            VkCopyImageInfo2 ci = {.sType = VK_STRUCTURE_TYPE_COPY_IMAGE_INFO_2,
+               .srcImage = (VkImage)(uintptr_t)resolve_src, .srcImageLayout = VK_IMAGE_LAYOUT_GENERAL,
+               .dstImage = (VkImage)(uintptr_t)resolve_dst, .dstImageLayout = VK_IMAGE_LAYOUT_GENERAL,
+               .regionCount = 1, .pRegions = &r};
+            mali_CmdCopyImage2(h, &ci);
+         } else {
+            VkOffset3D send = {rr.srcOffset.x + (int32_t)rr.extent.width,
+                               rr.srcOffset.y + (int32_t)rr.extent.height, rr.srcOffset.z + 1};
+            VkOffset3D dend = {rr.dstOffset.x + (int32_t)rr.extent.width,
+                               rr.dstOffset.y + (int32_t)rr.extent.height, rr.dstOffset.z + 1};
+            VkImageBlit2 r = {.sType = VK_STRUCTURE_TYPE_IMAGE_BLIT_2,
+               .srcSubresource = rr.srcSubresource, .srcOffsets = {rr.srcOffset, send},
+               .dstSubresource = rr.dstSubresource, .dstOffsets = {rr.dstOffset, dend}};
+            VkBlitImageInfo2 bi = {.sType = VK_STRUCTURE_TYPE_BLIT_IMAGE_INFO_2,
+               .srcImage = (VkImage)(uintptr_t)resolve_src, .srcImageLayout = VK_IMAGE_LAYOUT_GENERAL,
+               .dstImage = (VkImage)(uintptr_t)resolve_dst, .dstImageLayout = VK_IMAGE_LAYOUT_GENERAL,
+               .regionCount = 1, .pRegions = &r, .filter = VK_FILTER_NEAREST};
+            mali_meta_blit_views(h, &bi, src_format, dst_format);
+         }
+      }
+   } else if (resolve_src && resolve_dst) {
       /* MSAA storeOp STORE with a resolve: the samples are in memory now, resolve them in their own pass (the
        * hardware cannot write the average and the samples in one go). mali_CmdResolveImage2 plans a compute job
        * that is appended after the pass frame, which is "after the pass" on the in-order CS ring. */
-      VkImageResolve2 rr;
       mali_resolve_region(&cmd->cur, &rr);
       VkResolveImageInfo2 ri = {.sType = VK_STRUCTURE_TYPE_RESOLVE_IMAGE_INFO_2,
                                 .srcImage = (VkImage)(uintptr_t)resolve_src,
