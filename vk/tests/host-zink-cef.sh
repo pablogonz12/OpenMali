@@ -18,10 +18,15 @@ canvas,video {width:100%;border-radius:45px;filter:blur(1px)}
 </style><header>STORE　 LIBRARY　 COMMUNITY</header><main>
 <article><canvas id="c" width="250" height="200"></canvas>Recent games</article>
 <article><video poster="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='250' height='200'%3E%3Crect width='250' height='200' fill='%23359'/%3E%3C/svg%3E"></video>Play now</article>
-</main><script>let x=c.getContext('2d');for(let i=0;i<100;i++){x.fillStyle=`hsl(${i*9},80%,55%)`;x.beginPath();x.arc(i*19%250,i*31%200,20,0,7);x.fill()}</script>
+</main><pre id="renderer">not queried</pre><script>
+let x=c.getContext('2d');for(let i=0;i<100;i++){x.fillStyle=`hsl(${i*9},80%,55%)`;x.beginPath();x.arc(i*19%250,i*31%200,20,0,7);x.fill()}
+let gl=document.createElement('canvas').getContext('webgl');
+let ext=gl && gl.getExtension('WEBGL_debug_renderer_info');
+document.getElementById('renderer').textContent='WebGL renderer: '+(ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : 'unavailable');
+</script>
 HTML
 for arch in v13 v11; do
-  export VK_ICD_FILENAMES="$icd" MALI_BACKEND=fake MALI_FAKE_GPU="$arch"
+  export VK_ICD_FILENAMES="$icd" MALI_BACKEND=fake MALI_FAKE_GPU="$arch" MALI_PIPE_DBG=1
   export MESA_LOADER_DRIVER_OVERRIDE=zink GALLIUM_DRIVER=zink EGL_PLATFORM=surfaceless
   timeout 120 eglinfo -B >"$out/eglinfo-$arch.log" 2>&1
   timeout 120 "$out/host-zink-msaa" >"$out/msaa-$arch.log" 2>&1
@@ -34,6 +39,7 @@ for arch in v13 v11; do
       --user-data-dir="$out/profile-$arch-$target" --dump-dom "$url" \
       >"$out/$target-$arch.dom" 2>"$out/$target-$arch.log"
     echo "$arch $target exit=$?"
+    [[ $target != ui ]] || grep -o '<pre id="renderer">[^<]*' "$out/$target-$arch.dom" || true
   done
   grep -hE 'mali_cmd: unsupported|vkEndCommandBuffer failed|GUILTY_CONTEXT_RESET|zink:' \
     "$out/msaa-$arch.log" "$out/ui-$arch.log" "$out/gpu-$arch.log" | sort -u || true
