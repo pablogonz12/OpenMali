@@ -3506,8 +3506,80 @@ test_privdata(void)
  * that is where a self-imposed packing cap would show). zink lines: maxUniformBufferRange -> GL_MAX_UNIFORM_BLOCK_SIZE
  * (zink_screen.c:610-612), per-stage samplers/sampled images -> GL_MAX_TEXTURE_IMAGE_UNITS (:643-646), storage buffers
  * -> GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS (:648-650), storage images -> GL_MAX_IMAGE_UNITS (:671-674). */
-/* VK_EXT_image_2d_view_of_3d (GL 4.2's texture views): a 2D view of one slice of a 3D image must be creatable and
- * bindable as a storage image. This checks setup only, not shader access or slice contents. */
+/* A dedicated --only image2dview run writes slice 2, then checks all four slices.
+ * Copying the underlying 3D image uses z offsets/depth, not array layers. */
+static int
+image2dview_content(VkImage img, VkDescriptorSetLayout dsl, VkDescriptorSet set)
+{
+   struct tgt t = {0};
+   VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateCommandPool(dev, &pci, NULL, &t.pool) == VK_SUCCESS, "image2dview command pool");
+   CHECK(CreateFence(dev, &fi, NULL, &t.fence) == VK_SUCCESS, "image2dview fence");
+   struct hbuf out;
+   CHECK(hbuf_create(&out, 16 * 16 * 4 * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT), "image2dview readback");
+   memset(out.p, 0xa5, 16 * 16 * 4 * 4);
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dsl};
+   VkPipelineLayout lay;
+   CHECK(CreatePipelineLayout(dev, &pli, NULL, &lay) == VK_SUCCESS, "image2dview pipeline layout");
+   VkShaderModule m = load_spv("image2dview.comp.spv");
+   CHECK(m, "image2dview shader");
+   VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = lay,
+      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                .module = m, .pName = "main"}};
+   VkPipeline pipe;
+   VkResult r = CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &ci, NULL, &pipe);
+   DestroyShaderModule(dev, m, NULL);
+   CHECK(r == VK_SUCCESS, "image2dview pipeline %d", r);
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "image2dview command buffer");
+   VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+   VkImageMemoryBarrier ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+      .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .image = img, .subresourceRange = range};
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &ib);
+   VkClearColorValue zero = {.float32 = {0, 0, 0, 0}};
+   CmdClearColorImage(cb, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero, 1, &range);
+   ib.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+   ib.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+   ib.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+   ib.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &ib);
+   CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
+   CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, lay, 0, 1, &set, 0, NULL);
+   CmdDispatch(cb, 4, 4, 1);
+   ib.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+   ib.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+   ib.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+   ib.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                      VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &ib);
+   VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {16, 16, 4}};
+   CmdCopyImageToBuffer(cb, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, out.b, 1, &copy);
+   VkBufferMemoryBarrier hb = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+      .dstAccessMask = VK_ACCESS_HOST_READ_BIT, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .buffer = out.b, .size = VK_WHOLE_SIZE};
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 1, &hb, 0, NULL);
+   CHECK(cb_submit(&t, cb), "image2dview submit");
+   if (!g_fake) {
+      VkMappedMemoryRange mapped = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = out.m, .size = VK_WHOLE_SIZE};
+      CHECK(InvalidateMappedMemoryRanges(dev, 1, &mapped) == VK_SUCCESS, "image2dview invalidate");
+      for (unsigned z = 0; z < 4; z++) for (unsigned y = 0; y < 16; y++) for (unsigned x = 0; x < 16; x++) {
+         const uint8_t *p = out.p + ((z * 16 + y) * 16 + x) * 4;
+         uint8_t v = z == 2 ? 255 : 0;
+         CHECK(p[0] == v && p[1] == 0 && p[2] == v && p[3] == v,
+               "image2dview slice %u (%u,%u): %u,%u,%u,%u", z, x, y, p[0], p[1], p[2], p[3]);
+      }
+   }
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   hbuf_destroy(&out);
+   tgt_destroy(&t);
+   return 1;
+}
+
+/* VK_EXT_image_2d_view_of_3d: use a storage image, not an unsupported sampled view. */
 static int
 test_image2dview(void)
 {
@@ -3533,7 +3605,7 @@ test_image2dview(void)
                             .imageType = VK_IMAGE_TYPE_3D, .format = VK_FORMAT_R8G8B8A8_UNORM,
                             .extent = {16, 16, 4}, .mipLevels = 1, .arrayLayers = 1,
                             .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
-                            .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                            .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
    VkImage img;
    CHECK(CreateImage(dev, &ici, NULL, &img) == VK_SUCCESS, "3D image with VK_IMAGE_CREATE_2D_VIEW_COMPATIBLE_BIT_EXT");
@@ -3567,8 +3639,10 @@ test_image2dview(void)
    VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 0,
                              .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &ii};
    UpdateDescriptorSets(dev, 1, &w, 0, NULL);
-   printf("{\"test\":\"image2dview\",\"ext\":\"%s\",\"image2DViewOf3D\":true,\"slice\":2,\"3d\":\"16x16x4\",\"scope\":\"storage descriptor setup only; no shader readback\",\"ok\":true}\n",
-          VK_EXT_IMAGE_2D_VIEW_OF_3D_EXTENSION_NAME);
+   if (g_only && !image2dview_content(img, dsl, set)) return 0;
+   printf("{\"test\":\"image2dview\",\"slice\":2,\"3d\":\"16x16x4\",\"ok\":true,\"scope\":\"%s\"}\n",
+          !g_only ? "storage descriptor setup only" : g_fake ? "commands submitted; content skipped: fake backend" :
+          "shader write and four-slice readback verified");
    DestroyDescriptorPool(dev, pool, NULL);
    DestroyDescriptorSetLayout(dev, dsl, NULL);
    DestroyImageView(dev, view, NULL);
