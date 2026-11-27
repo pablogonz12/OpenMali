@@ -623,6 +623,21 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
       x->src_a = cb->src_alpha_blend_factor; x->dst_a = cb->dst_alpha_blend_factor;
       x->op_c = cb->color_blend_op; x->op_a = cb->alpha_blend_op;
       memcpy(x->bconst, dyn->cb.blend_constants, sizeof x->bconst);
+      /* attachments 1..3 have their own blend state (independentBlend is advertised). Only the CPU rasteriser draws
+       * them today — a frame with more than one colour attachment is refused on the hardware path — so recording it
+       * here cannot change the command stream; it is what the renderer that does draw them reads. */
+      for (unsigned r = 1; r < 4; r++) {
+         const struct vk_color_blend_attachment_state *cr = &dyn->cb.attachments[r];
+         struct mali_fx_att *o = &x->xatt[r - 1];
+         o->en = BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_BLEND_ENABLES) && cr->blend_enable;
+         o->wmask = BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_WRITE_MASKS) ? cr->write_mask : 0xf;
+         if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_COLOR_WRITE_ENABLES) && !(dyn->cb.color_write_enables & (1u << r)))
+            o->wmask = 0;
+         o->src_c = cr->src_color_blend_factor; o->dst_c = cr->dst_color_blend_factor;
+         o->src_a = cr->src_alpha_blend_factor; o->dst_a = cr->dst_alpha_blend_factor;
+         o->op_c = cr->color_blend_op; o->op_a = cr->alpha_blend_op;
+         memcpy(o->bconst, dyn->cb.blend_constants, sizeof o->bconst);
+      }
       /* vk_graphics_state keeps the previous pass' logic_op_enable when a pipeline without colour blending is bound:
        * a depth-only pass must ignore it, not fail the command buffer on retained state */
       if (dyn->cb.logic_op_enable && cmd->cur.has_colour) {
@@ -708,8 +723,10 @@ mali_CmdDrawIndexed(VkCommandBuffer h, uint32_t icount, uint32_t inst, uint32_t 
    mali_frame_note_rec(&cmd->cur, sl);
 }
 
-/* Indirect draws: the command array is read through the CPU mapping when the frame is submitted (frames are serialised, so every
- * earlier write to the buffer has retired) and expanded into plain draws (expand_indirect). */
+/* Indirect draws: the command array is either read through the CPU mapping when the frame is submitted (frames are serialised,
+ * so every earlier write to the buffer has retired) and expanded into plain draws (expand_indirect), or - the default - handed
+ * to the command stream as one record per command and loaded into the IDVS registers at execution time (emit_draw_regs), which
+ * is the only way a descriptor a compute job wrote can drive the draw. */
 static const uint8_t *
 buffer_cpu(VkBuffer b, VkDeviceSize off, VkDeviceSize need)
 {
@@ -718,6 +735,12 @@ buffer_cpu(VkBuffer b, VkDeviceSize off, VkDeviceSize need)
       return NULL;
    return (const uint8_t *)mb->mem->bo.cpu + mb->mem_off + off;
 }
+
+/* Commands are unrolled: one LOAD_MULTIPLE + RUN_IDVS per VkDraw*IndirectCommand, because libkbase has no CS control flow
+ * (no WHILE/IF, kbase_cs.h). A drawCount above this therefore keeps the CPU expansion of every earlier release -- a real
+ * multiDrawIndirect needs the CS loop PanVK uses (panvk_vX_cmd_draw.c:3353), which is also what DrawIndirectCount waits
+ * for. 256 x ~15 words is a frame's worth of stream; the cases this exists for (DXVK, GPU-driven engines) issue 1..16. */
+#define MALI_IND_UNROLL_MAX 256u
 
 static void
 record_indirect(VkCommandBuffer h, bool indexed, VkBuffer b, VkDeviceSize off, VkBuffer cb, VkDeviceSize coff, uint32_t n, uint32_t stride)
@@ -735,13 +758,39 @@ record_indirect(VkCommandBuffer h, bool indexed, VkBuffer b, VkDeviceSize off, V
       stride = sz;
    if (!n)
       return;
-   const uint8_t *p = buffer_cpu(b, off, (VkDeviceSize)stride * (n - 1) + sz);
+   /* The arguments are read by the CS at execution time (`va`) unless something needs them on the CPU: a count buffer (no
+    * CS control flow yet), the software rasteriser, transform feedback's single-instance check, and polygonMode
+    * LINE/POINT's index assembly. Those keep reading the CPU mapping, which is provably what they did before; every other
+    * indirect draw is the one that must NOT read it, because the mapping still holds what the host wrote even after a
+    * compute job rewrote the descriptor. The shaderDrawParameters sysvals are not in this list: the FAU words they read are
+    * patched from the loaded registers by the command stream (mali_cs_emit.c emit_indirect_args). */
+   /* cmd->gfx.poly_mode is the pipeline's STATIC polygon mode; with VK_EXT_extended_dynamic_state3 the record-time value
+    * lives in the dynamic state, and LINE/POINT there also rewrites the draw into an index list at build time, which needs
+    * the arguments on the CPU */
+   const struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
+   const bool dyn_poly = BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_RS_POLYGON_MODE) && dyn->rs.polygon_mode != VK_POLYGON_MODE_FILL;
+   /* MALI_IND_CPU selects the CPU read as a control. Its two values are the two halves of the old behaviour, and only
+    * "drain" is correct: the CPU reads the mapping at SUBMIT time (expand_indirect), so it sees a compute job's write only
+    * if every earlier frame has retired first -- which the drain did, and which is exactly the serialization this lane
+    * removes. MALI_IND_CPU=1 therefore means "read the mapping, do NOT drain": the stale read, i.e. the failing control
+    * (nothing is drawn when a compute job in the same submission produced the command). MALI_IND_CPU=drain keeps the
+    * historical pair (read + drain) for the A/B, where the picture must stay correct. */
+   const char *ind_cpu_env = getenv("MALI_IND_CPU");
+   const bool force_cpu = ind_cpu_env && *ind_cpu_env && strcmp(ind_cpu_env, "0") != 0;
+   const bool cpu_drain = force_cpu && !strcmp(ind_cpu_env, "drain");
+   const bool cpu_args = cb || g_hw.soft || cmd->tf.active || cmd->gfx.poly_mode || dyn_poly || n > MALI_IND_UNROLL_MAX || force_cpu;
+   const uint8_t *p = NULL;
    const uint32_t *cp = NULL;
+   uint64_t va = 0;
    if (cb && !(cp = (const uint32_t *)buffer_cpu(cb, coff, 4))) {
       unsupported(cmd, "indirect count buffer");
       return;
    }
-   if (!p) {
+   if (cpu_args)
+      p = buffer_cpu(b, off, (VkDeviceSize)stride * (n - 1) + sz);
+   else
+      va = vk_buffer_address(vk_buffer_from_handle(b), off);
+   if (!p && !va) {
       unsupported(cmd, "indirect buffer (no CPU mapping)");
       return;
    }
@@ -757,9 +806,15 @@ record_indirect(VkCommandBuffer h, bool indexed, VkBuffer b, VkDeviceSize off, V
       d.index_size = cmd->ib_size;
    }
    d.ind = p;
+   d.ind_va = va;
    d.ind_count = cp;
    d.ind_n = n;
    d.ind_stride = stride;
+   d.ind_nodrain = force_cpu && !cpu_drain;   /* the failing control: a CPU read with no ordering */
+   if (getenv("MALI_PIPE_DBG"))
+      fprintf(stderr, "mali_vk: indirect draw (n=%u, %s): arguments read on the %s%s\n", n, indexed ? "indexed" : "direct",
+              va ? "GPU (command stream)" : "CPU (mapping at submit)",
+              p && d.ind_nodrain ? ", NO drain: a compute job's write in this submission is invisible" : "");
    if (mali_frame_add_rec(&cmd->cur, &d))
       vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
 }
@@ -799,12 +854,12 @@ expand_indirect(struct mali_frame *f)
    for (unsigned i = 0; i < f->ndraws; i++) {
       const struct mali_rec *d = &f->draws[i];
       int rc = 0;
-      if (!d->ind) {
+      if (!d->ind && !d->ind_va) {
          struct mali_rec e = *d;
          e.dirty |= carry;
          carry = 0;
          rc = mali_frame_add_rec(&o, &e);
-      } else {
+      } else if (d->ind) {
          uint32_t n = d->ind_n;
          if (d->ind_count && *d->ind_count < n)
             n = *d->ind_count;
@@ -833,6 +888,20 @@ expand_indirect(struct mali_frame *f)
                rc = mali_frame_add_rec(&o, &e);
             } else
                carry |= e.dirty;
+         }
+      } else {
+         /* GPU-read descriptor: one record per command, each carrying its own VA; the count/instance/first_* words stay
+          * unknown here and the command stream loads them (emit_draw_regs). Nothing is skipped as empty: the CPU cannot
+          * see the values, and a skipped descriptor would leave the frame's dirty mask behind. */
+         for (uint32_t k = 0; k < d->ind_n && !rc; k++) {
+            struct mali_rec e = *d;
+            if (k)
+               e.dirty = 0;
+            e.ind_va = d->ind_va + (uint64_t)k * d->ind_stride;
+            e.draw_id = k;
+            e.dirty |= carry;
+            carry = 0;
+            rc = mali_frame_add_rec(&o, &e);
          }
       }
       if (rc) {
@@ -1657,10 +1726,12 @@ mali_cmd_submit(struct vk_command_buffer *vk)
    }
    for (unsigned i = 0; i < cmd->nframes; i++) {
       struct mali_frame fr = cmd->frames[i];
-      /* any_ind / poly_cpu are accumulated at record time (mali_frame_note_rec): no second pass over the frame's records */
-      bool ind = fr.any_ind, poly_cpu = fr.poly_cpu;
-      if ((ind || poly_cpu) && g_hw.drain) {
-         /* indirect args and polygon-mode index contents are read by the CPU: every earlier frame (also those of this command buffer) must have retired */
+      /* any_ind / any_ind_cpu / poly_cpu are accumulated at record time (mali_frame_note_rec): no second pass over the frame's records */
+      bool ind = fr.any_ind, ind_cpu = fr.any_ind_cpu, poly_cpu = fr.poly_cpu;
+      if ((ind_cpu || poly_cpu) && g_hw.drain) {
+         /* CPU-read indirect args and polygon-mode index contents: every earlier frame (also those of this command buffer) must have retired.
+          * A GPU-read indirect draw is NOT in this set: the command stream loads it after the producing job, so a drain here would serialize
+          * exactly the GPU-driven case this exists for. */
          if (nall) {
             kb_wmb();
             if (g_hw.submit_multi(g_hw.user, all, nall, counted)) {
@@ -1670,6 +1741,8 @@ mali_cmd_submit(struct vk_command_buffer *vk)
             nall = counted = 0;
          }
          g_hw.drain(g_hw.user);
+         if (getenv("MALI_PIPE_DBG"))
+            fprintf(stderr, "mali_vk: drained before frame %u/%u (CPU-read indirect arguments)\n", i, cmd->nframes);
       }
       if (ind && g_hw.soft) {
          /* MALI_SOFT=1: the rasteriser rejects an indirect draw on the frame record, and expansion below would

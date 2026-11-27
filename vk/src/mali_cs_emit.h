@@ -103,6 +103,17 @@ struct mali_gfx_state {
 /* one stencil face: VkCompareOp / VkStencilOp values, masks, reference */
 struct mali_st_face { uint8_t cmp, fail, dfail, pass, wmask, vmask, ref; };
 
+/* Colour blend state of one colour attachment. Attachment 0 uses the matching fields in struct mali_fixed; RT1..RT3 carry
+ * their own because independentBlend is advertised (mali_physical_device.c). Only the CPU rasteriser renders attachments
+ * 1..3 today (mali_cmd.c refuses a frame with more than one colour attachment on the hardware path). */
+struct mali_fx_att {
+   bool en;
+   uint8_t wmask;                         /* VK_COLOR_COMPONENT_* for this attachment */
+   uint8_t src_c, dst_c, src_a, dst_a;    /* VkBlendFactor */
+   uint8_t op_c, op_a;                    /* VkBlendOp */
+   float bconst[4];
+};
+
 struct mali_fixed {
    bool set;
    uint8_t cull;                          /* 1 = cull front faces, 2 = cull back faces */
@@ -116,6 +127,7 @@ struct mali_fixed {
    uint8_t src_c, dst_c, src_a, dst_a;    /* VkBlendFactor */
    uint8_t op_c, op_a;                    /* VkBlendOp (ADD 0, SUBTRACT 1, REVERSE_SUBTRACT 2) */
    float bconst[4];
+   struct mali_fx_att xatt[3];            /* RT1..RT3 colour blend state (independentBlend; attachment 0 is the fields above) */
    /* stencil (Vulkan values; applied only when the frame has a stencil attachment) */
    bool st_test;
    struct mali_st_face st_f, st_b;
@@ -163,6 +175,9 @@ struct mali_draw {
    const uint8_t *ind;                    /* indirect draw: CPU view of the VkDraw*IndirectCommand array (expanded at submit, mali_cmd.c) */
    const uint32_t *ind_count;             /* ...Count variants: CPU view of the count buffer value (NULL = ind_n) */
    uint32_t ind_n, ind_stride;
+   uint64_t ind_va;                       /* indirect draw read on the GPU: VA of one VkDraw*IndirectCommand; count/instance_count/first_*
+                                           * are then written by the CS LOAD_MULTIPLE, not by the CPU (ind stays NULL) */
+   bool ind_nodrain;                      /* control (MALI_IND_CPU=1): arguments read from the mapping at submit with no drain */
    unsigned occ_mode;                     /* M13: 0 disabled, 1 predicate (boolean), 3 counter (genxml "Occlusion Mode") */
 };
 
@@ -191,6 +206,9 @@ struct mali_rec {
    const uint8_t *ind;
    const uint32_t *ind_count;
    uint32_t ind_n, ind_stride;
+   uint64_t ind_va;                       /* != 0: this draw's arguments live at this VA, loaded by the CS at execution time */
+   bool ind_nodrain;                      /* control (MALI_IND_CPU=1): the arguments are read from the mapping at submit with
+                                           * no drain first, i.e. a compute job's write in this submission is invisible */
    unsigned occ_mode;
 };
 
@@ -258,9 +276,11 @@ struct mali_frame {
    unsigned ndraws, cap;
    struct mali_pool *pool;                /* state blocks of the recorded draws (freed with the frame) */
    /* Submit-time facts accumulated as the records come in (mali_frame_note_rec), so mali_cmd_submit does not have to walk
-    * every record of the frame again: any_ind = some record is an indirect draw; poly_cpu = some record's effective
-    * pipeline is polygonMode LINE/POINT and it is indexed (the CPU then reads the index buffer at build). */
-   bool any_ind, poly_cpu;
+    * every record of the frame again: any_ind = some record is an indirect draw; any_ind_cpu = some record's arguments are
+    * read through the CPU mapping at submit (the software rasteriser, DrawIndirectCount, polygonMode LINE/POINT, transform
+    * feedback: those need a drain, a GPU-read draw does not); poly_cpu = some record's effective pipeline is polygonMode
+    * LINE/POINT and it is indexed (the CPU then reads the index buffer at build). */
+   bool any_ind, any_ind_cpu, poly_cpu;
    unsigned colour_slot;   /* which of the render pass's colour attachment slots this frame renders (a null-slot pass may start
                             * at 1); CmdClearAttachments only clears that one */
    const struct mali_bpipe *cur_pipe;     /* the effective pipe of the last record (records are deltas) */

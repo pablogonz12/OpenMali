@@ -365,12 +365,12 @@ bop(VkBlendOp op, float src, float dst)
 
 /* An edge of the triangle as the weight functions traverse it (v_a -> v_b), already multiplied by the sign that makes
  * the interior weights positive. In framebuffer coordinates (y grows down) a top edge is horizontal with the interior
- * below it, and a left edge runs downwards: those own the samples that lie exactly on them. The other edges must not,
+ * below it, and a left edge runs upwards: those own the samples that lie exactly on them. The other edges must not,
  * or the neighbour on the shared edge covers the same sample too. */
 static bool
 edge_is_top_left(float ex, float ey)
 {
-   return ey > 0.0f || (ey == 0.0f && ex > 0.0f);
+   return ey < 0.0f || (ey == 0.0f && ex > 0.0f);
 }
 
 /* Always evaluate shared endpoints in the same order, so reversed edges are exact
@@ -479,9 +479,8 @@ raster_tri(struct rctx *c, const float clip[3][4], const float vary[3][MALI_SOFT
              (e2 == 0 && !edge_is_top_left((sx[1] - sx[0]) * s, (sy[1] - sy[0]) * s)))
             continue;
          const float w0 = (float)(e0 * iarea), w1 = (float)(e1 * iarea), w2 = (float)(e2 * iarea);
-         /* Anchor interpolation at vertex 0: a constant far-plane depth stays
-          * exactly 1 even if normalized weights round away from a sum of 1. */
-         const float zn = (float)(sz[0] + e1 * iarea * (sz[1] - sz[0]) + e2 * iarea * (sz[2] - sz[0]));
+         /* Nonnegative edge weights preserve zero and constant far-plane depth. */
+         const float zn = (float)((e0 * sz[0] + e1 * sz[1] + e2 * sz[2]) / (e0 + e1 + e2));
          if (depth_clip && (zn < 0.0f || zn > 1.0f))
             continue;
          /* the framebuffer depth the test and the store see is the viewport transform of the NDC depth */
@@ -509,20 +508,31 @@ raster_tri(struct rctx *c, const float clip[3][4], const float vary[3][MALI_SOFT
          else
             c->p->fs(c->p->user, (const float (*)[4])vin, d->push[1], x, y, frag[0]);
          g_st.frags++;
-         /* the blend state of attachment 0 applies to every attachment (Vulkan 1.0: no independentBlend) */
+         /* independentBlend is advertised: every colour attachment blends with its own state and its own write mask.
+          * Attachment 0 is the plain fx block; RT1..3 carry theirs in fx->xatt (recorded by mali_cmd.c). */
          for (unsigned r = 0; r < c->ncol; r++) {
+            const struct mali_fx_att *as = r ? &fx->xatt[r - 1] : NULL;
+            const bool aen = set && (as ? as->en : fx->blend_en);
+            const uint8_t amask = set ? (as ? as->wmask : wmask) : 0xfu;
+            const uint8_t sc = as ? as->src_c : fx->src_c, dc = as ? as->dst_c : fx->dst_c;
+            const uint8_t sa = as ? as->src_a : fx->src_a, da = as ? as->dst_a : fx->dst_a;
+            const uint8_t oc = as ? as->op_c : fx->op_c, oa = as ? as->op_a : fx->op_a;
+            const float *bc = as ? as->bconst : fx->bconst;
             float dst[4];
             px_read(&c->col[r], x, y, dst);
             float out[4];
             for (unsigned k = 0; k < 4; k++) {
-               if (!(wmask & (1u << k))) { out[k] = dst[k]; continue; }
-               if (set && fx->blend_en && k < 3)
-                  out[k] = bop((VkBlendOp)fx->op_c, frag[r][k] * bfactor((VkBlendFactor)fx->src_c, frag[r], dst, fx->bconst, k, false),
-                                            dst[k] * bfactor((VkBlendFactor)fx->dst_c, frag[r], dst, fx->bconst, k, false));
-               else if (set && fx->blend_en)
-                  out[k] = bop((VkBlendOp)fx->op_a, frag[r][k] * bfactor((VkBlendFactor)fx->src_a, frag[r], dst, fx->bconst, k, true),
-                                            dst[k] * bfactor((VkBlendFactor)fx->dst_a, frag[r], dst, fx->bconst, k, true));
-               else
+               if (!(amask & (1u << k))) { out[k] = dst[k]; continue; }
+               if (aen) {
+                  const bool alpha = k == 3;
+                  const VkBlendOp op = (VkBlendOp)(alpha ? oa : oc);
+                  float src = frag[r][k], dest = dst[k];
+                  if (op != VK_BLEND_OP_MIN && op != VK_BLEND_OP_MAX) {
+                     src *= bfactor((VkBlendFactor)(alpha ? sa : sc), frag[r], dst, bc, k, alpha);
+                     dest *= bfactor((VkBlendFactor)(alpha ? da : dc), frag[r], dst, bc, k, alpha);
+                  }
+                  out[k] = bop(op, src, dest);
+               } else
                   out[k] = frag[r][k];
             }
             px_write(&c->col[r], x, y, out);
