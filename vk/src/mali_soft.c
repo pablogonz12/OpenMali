@@ -363,6 +363,28 @@ bop(VkBlendOp op, float src, float dst)
    }
 }
 
+/* An edge of the triangle as the weight functions traverse it (v_a -> v_b), already multiplied by the sign that makes
+ * the interior weights positive. In framebuffer coordinates (y grows down) a top edge is horizontal with the interior
+ * below it, and a left edge runs upwards: those own the samples that lie exactly on them. The other edges must not,
+ * or the neighbour on the shared edge covers the same sample too. */
+static bool
+edge_is_top_left(float ex, float ey)
+{
+   return ey < 0.0f || (ey == 0.0f && ex > 0.0f);
+}
+
+/* Always evaluate shared endpoints in the same order, so reversed edges are exact
+ * negatives even when floating-point evaluation rounds. Use framebuffer-space
+ * values before normalizing by the (different) triangle areas. */
+static double
+edge_value(float ax, float ay, float bx, float by, float px, float py)
+{
+   if (ax > bx || (ax == bx && ay > by))
+      return -edge_value(bx, by, ax, ay, px, py);
+   return ((double)bx - ax) * ((double)py - ay) -
+          ((double)by - ay) * ((double)px - ax);
+}
+
 /* ---- one triangle: viewport, cull, scissor, depth, fragment, blend, store ---- */
 struct rctx {
    const struct mali_frame *f;
@@ -397,8 +419,8 @@ raster_tri(struct rctx *c, const float clip[3][4], const float vary[3][MALI_SOFT
       sz[i] = clip[i][2] / clip[i][3];
       iw[i] = 1.0f / clip[i][3];
    }
-   const float area = (sx[1] - sx[0]) * (sy[2] - sy[0]) - (sx[2] - sx[0]) * (sy[1] - sy[0]);
-   if (fabsf(area) < 1e-9f)
+   const double area = edge_value(sx[0], sy[0], sx[1], sy[1], sx[2], sy[2]);
+   if (fabs(area) < 1e-9)
       return;
    /* signed area in framebuffer coordinates (y down): the positive winding is counter-clockwise in NDC */
    const bool front = (area > 0.0f) == front_ccw;
@@ -413,7 +435,7 @@ raster_tri(struct rctx *c, const float clip[3][4], const float vary[3][MALI_SOFT
                         d->vp[4] + sz[1] * (d->vp[5] - d->vp[4]),
                         d->vp[4] + sz[2] * (d->vp[5] - d->vp[4])};
    const float s = area > 0 ? 1.0f : -1.0f;   /* make the edge functions positive inside */
-   const float iarea = 1.0f / (area * s);
+   const double iarea = 1.0 / (area * s);
 
    int x0 = (int)floorf(fminf(sx[0], fminf(sx[1], sx[2])));
    int x1 = (int)ceilf(fmaxf(sx[0], fmaxf(sx[1], sx[2])));
@@ -444,13 +466,21 @@ raster_tri(struct rctx *c, const float clip[3][4], const float vary[3][MALI_SOFT
    for (unsigned y = (unsigned)y0; y < ye; y++) {
       for (unsigned x = (unsigned)x0; x < xe; x++) {
          const float px = (float)x + 0.5f, py = (float)y + 0.5f;
-         float w0 = ((sx[2] - sx[1]) * (py - sy[1]) - (sy[2] - sy[1]) * (px - sx[1])) * s;
-         float w1 = ((sx[0] - sx[2]) * (py - sy[2]) - (sy[0] - sy[2]) * (px - sx[2])) * s;
-         float w2 = ((sx[1] - sx[0]) * (py - sy[0]) - (sy[1] - sy[0]) * (px - sx[0])) * s;
-         w0 *= iarea; w1 *= iarea; w2 *= iarea;
-         if (w0 < 0 || w1 < 0 || w2 < 0)
+         const double e0 = edge_value(sx[1], sy[1], sx[2], sy[2], px, py) * s;
+         const double e1 = edge_value(sx[2], sy[2], sx[0], sy[0], px, py) * s;
+         const double e2 = edge_value(sx[0], sy[0], sx[1], sy[1], px, py) * s;
+         if (e0 < 0 || e1 < 0 || e2 < 0)
             continue;
-         const float zn = w0 * sz[0] + w1 * sz[1] + w2 * sz[2];   /* NDC depth, clipped against [0, 1] */
+         /* Vulkan's fill rule: a sample exactly on an edge is covered only when that edge is a top or left edge, so
+          * two triangles sharing a diagonal cover the seam exactly once instead of both (with blending that is a
+          * line along every shared edge; with the depth test on the second write usually hid it). */
+         if ((e0 == 0 && !edge_is_top_left((sx[2] - sx[1]) * s, (sy[2] - sy[1]) * s)) ||
+             (e1 == 0 && !edge_is_top_left((sx[0] - sx[2]) * s, (sy[0] - sy[2]) * s)) ||
+             (e2 == 0 && !edge_is_top_left((sx[1] - sx[0]) * s, (sy[1] - sy[0]) * s)))
+            continue;
+         const float w0 = (float)(e0 * iarea), w1 = (float)(e1 * iarea), w2 = (float)(e2 * iarea);
+         /* Nonnegative edge weights preserve zero and constant far-plane depth. */
+         const float zn = (float)((e0 * sz[0] + e1 * sz[1] + e2 * sz[2]) / (e0 + e1 + e2));
          if (depth_clip && (zn < 0.0f || zn > 1.0f))
             continue;
          /* the framebuffer depth the test and the store see is the viewport transform of the NDC depth */

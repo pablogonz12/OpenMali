@@ -414,6 +414,21 @@ case_rgba8(void)
    CHECK(scene_init(&s, 256, 256, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_D32_SFLOAT, clear, 1.0f), "init");
    CHECK(scene_pipe(&s, &PROG_GRAD, 0, 0, 1, 0xf), "pipe gradient");
    CHECK(scene_draw(&s, 0, 6), "draw quad");
+
+
+   /* The quad is two triangles sharing the diagonal through the pixel centres. A sample exactly on a shared edge
+    * belongs to one triangle only (Vulkan's top-left rule), so with the depth test off - the translucent UI case,
+    * where nothing else settles the tie - the pass must shade every pixel once: 65536 fragments. Both triangles
+    * claiming the seam shades the 256 diagonal samples twice (65792), a visible line with blending on. */
+   {
+      CHECK(scene_pipe(&s, &PROG_GRAD, 0, 0, 0, 0xf), "pipe seam");
+      CHECK(scene_draw(&s, 0, 6), "draw quad, depth off");
+      const struct mali_soft_stats *stq = mali_soft_last();
+      CHECK(stq->frags == 256u * 256u, "shared edge shaded once: %u fragments, want 65536 "
+            "(%u = the shared-edge samples shaded twice)", stq->frags, stq->frags - 256u * 256u + 256u * 256u);
+      p_DestroyPipeline(dev, s.pipe, NULL); s.pipe = 0;
+      CHECK(scene_pipe(&s, &PROG_GRAD, 0, 0, 1, 0xf), "pipe gradient again");
+   }
    float c[4];
    /* every 32-row band must carry the gradient: a store that drops a block row shows up here */
    for (unsigned band = 0; band < 8; band++) {
@@ -560,7 +575,8 @@ static const struct mali_soft_program PROG_BLEND = {.name = "mrt-blend", .vs = v
  * c == NULL: the corner colours differ so every 32x32 tile of a covered area has its own value). */
 static int
 hand_quad(struct mali_frame *f, const struct mali_hw *hw, const void *vskey, const void *fskey, float x0, float y0,
-          float x1, float y1, const float *c, const struct mali_fixed *fx, float fspush)
+          float x1, float y1, const float *c, const struct mali_fixed *fx, float fspush,
+          const float (*vertices)[2], const float *viewport)
 {
    uint64_t va;
    float (*v)[8] = hw->alloc(hw->user, 6 * sizeof *v, 64, &va);
@@ -569,7 +585,7 @@ hand_quad(struct mali_frame *f, const struct mali_hw *hw, const void *vskey, con
    const float cc[4][4] = {{1, 0, 0, 1}, {0, 1, 0, 1}, {0, 0, 1, 1}, {1, 1, 1, 1}};
    const unsigned ci[6] = {0, 1, 2, 2, 1, 3};
    for (unsigned i = 0; i < 6; i++) {
-      v[i][0] = px[i][0]; v[i][1] = px[i][1]; v[i][2] = 0.5f; v[i][3] = 1;
+      v[i][0] = vertices ? vertices[i][0] : px[i][0]; v[i][1] = vertices ? vertices[i][1] : px[i][1]; v[i][2] = viewport ? 1.0f : 0.5f; v[i][3] = 1;
       memcpy(&v[i][4], c ? c : cc[ci[i]], 4 * sizeof(float));
       if (c) v[i][7] = 1;
    }
@@ -578,7 +594,8 @@ hand_quad(struct mali_frame *f, const struct mali_hw *hw, const void *vskey, con
    d.gfx.vs = vskey; d.gfx.fs = fskey; d.gfx.prim = 8; d.gfx.nattr = 2;
    d.gfx.attr[0] = (struct mali_attr){.binding = 0, .offset = 0, .stride = 32, .vk_format = VK_FORMAT_R32G32B32A32_SFLOAT};
    d.gfx.attr[1] = (struct mali_attr){.binding = 0, .offset = 16, .stride = 32, .vk_format = VK_FORMAT_R32G32B32A32_SFLOAT};
-   d.vp[2] = (float)f->width; d.vp[3] = (float)f->height; d.vp[5] = 1.0f;
+    d.vp[2] = (float)f->width; d.vp[3] = (float)f->height; d.vp[5] = 1.0f;
+    if (viewport) memcpy(d.vp, viewport, 4 * sizeof(float));
    d.sc[2] = (int32_t)f->width; d.sc[3] = (int32_t)f->height;
    d.vb_va[0] = va; d.vb_size[0] = 6 * sizeof *v;
    d.count = 6; d.instance_count = 1;
@@ -614,10 +631,91 @@ hand_frame(const struct scene *const *rt, unsigned n, const struct mali_att *att
    }
    f.area[0] = ax; f.area[1] = ay; f.area[2] = aw; f.area[3] = ah;
    mali_soft_bind_program(vk, fk, prog);
-   if (!hand_quad(&f, hw, vk, fk, qx0, qy0, qx1, qy1, col, fx, fspush)) { mali_frame_finish(&f); return 0; }
+   if (!hand_quad(&f, hw, vk, fk, qx0, qy0, qx1, qy1, col, fx, fspush, NULL, NULL)) { mali_frame_finish(&f); return 0; }
    const bool ok = mali_soft_frame(hw, &f);
    mali_frame_finish(&f);
    CHECK(ok, "soft frame: %s", mali_soft_last()->why);
+   return 1;
+}
+
+static int
+case_unequal_edges(void)
+{
+   struct scene s;
+   const float black[4] = {0, 0, 0, 1}, white[4] = {1, 1, 1, 1};
+   CHECK(scene_init(&s, 4096, 4, VK_FORMAT_R8G8B8A8_UNORM, 0, black, 1), "init edge scene");
+   const struct mali_hw *hw = mali_soft_device_hw(dev);
+   CHECK(hw, "device hw context");
+   struct mali_frame f = {.width = 4096, .height = 4, .samples = 1, .has_colour = true, .ncolour = 1,
+                          .area = {0, 0, 4096, 4}, .colour = {.clear = true, .clear_color = {0, 0, 0, 1}}};
+   CHECK(hand_target(&s, &f.colour), "target");
+   /* A,C,B and A,B,D: the sample (1024.5,0.5) is just inside the large triangle. */
+   const float xy[6][2] = {
+      {1024.4990234375f, 0}, {3072.5f, 0}, {1024.4990234375f, 4},
+      {1024.4990234375f, 0}, {1024.4990234375f, 4}, {1023.4990234375f, 0}
+   };
+   float clip[6][2];
+   for (unsigned i = 0; i < 6; i++) {
+      clip[i][0] = xy[i][0] / 2048.0f - 1.0f;
+      clip[i][1] = xy[i][1] / 2.0f - 1.0f;
+   }
+   mali_soft_bind_program((const void *)&key_mrt_vs, (const void *)&key_mrt_fs, &PROG_MRT);
+   CHECK(hand_quad(&f, hw, &key_mrt_vs, &key_mrt_fs, 0, 0, 0, 0, white, NULL, 0, clip, NULL), "triangles");
+   CHECK(mali_soft_frame(hw, &f), "edge frame");
+   mali_frame_finish(&f);
+   float c[4]; readpx(&s, 1024, 0, c);
+   CHECK(c[0] > 0.9f, "unequal-area shared edge lost interior sample: %f", c[0]);
+   scene_free(&s);
+   return 1;
+}
+
+static int
+case_left_edge(void)
+{
+   struct scene s;
+   const float black[4] = {0, 0, 0, 1}, white[4] = {1, 1, 1, 1};
+   CHECK(scene_init(&s, 4, 4, VK_FORMAT_R8G8B8A8_UNORM, 0, black, 1), "init left edge scene");
+   const struct mali_hw *hw = mali_soft_device_hw(dev);
+   struct mali_frame f = {.width = 4, .height = 4, .samples = 1, .has_colour = true, .ncolour = 1,
+                          .area = {0, 0, 4, 4}, .colour = {.clear = true, .clear_color = {0, 0, 0, 1}}};
+   CHECK(hw && hand_target(&s, &f.colour), "target");
+   mali_soft_bind_program((const void *)&key_mrt_vs, (const void *)&key_mrt_fs, &PROG_MRT);
+   CHECK(hand_quad(&f, hw, &key_mrt_vs, &key_mrt_fs, -.75f, -.75f, .25f, .25f,
+                   white, NULL, 0, NULL, NULL), "quad");
+   CHECK(mali_soft_frame(hw, &f), "left edge frame");
+   mali_frame_finish(&f);
+   float c[4];
+   readpx(&s, 0, 1, c); CHECK(c[0] > .9f, "left edge excluded: %f", c[0]);
+   readpx(&s, 2, 1, c); CHECK(c[0] < .1f, "right edge included: %f", c[0]);
+   scene_free(&s);
+   return 1;
+}
+
+static int
+case_far_depth_edge(void)
+{
+   struct scene s;
+   const float black[4] = {0, 0, 0, 1}, white[4] = {1, 1, 1, 1};
+   CHECK(scene_init(&s, 1, 1, VK_FORMAT_R8G8B8A8_UNORM, 0, black, 1), "init far depth scene");
+   const struct mali_hw *hw = mali_soft_device_hw(dev);
+   struct mali_frame f = {.width = 1, .height = 1, .samples = 1, .has_colour = true, .ncolour = 1,
+                          .area = {0, 0, 1, 1}, .colour = {.clear = true, .clear_color = {0, 0, 0, 1}}};
+   CHECK(hw && hand_target(&s, &f.colour), "target");
+   const float viewport[4] = {-6002, -6001, 8192, 8192};
+   const float xy[6][2] = {{0, 0}, {8192, 8191}, {8191, 8189.5f},
+                           {0, 0}, {8192, 8191}, {8191, 8189.5f}};
+   float clip[6][2];
+   for (unsigned i = 0; i < 6; i++) {
+      clip[i][0] = xy[i][0] / 4096.0f - 1.0f;
+      clip[i][1] = xy[i][1] / 4096.0f - 1.0f;
+   }
+   mali_soft_bind_program((const void *)&key_mrt_vs, (const void *)&key_mrt_fs, &PROG_MRT);
+   CHECK(hand_quad(&f, hw, &key_mrt_vs, &key_mrt_fs, 0, 0, 0, 0, white, NULL, 0, clip, viewport), "far triangle");
+   CHECK(mali_soft_frame(hw, &f), "far depth frame");
+   mali_frame_finish(&f);
+   float c[4]; readpx(&s, 0, 0, c);
+   CHECK(c[0] > 0.9f, "far-plane interior sample was clipped: %f", c[0]);
+   scene_free(&s);
    return 1;
 }
 
@@ -958,6 +1056,9 @@ main(int argc, char **argv)
    if (!only || !strcmp(only, "mrt-blend")) ok &= case_blend();
    if (!only || !strcmp(only, "load")) ok &= case_load();
    if (!only || !strcmp(only, "halves")) ok &= case_halves();
+   if (!only || !strcmp(only, "unequal-edges")) ok &= case_unequal_edges();
+   if (!only || !strcmp(only, "far-depth-edge")) ok &= case_far_depth_edge();
+   if (!only || !strcmp(only, "left-edge")) ok &= case_left_edge();
    if (!only || !strcmp(only, "fan")) ok &= case_fan();
    p_DeviceWaitIdle(dev);
    printf("%s\n", ok && !g_fail ? "PASS" : "FAILED");
