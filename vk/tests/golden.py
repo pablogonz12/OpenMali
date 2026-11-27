@@ -106,7 +106,12 @@ class Ctx:
         i = 0
         while i < len(w):
             q = w[i] | (w[i + 1] << 32) if i + 1 < len(w) else 0
-            if i + 1 < len(w) and i % 2 == 0 and s.looks_va(q):
+            if where in ('TSD', 'TSD_v', 'TSD_f') and i == 2 and q & ((1 << 40) - 1):
+                # tls_fill stores VA >> 8 in words 2/3; bit 60 is a
+                # separate enable flag, not part of the 48-bit address.
+                addr = (q & ((1 << 40) - 1)) << 8
+                toks.append((s.nv(addr, 0, '%s.tls' % where, check) + '^%#x' % (q >> 40), 2)); i += 2
+            elif i + 1 < len(w) and i % 2 == 0 and s.looks_va(q):
                 toks.append((s.nv(q, 63, '%s+%#x' % (where, i * 4), check), 2)); i += 2
             else:
                 toks.append(('%08x' % w[i], 1)); i += 1
