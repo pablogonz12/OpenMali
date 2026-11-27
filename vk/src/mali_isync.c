@@ -67,10 +67,13 @@ mali_isync_plan_consumer(const struct mali_isync_dev *d, unsigned nfds)
 }
 
 enum mali_isync_action
-mali_isync_producer(struct mali_isync_dev *d, const struct mali_backend_ops *be, struct mali_kdev *kdev,
-                    const int *fds, unsigned nfds, bool unlisted, int fence_fd)
+mali_isync_producer_ex(struct mali_isync_dev *d, const struct mali_backend_ops *be, struct mali_kdev *kdev,
+                       const int *fds, unsigned nfds, bool unlisted, int fence_fd, int *wait_rc)
 {
+   if (wait_rc)
+      *wait_rc = 0;
    enum mali_isync_action a;
+   bool soft_err = false;   /* this submit's attach failed, but the kernel does have the ioctl: do not latch */
 
    pthread_mutex_lock(&d->lock);
    a = mali_isync_plan_producer(d, nfds, unlisted);
@@ -84,20 +87,30 @@ mali_isync_producer(struct mali_isync_dev *d, const struct mali_backend_ops *be,
             a = MALI_ISYNC_CPU_WAIT;
             break;
          }
-         if (r != 0)
+         if (r != 0) {
+            /* A kernel that has the ioctl can still fail this one (reservation object, -ENOMEM, -EMFILE): the
+             * buffer then has no fence, so fall back to the CPU wait for THIS submit instead of submitting under
+             * an unprotected write. Only ENOTTY (above) means the ioctl does not exist. */
             d->stat_err++;
-         else
-            d->stat_fence++;
+            soft_err = true;
+            a = MALI_ISYNC_CPU_WAIT;
+            break;
+         }
+         d->stat_fence++;
       }
-      if (d->import_ok < 0)
+      if (d->import_ok < 0 && !soft_err)
          d->import_ok = a == MALI_ISYNC_FENCE;
    }
    if (a == MALI_ISYNC_CPU_WAIT) {
       d->stat_cpu_wait++;
       if (fence_fd >= 0) {
-         /* The submission is in flight; the consumer must not read the buffer before it retires. */
+         /* The submission is in flight; the consumer must not read the buffer before it retires. The wait's
+          * result is the caller's: a -EIO here means the GPU faulted and the queue must report DEVICE_LOST
+          * rather than VK_SUCCESS (mali_queue.c). */
          pthread_mutex_unlock(&d->lock);
-         (void)be->fence_wait(kdev, fence_fd, -1);
+         int wrc = be->fence_wait(kdev, fence_fd, -1);
+         if (wait_rc)
+            *wait_rc = wrc;
          return a;
       }
    }
@@ -105,25 +118,31 @@ mali_isync_producer(struct mali_isync_dev *d, const struct mali_backend_ops *be,
    return a;
 }
 
-void
-mali_isync_consumer(struct mali_isync_dev *d, const struct mali_backend_ops *be, struct mali_kdev *kdev,
-                    const int *fds, unsigned nfds)
+/* dir is MALI_DMA_BUF_SYNC_READ for an imported dma-buf this submit only reads (wait its producer), or
+ * MALI_DMA_BUF_SYNC_WRITE for one it writes: the kernel then hands back the fences of the current readers AND
+ * writers, which is what a write must wait for.
+ * Returns 0, or -errno when a fence could not be obtained: the caller must then not submit (the dependency is
+ * unknown, and the GPU could overwrite or read the buffer while the other process still has it). ENOTTY keeps the
+ * old meaning: this kernel has no implicit fences at all, and the producer's CPU wait covers us. */
+int
+mali_isync_consumer_ex(struct mali_isync_dev *d, const struct mali_backend_ops *be, struct mali_kdev *kdev,
+                       const int *fds, unsigned nfds, unsigned dir)
 {
    pthread_mutex_lock(&d->lock);
    if (mali_isync_plan_consumer(d, nfds) == MALI_ISYNC_NONE) {
       pthread_mutex_unlock(&d->lock);
-      return;
+      return 0;
    }
    pthread_mutex_unlock(&d->lock);
 
    for (unsigned i = 0; i < nfds; i++) {
       int sf = -1;
-      int r = be->dmabuf_export_sync_file(kdev, fds[i], MALI_DMA_BUF_SYNC_READ, &sf);
+      int r = be->dmabuf_export_sync_file(kdev, fds[i], dir, &sf);
       pthread_mutex_lock(&d->lock);
       if (r == -ENOTTY) {
          d->export_ok = 0;
          pthread_mutex_unlock(&d->lock);
-         return;
+         return 0;
       }
       if (r != 0)
          d->stat_err++;
@@ -132,10 +151,15 @@ mali_isync_consumer(struct mali_isync_dev *d, const struct mali_backend_ops *be,
       if (d->export_ok < 0 && r == 0)
          d->export_ok = 1;
       pthread_mutex_unlock(&d->lock);
-      if (r == 0 && sf >= 0) {
+      if (r != 0)
+         return r;   /* -ENOMEM/-EMFILE/...: stop the submission, there is no fence to wait */
+      if (sf >= 0) {
          /* No KCPU fence wait for a foreign fence in a submit: wait it on the CPU (poll) before submitting. */
-         (void)be->fence_wait(kdev, sf, -1);
+         int w = be->fence_wait(kdev, sf, -1);
          close(sf);
+         if (w < 0)
+            return w;
       }
    }
+   return 0;
 }

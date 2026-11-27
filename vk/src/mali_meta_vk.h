@@ -5,6 +5,7 @@
 #include <vulkan/vulkan_core.h>
 struct mali_cmd_buffer;
 struct mali_meta_list;
+struct mali_image;
 void mali_meta_vk_emit(struct mali_cmd_buffer *cmd, struct mali_meta_list *l, int plan_err);
 #include "mali_meta.h"
 struct mali_draw;
@@ -17,6 +18,9 @@ VKAPI_ATTR void VKAPI_CALL mali_CmdCopyImageToBuffer2(VkCommandBuffer, const VkC
 VKAPI_ATTR void VKAPI_CALL mali_CmdFillBuffer(VkCommandBuffer, VkBuffer, VkDeviceSize, VkDeviceSize, uint32_t);
 VKAPI_ATTR void VKAPI_CALL mali_CmdUpdateBuffer(VkCommandBuffer, VkBuffer, VkDeviceSize, VkDeviceSize, const void *);
 VKAPI_ATTR void VKAPI_CALL mali_CmdBlitImage2(VkCommandBuffer, const VkBlitImageInfo2 *);
+void mali_meta_blit_views(VkCommandBuffer, const VkBlitImageInfo2 *, VkFormat, VkFormat);
+int mali_meta_plan_blit_views(struct mali_meta_list *, const struct mali_image *, const struct mali_image *,
+                              const VkImageBlit2 *, VkFormat, VkFormat);
 VKAPI_ATTR void VKAPI_CALL mali_CmdResolveImage2(VkCommandBuffer, const VkResolveImageInfo2 *);
 VKAPI_ATTR void VKAPI_CALL mali_meta_CmdClearColorImage(VkCommandBuffer, VkImage, VkImageLayout, const VkClearColorValue *, uint32_t, const VkImageSubresourceRange *);
 VKAPI_ATTR void VKAPI_CALL mali_meta_CmdClearDepthStencilImage(VkCommandBuffer, VkImage, VkImageLayout, const VkClearDepthStencilValue *, uint32_t, const VkImageSubresourceRange *);

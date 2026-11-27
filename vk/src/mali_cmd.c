@@ -26,6 +26,11 @@
 #include "vk_graphics_state.h"
 #include "util/bitset.h"
 #include "util/u_math.h"
+<<<<<<< HEAD
+=======
+#include "util/format/u_format.h"
+#include "vk_format.h"
+>>>>>>> origin/lane/implicit-sync
 
 static struct mali_cmd_res_ops g_res;
 static struct mali_hw g_hw;
@@ -217,9 +222,14 @@ reset_state(struct mali_cmd_buffer *cmd)
    cmd->ndef = cmd->capdef = 0;
    cmd->nwrote = 0;
    cmd->wrote_full = false;
+<<<<<<< HEAD
    /* The read marks are recording state too, and a buffer is normally reset and re-recorded every frame: without
     * this a reset buffer hands the submit the imported dma-bufs of the FRAME BEFORE, whose VkDeviceMemory the app
     * may already have freed (X8 Xwayland SIGSEGV, smoke x8-1127-233142: kbase_bo_host_touch on a freed BO). */
+=======
+   /* implicit sync: the read marks are per recording too. A reset buffer that kept them could wait (or, worse, name)
+    * an imported dma-buf that its owner has freed since. */
+>>>>>>> origin/lane/implicit-sync
    cmd->nread = 0;
    cmd->read_full = false;
    mali_meta_cmd_forget(cmd);
@@ -1357,6 +1367,7 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          psrc.samples = 4;
          psrc.sample_stride = t.surface_stride;
       }
+<<<<<<< HEAD
     } else if (ca->resolveMode != VK_RESOLVE_MODE_NONE) {
       struct mali_image_view *cv = mali_image_view_from_handle(ca->imageView);
       struct mali_image_view *rv = mali_image_view_from_handle(ca->resolveImageView);
@@ -1369,12 +1380,30 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       else if (rv->vk.base_mip_level >= rv->vk.image->mip_levels)
          why = "1x resolve: invalid resolve image level";
       if (!why) {
+=======
+   } else if (ca->resolveMode != VK_RESOLVE_MODE_NONE) {
+      struct mali_image_view *cv = mali_image_view_from_handle(ca->imageView);
+      struct mali_image_view *rv = mali_image_view_from_handle(ca->resolveImageView);
+      if (f->samples != 1 || ca->resolveMode != VK_RESOLVE_MODE_AVERAGE_BIT ||
+          !cv || !rv || !cv->vk.image || !rv->vk.image || ri->layerCount != 1 || ri->viewMask ||
+          cv->vk.base_mip_level >= cv->vk.image->mip_levels ||
+          rv->vk.base_mip_level >= rv->vk.image->mip_levels) {
+         unsupported(cmd, "resolve of a single-sampled attachment");
+         return;
+      }
+      unsigned vb = util_format_get_blocksize(vk_format_to_pipe_format(rv->vk.view_format));
+      unsigned ib = util_format_get_blocksize(vk_format_to_pipe_format(rv->vk.image->format));
+      if (vb && ib && vb != ib) {
+         /* An incompatible view cannot safely address the underlying image. */
+      } else {
+>>>>>>> origin/lane/implicit-sync
          f->resolve_src = (uint64_t)(uintptr_t)cv->vk.image;
          f->resolve_dst = (uint64_t)(uintptr_t)rv->vk.image;
          f->resolve_level = cv->vk.base_mip_level;
          f->resolve_layer = cv->vk.base_array_layer;
          f->resolve_dst_level = rv->vk.base_mip_level;
          f->resolve_dst_layer = rv->vk.base_array_layer;
+<<<<<<< HEAD
          f->resolve_1x = true;
          /* Even DONT_CARE must be materialized for the subsequent copy. */
          f->colour.store = true;
@@ -1416,6 +1445,12 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       }
         unsupported(cmd, why);
        return;
+=======
+         f->resolve_src_format = cv->vk.view_format;
+         f->resolve_dst_format = rv->vk.view_format;
+         f->resolve_1x = true;
+         f->colour.store = true;
+>>>>>>> origin/lane/implicit-sync
       }
    }
    }
@@ -1548,6 +1583,35 @@ mali_resolve_region(const struct mali_frame *f, VkImageResolve2 *r)
    r->extent = (VkExtent3D){ar[2] ? (uint32_t)ar[2] : f->width, ar[3] ? (uint32_t)ar[3] : f->height, 1};
 }
 
+bool
+mali_resolve_1x_clamp(VkImageResolve2 *r, const int32_t area[4],
+                      uint32_t sw, uint32_t sh, uint32_t dw, uint32_t dh)
+{
+   int64_t x = MAX2(area[0], 0), y = MAX2(area[1], 0);
+   int64_t ex = MIN2((int64_t)area[0] + MAX2(area[2], 0), MIN2(sw, dw));
+   int64_t ey = MIN2((int64_t)area[1] + MAX2(area[3], 0), MIN2(sh, dh));
+   if (ex <= x || ey <= y)
+      return false;
+   r->srcOffset.x = r->dstOffset.x = (int32_t)x;
+   r->srcOffset.y = r->dstOffset.y = (int32_t)y;
+   r->extent.width = (uint32_t)(ex - x);
+   r->extent.height = (uint32_t)(ey - y);
+   return true;
+}
+
+void
+mali_resolve_1x_slices(VkImageResolve2 *r, bool src3d, bool dst3d)
+{
+   if (src3d) {
+      r->srcOffset.z = r->srcSubresource.baseArrayLayer;
+      r->srcSubresource.baseArrayLayer = 0;
+   }
+   if (dst3d) {
+      r->dstOffset.z = r->dstSubresource.baseArrayLayer;
+      r->dstSubresource.baseArrayLayer = 0;
+   }
+}
+
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdEndRendering(VkCommandBuffer h)
 {
@@ -1560,17 +1624,26 @@ mali_CmdEndRendering(VkCommandBuffer h)
    }
    const uint64_t resolve_src = cmd->cur.resolve_src, resolve_dst = cmd->cur.resolve_dst;
    const bool resolve_1x = cmd->cur.resolve_1x;
+<<<<<<< HEAD
    VkImageResolve2 one_region;
    int32_t resolve_area[4];
    memcpy(resolve_area, cmd->cur.area, sizeof resolve_area);
    if (resolve_1x)
       mali_resolve_region(&cmd->cur, &one_region);
+=======
+   const VkFormat src_format = cmd->cur.resolve_src_format, dst_format = cmd->cur.resolve_dst_format;
+   VkImageResolve2 rr;
+   mali_resolve_region(&cmd->cur, &rr);
+   int32_t area[4];
+   memcpy(area, cmd->cur.area, sizeof area);
+>>>>>>> origin/lane/implicit-sync
    push_frame(cmd, &cmd->cur);
    memset(&cmd->cur, 0, sizeof cmd->cur);   /* the draw list now belongs to the finished frame */
    cmd->in_render = false;
    if (resolve_src && resolve_dst && resolve_1x) {
       struct mali_image *src = (struct mali_image *)(uintptr_t)resolve_src;
       struct mali_image *dst = (struct mali_image *)(uintptr_t)resolve_dst;
+<<<<<<< HEAD
       uint32_t sw = u_minify(src->vk.extent.width, one_region.srcSubresource.mipLevel);
       uint32_t sh = u_minify(src->vk.extent.height, one_region.srcSubresource.mipLevel);
       uint32_t dw = u_minify(dst->vk.extent.width, one_region.dstSubresource.mipLevel);
@@ -1637,12 +1710,42 @@ mali_CmdEndRendering(VkCommandBuffer h)
             .dstImage = (VkImage)(uintptr_t)resolve_dst, .dstImageLayout = VK_IMAGE_LAYOUT_GENERAL,
             .regionCount = 1, .pRegions = &r, .filter = VK_FILTER_NEAREST};
          mali_CmdBlitImage2(h, &bi);
+=======
+      uint32_t sw = u_minify(src->vk.extent.width, rr.srcSubresource.mipLevel);
+      uint32_t sh = u_minify(src->vk.extent.height, rr.srcSubresource.mipLevel);
+      uint32_t dw = u_minify(dst->vk.extent.width, rr.dstSubresource.mipLevel);
+      uint32_t dh = u_minify(dst->vk.extent.height, rr.dstSubresource.mipLevel);
+      if (mali_resolve_1x_clamp(&rr, area, sw, sh, dw, dh)) {
+         mali_resolve_1x_slices(&rr, src->vk.image_type == VK_IMAGE_TYPE_3D, dst->vk.image_type == VK_IMAGE_TYPE_3D);
+         if (src_format == dst_format) {
+            VkImageCopy2 r = {.sType = VK_STRUCTURE_TYPE_IMAGE_COPY_2,
+               .srcSubresource = rr.srcSubresource, .srcOffset = rr.srcOffset,
+               .dstSubresource = rr.dstSubresource, .dstOffset = rr.dstOffset, .extent = rr.extent};
+            VkCopyImageInfo2 ci = {.sType = VK_STRUCTURE_TYPE_COPY_IMAGE_INFO_2,
+               .srcImage = (VkImage)(uintptr_t)resolve_src, .srcImageLayout = VK_IMAGE_LAYOUT_GENERAL,
+               .dstImage = (VkImage)(uintptr_t)resolve_dst, .dstImageLayout = VK_IMAGE_LAYOUT_GENERAL,
+               .regionCount = 1, .pRegions = &r};
+            mali_CmdCopyImage2(h, &ci);
+         } else {
+            VkOffset3D send = {rr.srcOffset.x + (int32_t)rr.extent.width,
+                               rr.srcOffset.y + (int32_t)rr.extent.height, rr.srcOffset.z + 1};
+            VkOffset3D dend = {rr.dstOffset.x + (int32_t)rr.extent.width,
+                               rr.dstOffset.y + (int32_t)rr.extent.height, rr.dstOffset.z + 1};
+            VkImageBlit2 r = {.sType = VK_STRUCTURE_TYPE_IMAGE_BLIT_2,
+               .srcSubresource = rr.srcSubresource, .srcOffsets = {rr.srcOffset, send},
+               .dstSubresource = rr.dstSubresource, .dstOffsets = {rr.dstOffset, dend}};
+            VkBlitImageInfo2 bi = {.sType = VK_STRUCTURE_TYPE_BLIT_IMAGE_INFO_2,
+               .srcImage = (VkImage)(uintptr_t)resolve_src, .srcImageLayout = VK_IMAGE_LAYOUT_GENERAL,
+               .dstImage = (VkImage)(uintptr_t)resolve_dst, .dstImageLayout = VK_IMAGE_LAYOUT_GENERAL,
+               .regionCount = 1, .pRegions = &r, .filter = VK_FILTER_NEAREST};
+            mali_meta_blit_views(h, &bi, src_format, dst_format);
+         }
+>>>>>>> origin/lane/implicit-sync
       }
    } else if (resolve_src && resolve_dst) {
       /* MSAA storeOp STORE with a resolve: the samples are in memory now, resolve them in their own pass (the
        * hardware cannot write the average and the samples in one go). mali_CmdResolveImage2 plans a compute job
        * that is appended after the pass frame, which is "after the pass" on the in-order CS ring. */
-      VkImageResolve2 rr;
       mali_resolve_region(&cmd->cur, &rr);
       VkResolveImageInfo2 ri = {.sType = VK_STRUCTURE_TYPE_RESOLVE_IMAGE_INFO_2,
                                 .srcImage = (VkImage)(uintptr_t)resolve_src,
