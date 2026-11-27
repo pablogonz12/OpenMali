@@ -5,6 +5,7 @@
 #define _GNU_SOURCE
 #endif
 #include "mali_backend.h"
+#include "mali_wait_debug.h"
 #include <time.h>
 
 #include <errno.h>
@@ -230,6 +231,9 @@ dump_kick(struct mali_kdev *k, const uint64_t *cs, unsigned n)
 static int
 fake_device_create(const struct mali_gpu_info *gpu, struct mali_kdev **out)
 {
+   const char *cl = getenv("MALI_BO_COHERENT_LOCAL");
+   mali_wait_event("bo_flags backend=fake extra=unavailable coherent_local=unavailable override=%s",
+                   cl ? cl : "unset");
    struct mali_kdev *k = calloc(1, sizeof(*k));
    if (!k)
       return -ENOMEM;

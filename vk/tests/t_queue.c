@@ -657,6 +657,55 @@ export_thread(void *p)
 /* a sync_file exported while the signalling submission is still queued (it waits for a timeline value) must
  * not come back "already signalled": the export has to wait for the submission and carry its fence */
 static int
+test_wait_debug(void)
+{
+   VkFenceCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   VkFence f;
+   CHECK(CreateFence(dev, &ci, NULL, &f) == VK_SUCCESS, "create fence");
+   FILE *capture = tmpfile();
+   CHECK(capture != NULL, "tmpfile");
+   int saved = dup(STDERR_FILENO);
+   CHECK(saved >= 0 && dup2(fileno(capture), STDERR_FILENO) >= 0, "capture stderr");
+   VkResult r = WaitForFences(dev, 1, &f, VK_TRUE, 2500000000ull);
+   fflush(stderr);
+   dup2(saved, STDERR_FILENO);
+   close(saved);
+   const char *e = getenv("MALI_WAIT_DBG");
+   if (e && e[0] == '/') {
+      char comm[16] = "?";
+      FILE *fcomm = fopen("/proc/self/comm", "r");
+      CHECK(fcomm && fgets(comm, sizeof(comm), fcomm), "read comm");
+      fclose(fcomm);
+      comm[strcspn(comm, "\n")] = 0;
+      char path[4096];
+      snprintf(path, sizeof(path), "%s-%s-%ld.log", e, comm, (long)getpid());
+      fclose(capture);
+      capture = fopen(path, "r");
+      CHECK(capture != NULL, "open diagnostic file");
+   }
+   rewind(capture);
+   char line[512];
+   int entries = 0, done = 0, startup = 0, flags = 0;
+   while (fgets(line, sizeof(line), capture)) {
+      if (strstr(line, "mali_wait: sync_wait ") && strstr(line, "not submitted for"))
+         entries++;
+      if (strstr(line, "mali_wait: sync_wait ") && strstr(line, "done after"))
+         done++;
+      if (strstr(line, "mali_wait: startup ") && strstr(line, "mali-open "))
+         startup++;
+      if (strstr(line, "mali_wait: bo_flags backend=fake extra=unavailable coherent_local=unavailable override="))
+         flags++;
+   }
+   fclose(capture);
+   DestroyFence(dev, f, NULL);
+   int expected = e && (!strcmp(e, "1") || e[0] == '/');
+   CHECK(r == VK_TIMEOUT && entries == expected && done == expected &&
+         (!(e && e[0] == '/') || (startup == 1 && flags >= 1)),
+         "wait result=%d entries=%d done=%d startup=%d flags=%d expected=%d", r, entries, done, startup, flags, expected);
+   return 1;
+}
+
+static int
 test_syncexport(void)
 {
    VkSemaphoreTypeCreateInfo ti = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
@@ -1120,6 +1169,7 @@ main(int argc, char **argv)
    if (ok && g_only && !strcmp(g_only, "fault")) ok &= test_fault();
    if (ok && g_only && !strcmp(g_only, "wsifd")) ok &= test_wsifd();
    if (ok && g_only && !strcmp(g_only, "syncexport")) ok &= test_syncexport();
+   if (ok && g_only && !strcmp(g_only, "waitdebug")) ok &= test_wait_debug();
    if (ok && g_only && !strcmp(g_only, "wsiimg")) ok &= test_wsiimg();
    if (ok && g_only && !strcmp(g_only, "failsignal")) ok &= test_failsignal();
    if (ok && g_only && !strcmp(g_only, "nofence")) ok &= test_nofence();

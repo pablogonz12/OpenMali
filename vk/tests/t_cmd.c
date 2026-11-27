@@ -893,8 +893,6 @@ int main(int argc, char **argv)
    VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
    VkCommandPool pool;
    CHECK(CreateCommandPool(dev, &pci, NULL, &pool) == VK_SUCCESS, "CreateCommandPool");
-   if (extra)
-      test_stencil_store_recording(pool);
    if (extra) {
       /* Exercise real refusal sites with debugging disabled, including a
        * different reason and an identical refusal in a second buffer. */
@@ -933,6 +931,8 @@ int main(int argc, char **argv)
       CHECK(EndCommandBuffer(a) == VK_ERROR_FEATURE_NOT_PRESENT, "first refusal not sticky");
       CHECK(EndCommandBuffer(b) == VK_ERROR_FEATURE_NOT_PRESENT, "second refusal not sticky");
    }
+   if (extra)
+      test_stencil_store_recording(pool);
    struct vk_buffer *vb = make_buffer(F.vb.gpu_va, sizeof k_pos);
    VkBuffer vbh = vk_buffer_to_handle(vb);
 

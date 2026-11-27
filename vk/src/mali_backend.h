@@ -67,6 +67,8 @@ unsigned mali_fake_live_bos(struct mali_kdev *k);
 
 struct mali_backend_ops {
    const char *name;
+   /* Optional diagnostic snapshot; false means unavailable. */
+   bool (*debug_seqnos)(struct mali_kdev *, uint64_t *, uint64_t *);
    /* 0 and *out filled when one GPU is usable, negative errno otherwise. */
    int (*probe)(struct mali_gpu_info *out);
    /* One kernel context (fd) plus one command queue per VkDevice. *out may stay NULL for the fake. */

@@ -196,6 +196,20 @@ run "MALI_FENCE_ALWAYS restores it (expected fail)" 1 MALI_BACKEND=fake MALI_FAU
 for n in 1 50; do run "fault inject $n" 0 MALI_BACKEND=fake MALI_FAULT_INJECT=$n $TQ --only fault; done
 # WSI audit regressions: fd validation, sync export waits for a queued signal, DRM modifier/bind checks, failed submit still signals
 for c in wsifd syncexport wsiimg; do run "wsi $c" 0 MALI_BACKEND=fake $TQ --only $c; done
+for d in 0 1; do run "wait debug=$d" 0 MALI_BACKEND=fake MALI_WAIT_DBG=$d $TQ --only waitdebug; done
+wait_debug_dir=$(mktemp -d)
+run "wait debug=file" 0 MALI_BACKEND=fake MALI_WAIT_DBG="$wait_debug_dir/w" $TQ --only waitdebug
+run "external image debug exercise" 0 MALI_BACKEND=fake MALI_WAIT_DBG="$wait_debug_dir/image" $TQ --only wsiimg
+if grep -q 'result function=vkCreateImage .*count=2' "$wait_debug_dir"/image-*.log &&
+   grep -q 'external_image .*format=.*extent=64x64x1' "$wait_debug_dir"/image-*.log &&
+   grep -q 'external_plane index=0 offset=0 pitch=' "$wait_debug_dir"/image-*.log; then
+   echo "ok    external image debug records"
+else
+   echo "FAIL  external image debug records"; fail=1
+fi
+rm -f "$wait_debug_dir"/w-*.log
+rm -f "$wait_debug_dir"/image-*.log
+rmdir "$wait_debug_dir"
 run "wsi failsignal" 0 MALI_BACKEND=fake MALI_FAULT_INJECT=5 $TQ --only failsignal
 
 # M15: frame profiler (mali_fprof.c) on the fake backend. The last case leaves MALI_FRAME_PROF unset and requires
@@ -285,6 +299,7 @@ done
 # (MALI_FAKE_DUMP); the dump is rendered address-normalised and diffed against tests/golden/<test>-<gpu>.txt. BO flag rules run in the
 # fake backend's bo_alloc (a violation fails the test itself).
 GOLD=$V/tests/golden; GDIR=$OUT/golden; mkdir -p "$GOLD" "$GDIR"
+run "golden packed TLS" 0 python3 -I "$V/tests/test_golden_tls.py"
 golden() { # test, gpu, extra args...
    local t=$1 g=$2 name out rc; shift 2
    name=$t-$g; rm -f "$GDIR/$name.jsonl" "$GDIR/$name.txt"
