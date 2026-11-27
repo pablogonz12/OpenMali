@@ -3,7 +3,7 @@
  * timeline semaphores, sync_file export/import, many empty submits, device loss. Loader-free: dlopens
  * the ICD like t_icd --direct. One JSON line per case; exit 0 = all pass.
  *
- *   t_queue --direct <icd.so> [--submits N] [--burst N] [--only mem|dmabuf|submits|binary|timeline|syncfile|fault|idle|teardown]
+ *   t_queue --direct <icd.so> [--submits N] [--burst N] [--only mem|dmabuf|submits|binary|timeline|syncfile|fault|idle|stale|teardown]
  *   fault mode needs MALI_FAULT_INJECT=n in the environment (n-th submission fails).
  */
 #define _DEFAULT_SOURCE
@@ -1033,6 +1033,114 @@ test_isync(uint32_t slow_us)
    return 1;
 }
 
+/* Stale memory marks: a command buffer keeps raw VkDeviceMemory pointers from RECORD time (mali_cmd.h wrote[] for
+ * M15, read[] for implicit sync), and an app that frees the memory before it submits - illegal Vulkan, which zink does
+ * on a swapchain rebuild - leaves those marks dangling. Both the implicit-sync collect and MALI_SHARED_STATS read
+ * them at submit, and mali_cmd_submit itself hands wrote[] to bo_wrote: the X8 crashed exactly there on 2026-11-27
+ * (smoke x8-1127-233142, SIGSEGV in kbase_bo_host_touch via mali_sstats_note). A submission must survive marks that
+ * point at freed memory, and one line must never be printed for them.
+ *
+ * Two shapes, each with the memory freed between record and submit:
+ *   record -> free -> submit           (the dangling mark itself)
+ *   record -> reset -> free -> submit  (a reset buffer must not keep the previous frame's marks; the reset clears
+ *                                       them, which is the bug that was found)
+ * The BOs are 128 KiB, the size a diagnostic samples, so a mark that is not believed dead would be read. */
+static int
+test_stale(void)
+{
+   const VkDeviceSize sz = 128u * 1024u;
+   for (int phase = 0; phase < 2; phase++) {
+      const bool by_reset = phase == 1;
+      VkExportMemoryAllocateInfo exp = {.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO,
+                                        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+      VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &exp, .allocationSize = sz,
+                                 .memoryTypeIndex = 0};
+      while (!(memprops.memoryTypes[ai.memoryTypeIndex].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
+             ai.memoryTypeIndex < memprops.memoryTypeCount - 1)
+         ai.memoryTypeIndex++;
+      VkDeviceMemory prod;
+      CHECK(AllocateMemory(dev, &ai, NULL, &prod) == VK_SUCCESS, "phase %d: exportable alloc", phase);
+      VkMemoryGetFdInfoKHR gi = {.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR, .memory = prod,
+                                 .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+      int fd = -1;
+      CHECK(GetMemoryFdKHR(dev, &gi, &fd) == VK_SUCCESS && fd >= 0, "phase %d: export", phase);
+      VkImportMemoryFdInfoKHR imp = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR,
+                                     .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, .fd = fd};
+      VkMemoryAllocateInfo ai2 = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &imp,
+                                  .allocationSize = sz, .memoryTypeIndex = ai.memoryTypeIndex};
+      VkDeviceMemory cons;
+      CHECK(AllocateMemory(dev, &ai2, NULL, &cons) == VK_SUCCESS, "phase %d: import", phase);
+      VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = sz,
+                               .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+      VkBuffer buf;
+      CHECK(CreateBuffer(dev, &bi, NULL, &buf) == VK_SUCCESS, "phase %d: buffer", phase);
+      CHECK(BindBufferMemory(dev, buf, cons, 0) == VK_SUCCESS, "phase %d: bind", phase);
+
+      /* A read mark (the descriptor set) and a write mark (the fill) on the same imported BO. */
+      VkDescriptorSetLayoutBinding lb = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                         .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_VERTEX_BIT};
+      VkDescriptorSetLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                                            .bindingCount = 1, .pBindings = &lb};
+      VkDescriptorSetLayout dsl;
+      CHECK(CreateDescriptorSetLayout(dev, &li, NULL, &dsl) == VK_SUCCESS, "phase %d: set layout", phase);
+      VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1,
+                                        .pSetLayouts = &dsl};
+      VkPipelineLayout pl;
+      CHECK(CreatePipelineLayout(dev, &pli, NULL, &pl) == VK_SUCCESS, "phase %d: pipeline layout", phase);
+      VkDescriptorPoolSize ps = {.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1};
+      VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1,
+                                        .poolSizeCount = 1, .pPoolSizes = &ps};
+      VkDescriptorPool dp;
+      CHECK(CreateDescriptorPool(dev, &dpi, NULL, &dp) == VK_SUCCESS, "phase %d: pool", phase);
+      VkDescriptorSetAllocateInfo dsa = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dp,
+                                         .descriptorSetCount = 1, .pSetLayouts = &dsl};
+      VkDescriptorSet set;
+      CHECK(AllocateDescriptorSets(dev, &dsa, &set) == VK_SUCCESS, "phase %d: set", phase);
+      VkDescriptorBufferInfo dbi = {.buffer = buf, .offset = 0, .range = sz};
+      VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 0,
+                                .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                .pBufferInfo = &dbi};
+      UpdateDescriptorSets(dev, 1, &w, 0, NULL);
+
+      VkCommandPoolCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+      VkCommandPool pool;
+      CHECK(CreateCommandPool(dev, &cpi, NULL, &pool) == VK_SUCCESS, "phase %d: pool", phase);
+      VkCommandBufferAllocateInfo cbi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = pool,
+                                         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+      VkCommandBuffer cb;
+      CHECK(AllocateCommandBuffers(dev, &cbi, &cb) == VK_SUCCESS, "phase %d: cb", phase);
+      VkCommandBufferBeginInfo bgi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+      CHECK(BeginCommandBuffer(cb, &bgi) == VK_SUCCESS, "phase %d: begin", phase);
+      CmdFillBuffer(cb, buf, 0, sz, 0x04040404u);
+      CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pl, 0, 1, &set, 0, NULL);
+      CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "phase %d: end", phase);
+      if (by_reset) {
+         /* Re-record: the marks of the frame above must go with it, still live here on purpose. */
+         CHECK(BeginCommandBuffer(cb, &bgi) == VK_SUCCESS, "phase %d: re-begin", phase);
+         CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "phase %d: re-end", phase);
+      }
+
+      /* The app frees the memory and the buffer before it submits what referenced them. */
+      DestroyBuffer(dev, buf, NULL);
+      FreeMemory(dev, cons, NULL);
+      FreeMemory(dev, prod, NULL);
+
+      VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+      VkFence f;
+      CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "phase %d: fence", phase);
+      VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+      CHECK(QueueSubmit(queue, 1, &si, f) == VK_SUCCESS, "phase %d: submit with freed marks", phase);
+      CHECK(WaitForFences(dev, 1, &f, VK_TRUE, 10000000000ull) == VK_SUCCESS, "phase %d: wait", phase);
+      DestroyFence(dev, f, NULL);
+      DestroyCommandPool(dev, pool, NULL);
+      DestroyDescriptorPool(dev, dp, NULL);
+      DestroyPipelineLayout(dev, pl, NULL);
+      DestroyDescriptorSetLayout(dev, dsl, NULL);
+      printf("{\"test\":\"stale\",\"phase\":%d,\"by\":\"%s\",\"ok\":true}\n", phase, by_reset ? "reset" : "record");
+   }
+   return 1;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1112,6 +1220,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("dmabuf")) { ok &= test_dmabuf(0); ok &= test_dmabuf(1); }
    if (ok && g_only && !strcmp(g_only, "isync"))
       ok &= test_isync(getenv("MALI_FAKE_SLOW_US") ? (uint32_t)atoi(getenv("MALI_FAKE_SLOW_US")) : 150000u);
+   if (ok && g_only && !strcmp(g_only, "stale")) ok &= test_stale();
    if (ok && CASE_ON("idle")) ok &= test_idle();
    if (ok && CASE_ON("binary")) ok &= test_binary();
    if (ok && CASE_ON("timeline")) ok &= test_timeline(500);

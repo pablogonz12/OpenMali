@@ -186,6 +186,10 @@ run "queue teardown v13"  0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 MALI_FAKE_SLOW_U
 run "queue all v13 slow" 0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 MALI_FAKE_SLOW_US=200 $TQ --submits 1000
 # present ordering (queue-order): the commit never precedes the frame; with a fence it may (MALI_PRESENT_FENCE forces the kernel capability)
 for m in 0 1; do run "present order fence=$m" 0 MALI_BACKEND=fake MALI_FAKE_SLOW_US=100000 MALI_PRESENT_FENCE=$m $TQ --only order; done
+# Stale memory marks (mali_cmd.h wrote[]/read[]): a submitted command buffer whose VkDeviceMemory was freed after
+# recording must not hand a dangling struct mali_memory to the backend (the X8's Xwayland SIGSEGV in
+# kbase_bo_host_touch, smoke x8-1127-233142).
+run "stale memory marks" 0 MALI_BACKEND=fake MALI_FAKE_DMABUF_SYNC=1 $TQ --only stale
 # Implicit sync (mali_isync.c): a submit that only SAMPLES an imported dma-buf waits its producer's fence before it
 # runs (the Xwayland-glamor read path); MALI_IMPLICIT_SYNC=0 is the A/B arm. Both compare against a control submit.
 run "implicit sync: sampled imported BO waits" 0 MALI_BACKEND=fake MALI_FAKE_DMABUF_SYNC=1 MALI_FAKE_SLOW_US=150000 MALI_IMPLICIT_SYNC=1 $TQ --only isync

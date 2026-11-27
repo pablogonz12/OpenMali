@@ -111,6 +111,82 @@ mali_memory_pool_release(void *pdev, size_t size)
    mem_release(pdev, size);
 }
 
+/* ---- live VkDeviceMemory registry (mali_queue.h) -------------------------------------------------------------
+ * A command buffer's wrote[]/read[] marks are raw struct mali_memory * taken at RECORD time; the app may free the
+ * memory before it submits (illegal in Vulkan, but zink does it on a swapchain rebuild and we crashed: X8 smoke
+ * x8-1127-233142, SIGSEGV in kbase_bo_host_touch via mali_sstats_note). This registry says whether a mark still
+ * points at a live memory, and mali_memory_guard() holds the same lock, so vkFreeMemory cannot release the struct
+ * between the check and the backend call. Chained buckets: O(1) average, contention only on submit and free. */
+#define MALI_LIVE_BUCKETS 1024u
+static pthread_mutex_t live_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct mali_memory *live_head[MALI_LIVE_BUCKETS];
+
+static unsigned
+live_hash(const struct mali_memory *m)
+{
+   uintptr_t v = (uintptr_t)m;
+   return (unsigned)((v >> 4) * 2654435761u) & (MALI_LIVE_BUCKETS - 1);
+}
+
+/* The lock must be held. */
+static struct mali_memory *
+live_find(const struct mali_memory *m)
+{
+   for (struct mali_memory *p = live_head[live_hash(m)]; p; p = p->live_next)
+      if (p == m)
+         return p;
+   return NULL;
+}
+
+static void
+live_add(struct mali_memory *m)
+{
+   pthread_mutex_lock(&live_lock);
+   unsigned h = live_hash(m);
+   m->live_next = live_head[h];
+   live_head[h] = m;
+   pthread_mutex_unlock(&live_lock);
+}
+
+static void
+live_remove(struct mali_memory *m)
+{
+   pthread_mutex_lock(&live_lock);
+   struct mali_memory **pp = &live_head[live_hash(m)];
+   while (*pp && *pp != m)
+      pp = &(*pp)->live_next;
+   if (*pp) {
+      *pp = m->live_next;
+      m->live_next = NULL;
+   }
+   pthread_mutex_unlock(&live_lock);
+}
+
+bool
+mali_memory_live(const struct mali_memory *m)
+{
+   pthread_mutex_lock(&live_lock);
+   bool live = live_find(m) != NULL;
+   pthread_mutex_unlock(&live_lock);
+   return live;
+}
+
+bool
+mali_memory_guard(struct mali_memory *m)
+{
+   pthread_mutex_lock(&live_lock);
+   if (m && live_find(m))
+      return true;
+   pthread_mutex_unlock(&live_lock);
+   return false;
+}
+
+void
+mali_memory_unguard(void)
+{
+   pthread_mutex_unlock(&live_lock);
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL
 mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
                     const VkAllocationCallbacks *pAllocator, VkDeviceMemory *pMemory)
@@ -183,6 +259,7 @@ mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
    }
 
    /* mem_used was reserved before the allocation (mem_reserve); it must not be added again here. */
+   live_add(mem);   /* from here the record-time marks may find it (mali_memory_live) */
    *pMemory = mali_memory_to_handle(mem);
    return VK_SUCCESS;
 }
@@ -195,6 +272,10 @@ mali_FreeMemory(VkDevice _device, VkDeviceMemory _mem, const VkAllocationCallbac
 
    if (!mem)
       return;
+   /* Out of the registry first: from here a record-time mark (mali_cmd.h wrote[]/read[]) is a dead pointer, and
+    * mali_memory_guard() refuses it. Whoever is sampling right now holds the lock, so this waits for that read to
+    * finish before the BO behind it goes away. */
+   live_remove(mem);
    mali_device_pdev(dev)->backend->bo_free(dev->kdev, &mem->bo);
    /* A BO the kbase pool kept is still committed (kbase_bo_free only moves it to the free list), so its charge stays
     * until the pool really frees it or hands it to the next allocation; that is the pool's release callback. */

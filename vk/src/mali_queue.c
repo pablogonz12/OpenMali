@@ -712,25 +712,36 @@ submit_shared_collect(struct vk_queue_submit *submit, struct mali_isync_submit *
          out->unlisted = true;
       for (unsigned j = 0; j < cmd->nwrote; j++) {
          struct mali_memory *m = cmd->wrote[j];
-         if (!m || m->bo.dmabuf_fd < 0)
+         /* A mark is a record-time pointer: the app may have freed the memory before this submit. Only fds are
+          * passed on, so the guard is released before the sync ioctls. */
+         if (!mali_memory_guard(m))
             continue;
-         if (m->isync != MALI_ISYNC_BO_EXPORTED && m->isync != MALI_ISYNC_BO_IMPORTED)
+         if (m->bo.dmabuf_fd < 0 || (m->isync != MALI_ISYNC_BO_EXPORTED && m->isync != MALI_ISYNC_BO_IMPORTED)) {
+            mali_memory_unguard();
             continue;
-         if (!submit_shared_find(out->fd, out->n, m->bo.dmabuf_fd)) {
+         }
+         const int fd = m->bo.dmabuf_fd;
+         const bool imported = m->isync == MALI_ISYNC_BO_IMPORTED;
+         mali_memory_unguard();
+         if (!submit_shared_find(out->fd, out->n, fd)) {
             if (out->n < MALI_ISYNC_MAX_BOS)
-               out->fd[out->n++] = m->bo.dmabuf_fd;
+               out->fd[out->n++] = fd;
             else
                out->unlisted = true;
          }
-         if (m->isync == MALI_ISYNC_BO_IMPORTED)
-            submit_shared_add_impw(out, m->bo.dmabuf_fd);
+         if (imported)
+            submit_shared_add_impw(out, fd);
       }
       /* The consumer side proper: imported dma-bufs this command buffer only reads (descriptors, attachments,
        * copy/blit sources). Without this a reader that never waits would still race the producer's frame. */
       for (unsigned j = 0; j < cmd->nread; j++) {
          struct mali_memory *m = cmd->read[j];
-         if (m && m->bo.dmabuf_fd >= 0)
-            submit_shared_add_impr(out, m->bo.dmabuf_fd);
+         if (!mali_memory_guard(m))
+            continue;
+         const int fd = m->bo.dmabuf_fd;
+         mali_memory_unguard();
+         if (fd >= 0)
+            submit_shared_add_impr(out, fd);
       }
    }
 }
