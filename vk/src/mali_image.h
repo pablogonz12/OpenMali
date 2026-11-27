@@ -111,6 +111,7 @@ extern const uint64_t mali_wsi_modifier;   /* DRM_FORMAT_MOD_LINEAR (mali_wsi.c)
 
 struct mali_image {
    struct vk_image vk;
+   uint64_t debug_generation;
    struct mali_image_layout lay;
    struct mali_memory *mem;
    uint64_t mem_off;
@@ -126,6 +127,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(mali_image, vk.base, VkImage, VK_OBJECT_TYPE_IMAG
 
 struct mali_image_view {
    struct vk_image_view vk;
+   uint64_t debug_image_generation;
    unsigned arch;
    struct mali_view_desc vd;
    struct mali_hw_desc tex, storage;
@@ -142,6 +144,9 @@ struct mali_image_view {
    bool emitted;
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(mali_image_view, vk.base, VkImageView, VK_OBJECT_TYPE_IMAGE_VIEW)
+
+/* Debug registry checks identity without reading freed image storage. */
+void mali_debug_check_view(VkImageView view);
 
 struct mali_buffer {
    struct vk_buffer vk;

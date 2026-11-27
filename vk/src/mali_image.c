@@ -6,8 +6,13 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
+#include <pthread.h>
+#include <stdatomic.h>
 
 #include "util/macros.h"
+#include "util/format/u_format.h"
+#include "vk_format.h"
 #include "vk_alloc.h"
 #include "vk_log.h"
 #include "vk_util.h"
@@ -15,6 +20,28 @@
 static inline uint64_t align_up(uint64_t v, uint64_t a) { return (v + a - 1) & ~(a - 1); }
 static inline uint32_t minify(uint32_t v, uint32_t l) { v >>= l; return v ? v : 1; }
 static inline uint32_t div_up(uint32_t a, uint32_t b) { return (a + b - 1) / b; }
+
+struct debug_image_entry { const void *image; uint64_t generation; struct debug_image_entry *next; };
+struct debug_view_entry { VkImageView view; const void *image; uint64_t generation; struct debug_view_entry *next; };
+static pthread_mutex_t debug_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct debug_image_entry *debug_images;
+static struct debug_view_entry *debug_views;
+static atomic_uint_fast64_t debug_next_generation = 1;
+
+void
+mali_debug_check_view(VkImageView h)
+{
+   if (!getenv("MALI_PIPE_DBG") || !h) return;
+   pthread_mutex_lock(&debug_lock);
+   struct debug_view_entry *v;
+   for (v = debug_views; v && v->view != h; v = v->next) {}
+   if (v) {
+      struct debug_image_entry *i;
+      for (i = debug_images; i && (i->image != v->image || i->generation != v->generation); i = i->next) {}
+      if (!i) fprintf(stderr, "mali_cmd: view %p points at destroyed/foreign image\n", (void *)(uintptr_t)h);
+   }
+   pthread_mutex_unlock(&debug_lock);
+}
 
 /* ---- layout ---- */
 
@@ -431,7 +458,15 @@ mali_CreateImage(VkDevice _dev, const VkImageCreateInfo *ci, const VkAllocationC
    img->native_view = is_bc && mali_bc_is_etc2(ci->format);
    if (is_bc) img->bc_lay = bc;
    img->lay = lay;
-   img->arch = dev_arch(dev);
+    img->arch = dev_arch(dev);
+    img->debug_generation = atomic_fetch_add(&debug_next_generation, 1);
+    if (getenv("MALI_PIPE_DBG")) {
+       struct debug_image_entry *e = malloc(sizeof *e);
+       if (e) {
+          *e = (struct debug_image_entry){img, img->debug_generation, NULL};
+          pthread_mutex_lock(&debug_lock); e->next = debug_images; debug_images = e; pthread_mutex_unlock(&debug_lock);
+       } else fprintf(stderr, "mali_vk: image diagnostic registry allocation failed\n");
+    }
    if (ci->tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT) img->vk.drm_format_mod = mali_wsi_modifier;   /* M14: linear only */
    *out = mali_image_to_handle(img);
    return VK_SUCCESS;
@@ -442,7 +477,15 @@ mali_DestroyImage(VkDevice _dev, VkImage h, const VkAllocationCallbacks *alloc)
 {
    VK_FROM_HANDLE(mali_device, dev, _dev);
    VK_FROM_HANDLE(mali_image, img, h);
-   if (!img) return;
+    if (!img) return;
+    if (getenv("MALI_PIPE_DBG")) {
+       pthread_mutex_lock(&debug_lock);
+       struct debug_image_entry **e = &debug_images;
+       while (*e && (*e)->image != img) e = &(*e)->next;
+       if (*e) { struct debug_image_entry *old = *e; *e = old->next; free(old); }
+       pthread_mutex_unlock(&debug_lock);
+    }
+    img->debug_generation = 0;
    vk_image_destroy(&dev->vk, alloc, &img->vk);
 }
 
@@ -625,6 +668,22 @@ mali_CreateImageView(VkDevice _dev, const VkImageViewCreateInfo *ci, const VkAll
    }
    view_refresh(v);
    *out = mali_image_view_to_handle(v);
+   v->debug_image_generation = img->debug_generation;
+   if (getenv("MALI_PIPE_DBG")) {
+      struct debug_view_entry *e = malloc(sizeof *e);
+      if (e) {
+         *e = (struct debug_view_entry){*out, img, img->debug_generation, NULL};
+         pthread_mutex_lock(&debug_lock); e->next = debug_views; debug_views = e; pthread_mutex_unlock(&debug_lock);
+      } else fprintf(stderr, "mali_vk: view diagnostic registry allocation failed\n");
+      unsigned vb = util_format_get_blocksize(vk_format_to_pipe_format(v->vk.view_format));
+      unsigned ib = util_format_get_blocksize(vk_format_to_pipe_format(img->vk.format));
+      if (vb && ib && vb != ib)
+         fprintf(stderr, "mali_vk: mismatched view=%p image=%p view_fmt=%d image_fmt=%d bytes=%u/%u extent=%ux%ux%u usage=0x%llx flags=0x%llx gen=%llu\n",
+                 (void *)(uintptr_t)*out, (void *)(uintptr_t)ci->image, v->vk.view_format, img->vk.format, vb, ib,
+                 img->vk.extent.width, img->vk.extent.height, img->vk.extent.depth,
+                 (unsigned long long)img->vk.usage, (unsigned long long)img->vk.create_flags,
+                 (unsigned long long)img->debug_generation);
+   }
    return VK_SUCCESS;
 }
 
@@ -634,6 +693,13 @@ mali_DestroyImageView(VkDevice _dev, VkImageView h, const VkAllocationCallbacks 
    VK_FROM_HANDLE(mali_device, dev, _dev);
    VK_FROM_HANDLE(mali_image_view, v, h);
    if (!v) return;
+   if (getenv("MALI_PIPE_DBG")) {
+      pthread_mutex_lock(&debug_lock);
+      struct debug_view_entry **e = &debug_views;
+      while (*e && (*e)->view != h) e = &(*e)->next;
+      if (*e) { struct debug_view_entry *old = *e; *e = old->next; free(old); }
+      pthread_mutex_unlock(&debug_lock);
+   }
    pay_free(&dev->vk, v->payload, (size_t)v->payload_entries * 32);
    pay_free(&dev->vk, v->payload_c, (size_t)v->payload_c_entries * 32);
    vk_image_view_destroy(&dev->vk, alloc, &v->vk);

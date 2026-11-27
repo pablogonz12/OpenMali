@@ -1094,7 +1094,11 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    if (ncol > 1 || (ncol == 1 && c0 != 0))
       degrade(cmd, "several colour attachment slots (rendering the first non-null one)");
    f->colour_slot = no_col ? 0u : c0;   /* CmdClearAttachments must target this slot, and only this one */
-   const VkRenderingAttachmentInfo *ca = no_col ? NULL : &ri->pColorAttachments[c0];
+    const VkRenderingAttachmentInfo *ca = no_col ? NULL : &ri->pColorAttachments[c0];
+    if (ca && getenv("MALI_PIPE_DBG")) {
+       mali_debug_check_view(ca->imageView);
+       mali_debug_check_view(ca->resolveImageView);
+    }
    bool load = false;
    struct mali_preload_src psrc;
    memset(&psrc, 0, sizeof psrc);
@@ -1229,6 +1233,13 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       else if (rv->vk.base_mip_level >= rv->vk.image->mip_levels)
          why = "1x resolve: invalid resolve image level";
       if (!why) {
+         if (getenv("MALI_PIPE_DBG"))
+            fprintf(stderr, "mali_cmd: 1x resolve views src_view=%p src_image=%p src_extent=%ux%u dst_view=%p dst_image=%p dst_extent=%ux%u generations=%llu/%llu\n",
+                    (void *)(uintptr_t)ca->imageView, (void *)cv->vk.image,
+                    cv->vk.image->extent.width, cv->vk.image->extent.height,
+                    (void *)(uintptr_t)ca->resolveImageView, (void *)rv->vk.image,
+                    rv->vk.image->extent.width, rv->vk.image->extent.height,
+                    (unsigned long long)cv->debug_image_generation, (unsigned long long)rv->debug_image_generation);
          f->resolve_src = (uint64_t)(uintptr_t)cv->vk.image;
          f->resolve_dst = (uint64_t)(uintptr_t)rv->vk.image;
          f->resolve_level = cv->vk.base_mip_level;
