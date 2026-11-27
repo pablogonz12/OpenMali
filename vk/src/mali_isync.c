@@ -17,7 +17,12 @@ mali_isync_dev_init(struct mali_isync_dev *d)
     * /proc/self/comm contains it, which is how the racing link is found: the Steam UI's frame is produced by
     * steamwebhelper and consumed by Xwayland (both zink on this driver), and only one of them needs to wait. */
    const char *e = getenv("MALI_IMPLICIT_SYNC");
-   d->enabled = !(e && !strcmp(e, "0"));
+   if (e && !strcmp(e, "0"))
+      d->enabled = MALI_ISYNC_MODE_OFF;
+   else if (e && (!strcmp(e, "wait") || !strcmp(e, "2")))
+      d->enabled = MALI_ISYNC_MODE_WAIT;
+   else
+      d->enabled = MALI_ISYNC_MODE_FENCE;
    const char *want = getenv("MALI_IMPLICIT_SYNC_COMM");
    if (d->enabled && want && *want) {
       char comm[64] = {0};
@@ -32,12 +37,13 @@ mali_isync_dev_init(struct mali_isync_dev *d)
       if (nl)
          *nl = 0;
       if (!strstr(comm, want))
-         d->enabled = 0;
+         d->enabled = MALI_ISYNC_MODE_OFF;
    }
    d->import_ok = -1;
    d->export_ok = -1;
    d->stat_fence = d->stat_cpu_wait = d->stat_wait = d->stat_err = 0;
    d->stat_polled = d->stat_blocked = 0;
+   d->stat_skipped = 0;
 }
 
 void
@@ -45,9 +51,9 @@ mali_isync_dev_finish(struct mali_isync_dev *d)
 {
    const char *e = getenv("MALI_ISYNC_DBG");
    if (e && *e && strcmp(e, "0") && (d->stat_fence || d->stat_cpu_wait || d->stat_wait || d->stat_err))
-      fprintf(stderr, "PROF/isync fence=%u cpu_wait=%u wait=%u err=%u polled=%u blocked=%u import=%d export=%d enabled=%d\n",
+      fprintf(stderr, "PROF/isync fence=%u cpu_wait=%u wait=%u err=%u polled=%u blocked=%u skipped=%u import=%d export=%d mode=%d\n",
               d->stat_fence, d->stat_cpu_wait, d->stat_wait, d->stat_err, d->stat_polled, d->stat_blocked,
-              d->import_ok, d->export_ok, d->enabled);
+              d->stat_skipped, d->import_ok, d->export_ok, d->enabled);
    pthread_mutex_destroy(&d->lock);
 }
 
@@ -65,23 +71,23 @@ mali_isync_enabled(struct mali_isync_dev *d)
 enum mali_isync_action
 mali_isync_plan_producer(const struct mali_isync_dev *d, unsigned nfds, bool unlisted)
 {
-   if (d->enabled == 0)
+   if (d->enabled == MALI_ISYNC_MODE_OFF)
       return MALI_ISYNC_NONE;
    if (!nfds && !unlisted)
       return MALI_ISYNC_NONE;
-   /* A buffer this submit writes but cannot name (wrote_full): the fence cannot be attached to it, so the CPU
-    * wait is the only way to make its consumer see the finished frame. */
+   /* A buffer this submit hands off but cannot name (handoff_full): no fd to attach a fence to. The CPU wait is
+    * the only sync, and it is only taken when asked for. */
    if (unlisted)
-      return MALI_ISYNC_CPU_WAIT;
+      return d->enabled == MALI_ISYNC_MODE_WAIT ? MALI_ISYNC_CPU_WAIT : MALI_ISYNC_NONE;
    if (d->import_ok == 0)
-      return MALI_ISYNC_CPU_WAIT;
+      return d->enabled == MALI_ISYNC_MODE_WAIT ? MALI_ISYNC_CPU_WAIT : MALI_ISYNC_NONE;
    return MALI_ISYNC_FENCE;
 }
 
 enum mali_isync_action
 mali_isync_plan_consumer(const struct mali_isync_dev *d, unsigned nfds)
 {
-   if (d->enabled == 0 || !nfds || d->export_ok == 0)
+   if (d->enabled == MALI_ISYNC_MODE_OFF || !nfds || d->export_ok == 0)
       return MALI_ISYNC_NONE;
    return MALI_ISYNC_FENCE;
 }
@@ -104,7 +110,14 @@ mali_isync_producer_ex(struct mali_isync_dev *d, const struct mali_backend_ops *
             /* 5.10 (Poco X4): the ioctl does not exist, so no implicit fence can be attached. The CPU wait below
              * is the only sync there is; latch it so later submits skip the failing ioctl. */
             d->import_ok = 0;
-            a = MALI_ISYNC_CPU_WAIT;
+            /* Fence-only (the default): leave the producer free, the consumer side of a kernel WITH the ioctls
+             * covers it and 5.10 keeps its frame rate (B: cross-process fences, lane/xproc-sync). */
+            if (d->enabled != MALI_ISYNC_MODE_WAIT) {
+               a = MALI_ISYNC_NONE;
+               d->stat_skipped++;
+            } else {
+               a = MALI_ISYNC_CPU_WAIT;
+            }
             break;
          }
          if (r != 0) {
@@ -113,7 +126,12 @@ mali_isync_producer_ex(struct mali_isync_dev *d, const struct mali_backend_ops *
              * an unprotected write. Only ENOTTY (above) means the ioctl does not exist. */
             d->stat_err++;
             soft_err = true;
-            a = MALI_ISYNC_CPU_WAIT;
+            if (d->enabled != MALI_ISYNC_MODE_WAIT) {
+               a = MALI_ISYNC_NONE;
+               d->stat_skipped++;
+            } else {
+               a = MALI_ISYNC_CPU_WAIT;
+            }
             break;
          }
          d->stat_fence++;

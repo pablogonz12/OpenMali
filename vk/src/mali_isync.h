@@ -14,7 +14,10 @@
  * Consumer, before a submit that references an imported dma-buf: export its current fences (READ) and wait them.
  * On 5.10 the producer's CPU wait is what covers the consumer, and the export ioctl is not even attempted (ENOTTY).
  *
- * MALI_IMPLICIT_SYNC=0 turns all of it off. MALI_ISYNC_DBG=1 prints one line per device with the counts.
+ * MALI_IMPLICIT_SYNC: unset/1 = fence path only (the default), "wait" = also take the producer's CPU wait on a
+ * kernel without the dma-buf sync-file ioctls, 0 = off. The CPU wait is opt-in because on 5.10 it is the frame's GPU
+ * completion once per handoff: correct (X4: 0 flicker frames) but it halves the frame rate (PR #404). The real 5.10
+ * fix is a cross-process fence (lane/xproc-sync). MALI_ISYNC_DBG=1 prints one line per device with the counts.
  *
  * What a submit references: the producer side uses the per-command-buffer GPU-write marks (mali_cmd.h wrote[]).
  * The consumer side uses the read marks (mali_cmd.h read[]): imported dma-bufs reached through a bound descriptor
@@ -44,20 +47,29 @@ enum mali_isync_action {
 #define MALI_ISYNC_BO_IMPORTED 2 /* allocated from somebody else's dma-buf: we may be a consumer */
 #define MALI_ISYNC_BO_WSI      3 /* swapchain image: wsi_common imports the present fence itself, leave it alone */
 
+/* MALI_IMPLICIT_SYNC: unset/1 = fence path only, "wait" = also fall back to the producer's CPU wait on a kernel
+ * without the dma-buf sync-file ioctls (5.10), 0 = off. Fence-only is the default because on 5.10 that CPU wait is the
+ * frame's GPU completion once per handoff: correct (0 flicker) but it halves the frame rate (X4, PR #404). */
+#define MALI_ISYNC_MODE_OFF   0
+#define MALI_ISYNC_MODE_FENCE 1
+#define MALI_ISYNC_MODE_WAIT  2
+
 struct mali_isync_dev {
    pthread_mutex_t lock;   /* guards the probes and the counters (submits come from several threads) */
-   int enabled;            /* MALI_IMPLICIT_SYNC, read once: -1 unread, 0 off, 1 on */
+   int enabled;            /* MALI_ISYNC_MODE_*, read once at device creation */
    int import_ok;          /* -1 unknown, 0 ENOTTY (no implicit fences here), 1 the kernel took a fence */
    int export_ok;          /* -1 unknown, 0 ENOTTY, 1 the kernel handed one out */
    unsigned stat_fence, stat_cpu_wait, stat_wait, stat_err;
    unsigned stat_polled, stat_blocked;   /* consumer: fence already signalled (0-timeout poll) vs a real wait */
+   unsigned stat_skipped;                /* producer: a handoff left unsynced (no ioctl, fence-only mode) */
 };
 
 void mali_isync_dev_init(struct mali_isync_dev *d);
 void mali_isync_dev_finish(struct mali_isync_dev *d);
 bool mali_isync_enabled(struct mali_isync_dev *d);
 
-/* Pure decisions. nfds = shared dma-bufs this submit names, unlisted = it may write more than it names. */
+/* Pure decisions. nfds = shared dma-bufs this submit names, unlisted = it may write more than it names.
+ * MALI_ISYNC_CPU_WAIT is only planned in MALI_ISYNC_MODE_WAIT. */
 enum mali_isync_action mali_isync_plan_producer(const struct mali_isync_dev *d, unsigned nfds, bool unlisted);
 enum mali_isync_action mali_isync_plan_consumer(const struct mali_isync_dev *d, unsigned nfds);
 

@@ -119,7 +119,10 @@ main(void)
    EXPECT(mali_isync_plan_consumer(&d, 0) == MALI_ISYNC_NONE, "no shared BO: consumer plans nothing");
    EXPECT(mali_isync_plan_producer(&d, 1, false) == MALI_ISYNC_FENCE, "unprobed kernel: try the fence first");
 
-   /* 3: 5.10 - the import ioctl answers ENOTTY, so the submit waits its own fence instead */
+   /* 3: 5.10 in the opt-in mode - the import ioctl answers ENOTTY, so the submit waits its own fence instead */
+   setenv("MALI_IMPLICIT_SYNC", "wait", 1);
+   mali_isync_dev_finish(&d);
+   mali_isync_dev_init(&d);
    struct fake_kernel k1 = {.import_r = -ENOTTY, .export_r = -ENOTTY, .export_fd = -1};
    EXPECT(mali_isync_producer(&d, &fake_ops, (struct mali_kdev *)&k1, fds, 2, false, fd0) == MALI_ISYNC_CPU_WAIT,
           "ENOTTY: the submit takes the CPU wait");
@@ -129,6 +132,21 @@ main(void)
    EXPECT(mali_isync_producer(&d, &fake_ops, (struct mali_kdev *)&k1, fds, 2, false, fd0) == MALI_ISYNC_CPU_WAIT,
           "ENOTTY: later submits still wait");
    EXPECT(k1.imports == 1 && k1.waits == 2, "ENOTTY: no ioctl again (%u/%u)", k1.imports, k1.waits);
+
+   /* 3b: 5.10 in the DEFAULT mode (fence only): a handoff is left unsynced, the producer is not blocked */
+   {
+      setenv("MALI_IMPLICIT_SYNC", "1", 1);
+      struct mali_isync_dev df;
+      mali_isync_dev_init(&df);
+      struct fake_kernel kf = {.import_r = -ENOTTY, .export_r = -ENOTTY, .export_fd = -1};
+      EXPECT(mali_isync_plan_producer(&df, 1, false) == MALI_ISYNC_FENCE, "default mode: fence first");
+      EXPECT(mali_isync_producer(&df, &fake_ops, (struct mali_kdev *)&kf, fds, 1, false, fd0) == MALI_ISYNC_NONE,
+             "ENOTTY in the default mode: no CPU wait, the producer keeps running");
+      EXPECT(kf.waits == 0 && kf.blocked == 0, "ENOTTY default: the fence is not waited (%u/%u)", kf.waits, kf.blocked);
+      EXPECT(mali_isync_plan_producer(&df, 1, false) == MALI_ISYNC_NONE, "ENOTTY is latched in the default mode too");
+      mali_isync_dev_finish(&df);
+      setenv("MALI_IMPLICIT_SYNC", "wait", 1);
+   }
 
    /* 4: a kernel with the ioctl - one WRITE fence per shared dma-buf, no CPU wait */
    struct mali_isync_dev d2;
@@ -157,8 +175,8 @@ main(void)
    EXPECT(k4.last_flags == MALI_DMA_BUF_SYNC_READ, "consumer: READ fence");
    EXPECT(fcntl(k4.export_fd, F_GETFD) >= 0, "consumer keeps the original fd");
 
-   /* 7: a submit that cannot name all its shared BOs: CPU wait, even on a kernel that takes fences */
-   EXPECT(mali_isync_plan_producer(&d3, 0, true) == MALI_ISYNC_CPU_WAIT, "wrote_full: CPU wait");
+   /* 7: a submit that cannot name all its shared BOs: CPU wait in the opt-in mode, nothing in the default one */
+   EXPECT(mali_isync_plan_producer(&d3, 0, true) == MALI_ISYNC_CPU_WAIT, "handoff_full: CPU wait (wait mode)");
    struct fake_kernel k5 = {.import_r = 0, .export_r = 0, .export_fd = -1};
    EXPECT(mali_isync_producer(&d3, &fake_ops, (struct mali_kdev *)&k5, fds, 0, true, fd0) == MALI_ISYNC_CPU_WAIT,
           "wrote_full: the submit waits its fence");

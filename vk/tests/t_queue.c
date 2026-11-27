@@ -1215,14 +1215,18 @@ test_isync_store(uint32_t slow_us)
       CHECK(ResetFences(dev, 1, &f) == VK_SUCCESS, "reset");
    }
    const long long extra = ms - base;
+   /* Default mode is fence-only: on a kernel without the ioctl (the fake's default) the handoff is left unsynced
+    * rather than blocking the producer; MALI_IMPLICIT_SYNC=wait opts into the CPU wait. */
    const char *off = getenv("MALI_IMPLICIT_SYNC");
    const bool disabled = off && !strcmp(off, "0");
-   if (disabled)
-      CHECK(extra < (long long)(slow_us / 1000) / 2, "MALI_IMPLICIT_SYNC=0: no wait on the handoff submit (extra %lld ms)", extra);
+   const bool opt_in = off && (!strcmp(off, "wait") || !strcmp(off, "2"));
+   if (opt_in)
+      CHECK(extra >= (long long)(slow_us / 1000) / 2, "wait mode: handoff submit waited its fence (extra %lld ms)", extra);
    else
-      CHECK(extra >= (long long)(slow_us / 1000) / 2, "handoff submit waited its fence, the plain one did not (extra %lld ms)", extra);
-   printf("{\"test\":\"isync-store\",\"handoff_submit_ms\":%lld,\"plain_submit_ms\":%lld,\"implicit_sync\":%d,\"ok\":true}\n",
-          extra, base, disabled ? 0 : 1);
+      CHECK(extra < (long long)(slow_us / 1000) / 2, "%s: no CPU wait on the handoff submit (extra %lld ms)",
+            disabled ? "MALI_IMPLICIT_SYNC=0" : "default fence-only", extra);
+   printf("{\"test\":\"isync-store\",\"handoff_submit_ms\":%lld,\"plain_submit_ms\":%lld,\"mode\":\"%s\",\"ok\":true}\n",
+          extra, base, disabled ? "off" : opt_in ? "wait" : "fence");
 
    DestroyFence(dev, f, NULL);
    DestroyCommandPool(dev, pool, NULL);

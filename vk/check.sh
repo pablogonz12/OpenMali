@@ -196,7 +196,8 @@ run "implicit sync: sampled imported BO waits" 0 MALI_BACKEND=fake MALI_FAKE_DMA
 run "implicit sync off" 0 MALI_BACKEND=fake MALI_FAKE_DMABUF_SYNC=1 MALI_FAKE_SLOW_US=150000 MALI_IMPLICIT_SYNC=0 $TQ --only isync
 # Producer side, 5.10 (the fake's default: IMPORT_SYNC_FILE answers ENOTTY): the CPU wait is paid by the submit that
 # HANDS the dma-buf off (foreign-queue release) and not by an ordinary submit that writes the same BO.
-run "implicit sync: handoff submit waits" 0 MALI_BACKEND=fake MALI_FAKE_SLOW_US=150000 $TQ --only isync-store
+run "implicit sync: handoff submit waits (opt-in)" 0 MALI_BACKEND=fake MALI_FAKE_SLOW_US=150000 MALI_IMPLICIT_SYNC=wait $TQ --only isync-store
+run "implicit sync: default mode does not block the producer" 0 MALI_BACKEND=fake MALI_FAKE_SLOW_US=150000 $TQ --only isync-store
 run "implicit sync off (handoff)" 0 MALI_BACKEND=fake MALI_FAKE_SLOW_US=150000 MALI_IMPLICIT_SYNC=0 $TQ --only isync-store
 run "timeout-0 poll does not queue behind a blocking wait" 0 MALI_BACKEND=fake MALI_FAKE_SLOW_US=300000 $TQ --only poll0
 run "signal-less submit skips the fence" 0 MALI_BACKEND=fake MALI_FAULT_INJECT=5 $TQ --only nofence
