@@ -16,6 +16,9 @@ enum mali_prof_counter {
    MALI_PROF_WAITS_MAP,
    MALI_PROF_D2C_IMP_BOS, MALI_PROF_D2C_IMP_BYTES, MALI_PROF_D2C_NAT_BOS, MALI_PROF_D2C_NAT_BYTES,
    MALI_PROF_D2C_MAPPED_BOS, MALI_PROF_D2C_UNMAPPED_BOS,
+   /* how long each fence wait actually blocks, and how much of the second the GPU was busy in this context */
+   MALI_PROF_WAIT_H0, MALI_PROF_WAIT_H1, MALI_PROF_WAIT_H2, MALI_PROF_WAIT_H3, MALI_PROF_WAIT_H4,
+   MALI_PROF_GPU_BUSY_NS, MALI_PROF_KICKS,
    MALI_PROF_COUNTERS
 };
 int mali_prof_enabled(void);

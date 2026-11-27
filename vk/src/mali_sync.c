@@ -215,10 +215,13 @@ prof_emit(int force)
                  " present_ns=%" PRIu64
                  " w_fence=%" PRIu64 " w_poll=%" PRIu64 " w_counter=%" PRIu64 " w_present=%" PRIu64
                  " w_map=%" PRIu64 " di_bos=%" PRIu64 " di_b=%" PRIu64 " dn_bos=%" PRIu64
-                 " dn_b=%" PRIu64 " dmap=%" PRIu64 " dunmap=%" PRIu64 "\n",
+                 " dn_b=%" PRIu64 " dmap=%" PRIu64 " dunmap=%" PRIu64
+                 " h0=%" PRIu64 " h1=%" PRIu64 " h2=%" PRIu64 " h3=%" PRIu64 " h4=%" PRIu64
+                 " gpu_ms=%" PRIu64 " kicks=%" PRIu64 "\n",
                  v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7],
                  v[8], v[9], v[10], v[11], v[12],
-                 v[13], v[14], v[15], v[16], v[17], v[18], v[19], v[20], v[21], v[22], v[23]);
+                 v[13], v[14], v[15], v[16], v[17], v[18], v[19], v[20], v[21], v[22], v[23],
+                 v[24], v[25], v[26], v[27], v[28], (uint64_t)(v[29] / 1000000ull), v[30]);
          if (n > 0)
             prof_puts(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
       }
@@ -531,14 +534,21 @@ mali_sync_wait(struct vk_device *vk, struct vk_sync *sync, uint64_t wait_value,
          mali_wait_log("fence_wait", s, "waiting for", (now - start) / 1000000, wait_value);
          logged_fence = true;
       }
-      if (left == 0)
+      const bool poll_only = left == 0;
+      if (poll_only)
          mali_prof_add(MALI_PROF_WAITS_POLL, 1);      /* vkGetFenceStatus / vkWaitForFences with timeout 0 */
       else
          mali_prof_add(MALI_PROF_WAITS_FENCE, 1);     /* vkWaitForFences, vkQueueWaitIdle, vkDeviceWaitIdle, acquire */
       uint64_t prof_start = mali_prof_enabled() ? mali_wait_now() : 0;
       int r = be->fence_wait(dev->kdev, fd, slice);
-      if (prof_start)
-         mali_prof_add(MALI_PROF_WAIT_NS, mali_wait_now() - prof_start);
+      if (prof_start) {
+         uint64_t took = mali_wait_now() - prof_start;
+         mali_prof_add(MALI_PROF_WAIT_NS, took);
+         /* How long the wait really blocked: <<1 ms, 1-4, 4-10, 10-20, >20 ms. A wait that returns at once (the GPU
+          * finished before the CPU asked) and a wait that blocks for a frame are the same call. */
+         mali_prof_add(MALI_PROF_WAIT_H0 + (took < 1000000ull ? 0 : took < 4000000ull ? 1 :
+                                            took < 10000000ull ? 2 : took < 20000000ull ? 3 : 4), 1);
+      }
       close(fd);
       if (r == 0)
          { result = VK_SUCCESS; goto done; }

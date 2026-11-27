@@ -47,6 +47,10 @@ struct mali_kdev {
    struct kb_bo **bos;
    unsigned nbos, capbos;
    bool sync_all_pending;   /* M15: a write the front end could not pin to a BO: next device->CPU sync sweeps everything */
+   /* When the GPU was busy in this context: a span starts at the kick that finds nothing in flight and ends at the
+    * completion that finds nothing left, so overlapping submissions are counted once (profiler line gpu_ms). */
+   unsigned inflight;
+   uint64_t busy_start;
 
    /* Free list of recently freed VkDeviceMemory BOs (HOSTLAZY only), oldest first; guarded by bo_lock. A hit skips MEM_ALLOC + mmap (+ the zero/flush of a
     * CACHED BO) and the matching MEM_FREE + munmap. Pooled BOs are not in bos[] (no MEM_SYNC for them). */
@@ -691,6 +695,19 @@ out:
    return r;
 }
 
+/* The frame a kick started has retired here (the counter or the fence says so): close the busy span if nothing else is
+ * in flight. A span longer than a second is capped, so a missed completion cannot make the next second look busy. */
+static void
+kbase_busy_done(struct mali_kdev *k)
+{
+   if (!k->inflight)
+      return;
+   if (--k->inflight == 0) {
+      uint64_t d = mali_wait_now() - k->busy_start;
+      mali_prof_add(MALI_PROF_GPU_BUSY_NS, d < 1000000000ull ? d : 1000000000ull);
+   }
+}
+
 static void mem_sync_all(struct mali_kdev *k, unsigned op);
 enum sync_sel { SYNC_ALL, SYNC_HOT, SYNC_COLD, SYNC_POLL };
 static void mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel);
@@ -738,6 +755,7 @@ kbase_fence_wait(struct mali_kdev *k, int fence_fd, int timeout_ms)
       int r = kb_fence_wait(k->ctx, fence_fd, slice);
       pthread_mutex_unlock(&k->wait_lock);
       if (r == 0) {
+         kbase_busy_done(k);
          mem_sync_all(k, 2); /* device -> CPU (CSYNC): CPU caches may hold stale lines of COHERENT_LOCAL BOs */
          return 0;
       }
@@ -927,6 +945,11 @@ kbase_submit_cs(struct mali_kdev *k, const uint64_t *cs, unsigned n)
       if ((r = wait_ring_space(k, ((size_t)m * 8 + 63) & ~(size_t)63)))
          break;
       r = kb_queue_submit(&k->queue, cs + i, m, KB_KICK_IOCTL);
+      if (!r) {
+         mali_prof_add(MALI_PROF_KICKS, 1);
+         if (k->inflight++ == 0)
+            k->busy_start = mali_wait_now();
+      }
    }
    if (r) {
       fprintf(stderr, "mali_vk: CS submit failed: %d (extract=%llu insert=%llu)\n", r,
@@ -946,6 +969,7 @@ kbase_wait_counter(struct mali_kdev *k, const volatile uint64_t *c, uint64_t tar
    clock_gettime(CLOCK_MONOTONIC, &t0);
    for (unsigned spin = 0;; spin++) {
       if (*c >= target) {
+         kbase_busy_done(k);
          mem_sync_all(k, 2);
          return 0;
       }
