@@ -161,7 +161,7 @@ static int res_view(VkImageView v, struct mali_cmd_target *o)
    if ((uintptr_t)v == 6) { /* 4x S8: 64 x 48, with a padded sample plane */
       *o = (struct mali_cmd_target){.va = 0x200000, .row_stride = 64, .width = 64, .height = 48,
                                     .is_zs = true, .has_s = true, .s_va = 0x200000, .s_row_stride = 64,
-                                    .samples = 4, .surface_stride = 3328};
+                                    .samples = 4, .surface_stride = 3328, .s_surface_stride = 3328};
       return 0;
    }
    if ((uintptr_t)v == 7) { /* 4x depth, separate from the S8 target */
@@ -490,7 +490,7 @@ test_stencil_store_stride_baseline(void)
 {
    struct mali_env env = { .arch = ARCH, .tile_log2 = 10 };
    struct mali_frame f = {0};
-   uint8_t fbd[KB_FB_DESC_SIZE_ZS], changed[KB_FB_DESC_SIZE_ZS];
+   uint8_t fbd[KB_FB_DESC_SIZE_ZS];
    uint32_t mode, stride;
    f.width = 64;
    f.height = 32;                 /* colour height; stencil height is 48 */
@@ -503,41 +503,25 @@ test_stencil_store_stride_baseline(void)
    f.st.row_stride = 64;
    f.st.surface_stride = 64 * 48 + 256; /* padded actual stencil plane */
    f.st.store = true;
-   unsetenv("MALI_DIAG_LAYERED_STENCIL_STORE");
    CHECK(mali_render_pack_fbd(&env, &f, fbd, 0, 0x300000) == 0, "stencil FBD pack");
    memcpy(&mode, fbd + KB_FB_FBD_SIZE, 4);
    memcpy(&stride, fbd + KB_FB_FBD_SIZE + 15 * 4, 4);
-   CHECK(((mode >> 24) & 3) == 0, "legacy stencil mode");
-   CHECK(stride == 64 * 32 && stride != f.st.surface_stride, "legacy stride %u", stride);
-   setenv("MALI_DIAG_LAYERED_STENCIL_STORE", "0", 1);
-   CHECK(mali_render_pack_fbd(&env, &f, changed, 0, 0x300000) == 0 && !memcmp(fbd, changed, sizeof fbd), "zero flag unchanged");
-   setenv("MALI_DIAG_LAYERED_STENCIL_STORE", "1", 1);
-   CHECK(mali_render_pack_fbd(&env, &f, changed, 0, 0x300000) == 0, "layered stencil FBD pack");
-   memcpy(&mode, changed + KB_FB_FBD_SIZE, 4);
-   memcpy(&stride, changed + KB_FB_FBD_SIZE + 15 * 4, 4);
    CHECK(((mode >> 24) & 3) == 3 && stride == 64 * 48 + 256, "layered mode/stride %u/%u", (mode >> 24) & 3, stride);
-   mode &= ~(3u << 24);
-   memcpy(changed + KB_FB_FBD_SIZE, &mode, 4);
-   stride = 64 * 32;
-   memcpy(changed + KB_FB_FBD_SIZE + 15 * 4, &stride, 4);
-   CHECK(!memcmp(fbd, changed, sizeof fbd), "only stencil mode and stride may change");
    f.samples = 1;
-   CHECK(mali_render_pack_fbd(&env, &f, changed, 0, 0x300000) == 0, "1x on");
-   unsetenv("MALI_DIAG_LAYERED_STENCIL_STORE");
-   CHECK(mali_render_pack_fbd(&env, &f, fbd, 0, 0x300000) == 0 && !memcmp(fbd, changed, sizeof fbd), "1x unchanged");
+   CHECK(mali_render_pack_fbd(&env, &f, fbd, 0, 0x300000) == 0, "1x pack");
+   memcpy(&mode, fbd + KB_FB_FBD_SIZE, 4);
+   memcpy(&stride, fbd + KB_FB_FBD_SIZE + 15 * 4, 4);
+   CHECK(((mode >> 24) & 3) == 0 && stride == 64 * 32, "1x unchanged");
    f.samples = 4;
-   f.st.store = false;
-   CHECK(mali_render_pack_fbd(&env, &f, fbd, 0, 0x300000) == 0, "no-store off");
-   setenv("MALI_DIAG_LAYERED_STENCIL_STORE", "1", 1);
-   CHECK(mali_render_pack_fbd(&env, &f, changed, 0, 0x300000) == 0 && !memcmp(fbd, changed, sizeof fbd), "no-store unchanged");
-   f.st.store = true;
    f.has_zs = true;
    f.zs.zs_format = KB_ZS_D32F;
    f.zs.va = 0x400000;
    f.zs.row_stride = 256;
-   CHECK(mali_render_pack_fbd(&env, &f, changed, 0, 0x300000) == 0, "depth on");
-   unsetenv("MALI_DIAG_LAYERED_STENCIL_STORE");
-   CHECK(mali_render_pack_fbd(&env, &f, fbd, 0, 0x300000) == 0 && !memcmp(fbd, changed, sizeof fbd), "depth unchanged");
+   f.zs.surface_stride = 12544;
+   CHECK(mali_render_pack_fbd(&env, &f, fbd, 0, 0x300000) == 0, "depth pack");
+   memcpy(&mode, fbd + KB_FB_FBD_SIZE, 4);
+   memcpy(&stride, fbd + KB_FB_FBD_SIZE + 11 * 4, 4);
+   CHECK(((mode >> 8) & 3) == 3 && ((mode >> 24) & 3) == 3 && stride == 12544, "depth layered mode/stride");
 }
 
 /* Exercise the producer, not just a hand-constructed mali_frame. */
@@ -567,7 +551,7 @@ test_stencil_store_recording(VkCommandPool pool)
       CHECK(cmd->in_render && f->has_colour && f->has_st && f->samples == 4 && f->height == 32 &&
             f->st.va == 0x200000 && f->st.row_stride == 64, "record stencil case %u shape", i);
       CHECK(f->has_zs == (i == 2), "record stencil case %u depth", i);
-      CHECK(f->st.surface_stride == (i == 0 ? 3328u : 0u),
+      CHECK(f->st.surface_stride == 3328u,
             "record stencil case %u plane stride %u", i, f->st.surface_stride);
       mali_CmdEndRendering(cb);
       CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "record stencil case %u end", i);

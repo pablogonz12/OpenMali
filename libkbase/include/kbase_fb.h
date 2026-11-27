@@ -47,7 +47,8 @@ struct kb_fb_params {
 	unsigned has_stencil;
 	uint64_t s_gpu_va;            /* 64-byte aligned, S8 plane (1 byte per pixel) */
 	uint32_t s_row_stride;        /* bytes, multiple of 16; 0 = width rounded up to 16 */
-	uint32_t s_layered_stride;    /* diagnostic: nonzero enables layered S writeback with this plane stride */
+	uint32_t s_layered_stride;    /* S sample-plane stride */
+	uint32_t zs_layered_stride;   /* Z sample-plane stride */
 	uint8_t clear_stencil;        /* FBD "S Clear" */
 	unsigned s_no_store;          /* 1: S Write Enable off */
 	/* non-RGBA8 colour target (0 = RGBA8 as before): Internal Format, writeback colour format, 12-bit RT swizzle (0 = identity),
