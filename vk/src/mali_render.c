@@ -13,6 +13,7 @@
 #include "kbase_fb.h"
 #include "mali_cs_emit.h"
 #include "mali_rtfmt_tab.h"
+#include "mali_va_check.h"
 #include <vulkan/vulkan_core.h>
 
 /* supported: false = not a render target we can do. Returns NULL for R8G8B8A8_UNORM (the proven default) with *supported true. */
@@ -259,6 +260,10 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
       p.s_no_store = !f->st.store;
    }
    p.arch = env->arch == 13 ? 13 : 0;
+   MALI_VA_CHECK("fbd-colour", env->arch, p.rt_gpu_va, p.rt_gpu_va, 0, 0);
+   MALI_VA_CHECK("fbd-depth", env->arch, p.zs_gpu_va, p.zs_gpu_va, 0, 0);
+   MALI_VA_CHECK("fbd-stencil", env->arch, p.s_gpu_va, p.s_gpu_va, 0, 0);
+   MALI_VA_CHECK("fbd-tiler", env->arch, p.tiler_va, p.tiler_va, 0, 0);
    int rc = kb_fb_pack(out, &p);
    if (rc)
       return rc;
