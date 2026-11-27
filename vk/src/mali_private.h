@@ -16,6 +16,7 @@
 #include "mali_backend.h"
 #include "mali_isync.h"
 #include "mali_sstats.h"
+#include "mali_rpstats.h"
 #include "wsi_common.h"
 
 #define MALI_VENDOR_ID_ARM 0x13B5
@@ -76,6 +77,7 @@ struct mali_device {
    struct mali_hwctx *hw;     /* M9: per-device frame resources (mali_queue.c) */
    struct mali_isync_dev isync;   /* implicit sync of dma-bufs shared outside a swapchain (mali_isync.c) */
    struct mali_sstats sstats;     /* MALI_SHARED_STATS: per-stage contents of the shared dma-bufs (mali_sstats.c) */
+   struct mali_rpstats rps;       /* MALI_RP_STATS: per-render-pass contents of the colour attachments (mali_rpstats.c) */
    int present_fence_fd;      /* dup of the last submission's sync_file: the CPU-side present paths wait it (-1 = none) */
 };
 

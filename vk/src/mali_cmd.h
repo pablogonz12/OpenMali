@@ -118,6 +118,11 @@ struct mali_cmd_buffer {
    struct mali_memory *read[MALI_CMD_READ_MAX];
    unsigned nread;
    bool read_full;
+   /* MALI_RP_STATS (mali_rpstats.h): the pass being recorded. Started where the attachment is known (CmdBeginRendering,
+    * CmdClearColorImage), finished by mali_cmd_push_frame, which owns the frame (draws, extent). Zeroed between
+    * passes, so it can only ever describe the pass it belongs to. */
+   struct mali_rp_pass rp;
+   bool rp_open;
 };
 
 static inline struct mali_cmd_buffer *

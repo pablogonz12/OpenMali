@@ -24,6 +24,10 @@ static double prof_acc[6]; static unsigned prof_n;
 #include "mali_soft.h"
 #include "vk_command_buffer.h"
 
+/* MALI_RP_STATS: defined with the submit path below, used by mali_queue_device_init. */
+static bool rp_lock_live(const void *owner);
+static void rp_unlock(void);
+
 /* ---- M9: frame resources ---- */
 #define MALI_MAX_INFLIGHT 3u
 #define MALI_MAX_OVF 64u
@@ -584,6 +588,8 @@ mali_queue_device_init(struct mali_device *dev)
    pthread_condattr_destroy(&ca);
    mali_isync_dev_init(&dev->isync);
    mali_sstats_init(&dev->sstats);
+   mali_rpstats_init(&dev->rps, rp_lock_live, rp_unlock);
+   mali_rpstats_set_current(&dev->rps);
    return VK_SUCCESS;
 }
 
@@ -595,6 +601,8 @@ mali_queue_device_finish(struct mali_device *dev)
    dev->present_fence_fd = -1;
    mali_isync_dev_finish(&dev->isync);
    mali_sstats_finish(&dev->sstats);
+   mali_rpstats_set_current(NULL);
+   mali_rpstats_finish(&dev->rps);
    pthread_cond_destroy(&dev->sync_cv);
    pthread_mutex_destroy(&dev->sync_lock);
 }
@@ -839,6 +847,20 @@ submit_stats_producer(struct mali_device *dev, const struct mali_stats_submit *s
       stats_note_mem(dev, st->wrote[i], MALI_SSTATS_WRITE, seq);
 }
 
+/* MALI_RP_STATS: an attachment's BO is sampled only under the live-VkDeviceMemory guard, so memory the app freed
+ * after recording is skipped instead of reaching bo_host_touch (the X8 crash class, mali_memory.c). */
+static bool
+rp_lock_live(const void *owner)
+{
+   return mali_memory_guard((struct mali_memory *)owner);
+}
+
+static void
+rp_unlock(void)
+{
+   mali_memory_unguard();
+}
+
 static VkResult mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint32_t *imported);
 /* A submission that loses the queue still signals what it was to signal, except the signals that already took the
  * GPU fence (index < imported): those complete with the work. Waiters (a present's acquire, a fence wait) would
@@ -988,6 +1010,12 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
    /* The same submit, sampled after it retired: what this process produced is what the next stage will read. */
    if (stats)
       submit_stats_producer(dev, &sstats, fd, stats_seq);
+   /* MALI_RP_STATS: the passes recorded into this submission, sampled once it has retired. */
+   if (mali_rpstats_on(&dev->rps)) {
+      if (fd >= 0 && be->fence_wait)
+         (void)be->fence_wait(dev->kdev, fd, -1);
+      mali_rpstats_flush(&dev->rps, be, dev->kdev);
+   }
    close(fd);
    if (isync_wait < 0) {
       /* 5.10 path: the submit's own fence was the only thing keeping a consumer out of these buffers and waiting it

@@ -368,6 +368,21 @@ mali_CmdBindDescriptorSets(VkCommandBuffer h, VkPipelineBindPoint bp, VkPipeline
          return;
       }
       struct mali_dset *ds = mali_dset_from_handle(sets[i]);
+      /* MALI_RP_STATS: what this set brings to the pass - sampled images, UBOs, imported dma-bufs. */
+      if (cmd->rp_open && ds && ds->layout) {
+         const struct mali_dsl *l = ds->layout;
+         for (uint32_t bi = 0; bi < l->nbindings; bi++) {
+            const struct mali_lbinding *lb = &l->b[bi];
+            if (lb->type == MALI_DT_COMBINED_IMAGE_SAMPLER || lb->type == MALI_DT_SAMPLED_IMAGE ||
+                lb->type == MALI_DT_INPUT_ATTACHMENT)
+               cmd->rp.desc_sampled += lb->count;
+            else if (lb->type == MALI_DT_UNIFORM_BUFFER || lb->type == MALI_DT_UNIFORM_BUFFER_DYNAMIC)
+               cmd->rp.desc_ubo += lb->count;
+         }
+         cmd->rp.desc_imports += ds->nread;
+         cmd->rp.desc_writes += ds->nwrote;
+         cmd->rp.desc_sets++;
+      }
       /* M15: storage descriptors of a bound set can write their memory */
       for (unsigned k = 0; ds && k < ds->nwrote; k++)
          mali_cmd_mark_written(cmd, ds->wrote[k]);
@@ -1134,9 +1149,91 @@ mali_CmdEndTransformFeedbackEXT(VkCommandBuffer h, uint32_t first_counter_buffer
 }
 
 /* ---- rendering ---- */
+/* ---- MALI_RP_STATS: what a finished frame drew with (mali_rpstats.h) ---------------------------------------- */
+
+/* FNV-1a over the shader binary: the same shader yields the same number in every process and every phone. */
+static uint32_t
+rp_shader_hash(const struct mali_compiled *c)
+{
+   if (!c || !c->bin)
+      return 0;
+   uint32_t h = 2166136261u;
+   const unsigned n = c->bin_size < 4096u ? c->bin_size : 4096u;
+   for (unsigned i = 0; i < n; i++) {
+      h ^= c->bin[i];
+      h *= 16777619u;
+   }
+   return h;
+}
+
+static void
+rp_pipe_sig(const struct mali_rec *r, struct mali_rp_pipe *out)
+{
+   memset(out, 0, sizeof *out);
+   const struct mali_fixed *fx = r->pipe ? &r->pipe->fx : NULL;
+   const struct mali_gfx_state *g = r->pipe ? &r->pipe->gfx : NULL;
+   out->vsh = rp_shader_hash(g ? g->vs : NULL);
+   out->fsh = rp_shader_hash(g ? g->fs : NULL);
+   if (fx) {
+      out->blend = (fx->blend_en ? 1u : 0u) | (uint32_t)fx->src_c << 1 | (uint32_t)fx->dst_c << 5 |
+                   (uint32_t)fx->src_a << 9 | (uint32_t)fx->dst_a << 13 | (uint32_t)fx->op_c << 17 |
+                   (uint32_t)fx->op_a << 19;
+      out->wmask = fx->wmask;
+   }
+   if (g) {
+      out->dtest = g->depth_test;
+      out->dwrite = g->depth_write;
+      out->dfunc = g->depth_func;
+      out->samples = g->samples;
+      out->prim = g->prim;
+      out->ubo = g->vs ? g->vs->ubo_count : 0;
+      out->tex = g->fs ? g->fs->texture_count : 0;
+      out->tls = (g->vs ? g->vs->tls_size : 0) + (g->fs ? g->fs->tls_size : 0);
+      out->regs = (g->vs ? g->vs->work_reg_count : 0) + (g->fs ? g->fs->work_reg_count : 0);
+   }
+}
+
+/* Finish the pass this frame belongs to. Frames pushed without a prepared pass (a meta copy the entry point did not
+ * describe) still get a line: the extent and the draws are the frame's own. */
+static void
+rp_finish_frame(struct mali_cmd_buffer *cmd, const struct mali_frame *f)
+{
+   struct mali_rpstats *rs = mali_rpstats_get();
+   if (!rs || !mali_rpstats_on(rs))
+      return;
+   struct mali_rp_pass p;
+   if (cmd->rp_open)
+      p = cmd->rp;
+   else {
+      memset(&p, 0, sizeof p);
+      p.kind = f->compute ? MALI_RP_COPY : MALI_RP_RENDER;
+      p.w = f->width;
+      p.h = f->height;
+      p.layers = 1;
+      p.samples = f->samples ? f->samples : 1;
+   }
+   p.draws = f->ndraws;
+   /* Distinct pipelines, first MALI_RP_MAX_PIPE in order. */
+   p.npipes = 0;
+   const struct mali_bpipe *last = NULL;
+   for (unsigned i = 0; i < f->ndraws; i++) {
+      const struct mali_rec *r = &f->draws[i];
+      if (r->pipe == last && i)
+         continue;
+      last = r->pipe;
+      if (p.npipes < MALI_RP_MAX_PIPE)
+         rp_pipe_sig(r, &p.pipe[p.npipes]);
+      p.npipes++;
+   }
+   mali_rpstats_pass(rs, &p);
+   memset(&cmd->rp, 0, sizeof cmd->rp);
+   cmd->rp_open = false;
+}
+
 void
 mali_cmd_push_frame(struct mali_cmd_buffer *cmd, const struct mali_frame *f)
 {
+   rp_finish_frame(cmd, f);
    if (cmd->nframes == cmd->capframes) {
       unsigned nc = cmd->capframes ? cmd->capframes * 2 : 4;
       struct mali_frame *nf = realloc(cmd->frames, nc * sizeof *nf);
@@ -1317,6 +1414,27 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    f->colour.row_stride = t.row_stride;
    f->colour.clear = ca->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR;
    f->colour.store = ca->storeOp == VK_ATTACHMENT_STORE_OP_STORE;
+   /* MALI_RP_STATS: this pass' colour attachment, for the sample taken after the submit (mali_rpstats.c). */
+   if (mali_rpstats_get()) {
+      memset(&cmd->rp, 0, sizeof cmd->rp);
+      cmd->rp.kind = MALI_RP_RENDER;
+      cmd->rp.w = f->width;
+      cmd->rp.h = f->height;
+      cmd->rp.layers = ri->layerCount ? ri->layerCount : 1;
+      cmd->rp.samples = f->samples;
+      cmd->rp.fmt = t.rt ? t.rt->vk_format : VK_FORMAT_R8G8B8A8_UNORM;
+      cmd->rp.load = (uint32_t)ca->loadOp;
+      cmd->rp.store = (uint32_t)ca->storeOp;
+      struct mali_memory *am = g_res.image_view_mem ? g_res.image_view_mem(ca->imageView) : NULL;
+      if (am && am->bo.cpu) {
+         cmd->rp.att[0].bo = &am->bo;
+         cmd->rp.att[0].owner = am;
+         cmd->rp.att[0].fmt = cmd->rp.fmt;
+         cmd->rp.att[0].bpp = 4;
+         cmd->rp.natt = 1;
+      }
+      cmd->rp_open = true;
+   }
    if (f->colour.clear)
       memcpy(f->colour.clear_color, ca->clearValue.color.float32, sizeof f->colour.clear_color);
    if (f->samples == 4) {
@@ -1560,6 +1678,19 @@ mali_CmdEndRendering(VkCommandBuffer h)
    mali_resolve_region(&cmd->cur, &rr);
    int32_t area[4];
    memcpy(area, cmd->cur.area, sizeof area);
+   /* MALI_RP_STATS: the resolve target is part of this pass' output. */
+   if (cmd->rp_open && resolve_src && resolve_dst) {
+      struct mali_image *rd = (struct mali_image *)(uintptr_t)resolve_dst;
+      cmd->rp.resolve_mode = resolve_1x ? 1u : 2u;
+      cmd->rp.resolve_fmt = dst_format;
+      if (rd->mem && rd->mem->bo.cpu && cmd->rp.natt < MALI_RP_MAX_ATT) {
+         cmd->rp.att[cmd->rp.natt].bo = &rd->mem->bo;
+         cmd->rp.att[cmd->rp.natt].owner = rd->mem;
+         cmd->rp.att[cmd->rp.natt].fmt = dst_format;
+         cmd->rp.att[cmd->rp.natt].bpp = 4;
+         cmd->rp.natt++;
+      }
+   }
    push_frame(cmd, &cmd->cur);
    memset(&cmd->cur, 0, sizeof cmd->cur);   /* the draw list now belongs to the finished frame */
    cmd->in_render = false;
@@ -1836,6 +1967,31 @@ mali_CmdClearColorImage(VkCommandBuffer h, VkImage image, VkImageLayout layout, 
    struct mali_cmd_target t;
    struct mali_frame f;
    mali_cmd_mark_image_written(cmd, image);   /* M15: GPU-written by this clear */
+   /* MALI_RP_STATS: a clear is its own pass (mali_rpstats.h). */
+   if (mali_rpstats_get()) {
+      /* Through the same resolvers the clear itself uses (g_res.image/image_mem), never a cast of the handle: the
+       * fast path below refuses anything they do not know. */
+      struct mali_cmd_target tc;
+      memset(&tc, 0, sizeof tc);
+      const int trc = g_res.image ? g_res.image(image, &tc) : -1;
+      struct mali_memory *am = g_res.image_mem ? g_res.image_mem(image) : NULL;
+      memset(&cmd->rp, 0, sizeof cmd->rp);
+      cmd->rp.kind = MALI_RP_CLEAR;
+      cmd->rp.w = trc ? 0 : tc.width;
+      cmd->rp.h = trc ? 0 : tc.height;
+      cmd->rp.layers = 1;
+      cmd->rp.samples = (trc || !tc.samples) ? 1 : tc.samples;
+      cmd->rp.fmt = trc ? 0 : (tc.rt ? tc.rt->vk_format : VK_FORMAT_R8G8B8A8_UNORM);
+      cmd->rp.load = (uint32_t)VK_ATTACHMENT_LOAD_OP_CLEAR;
+      if (am && am->bo.cpu) {
+         cmd->rp.att[0].bo = &am->bo;
+         cmd->rp.att[0].owner = am;
+         cmd->rp.att[0].fmt = cmd->rp.fmt;
+         cmd->rp.att[0].bpp = 4;
+         cmd->rp.natt = 1;
+      }
+      cmd->rp_open = true;
+   }
    /* Fast path (proven in M9): a render-target clear of a whole single-subresource RGBA8 image. Everything else: M12 compute clears. */
    memset(&t, 0, sizeof t);
    if (nr != 1 || ranges[0].baseMipLevel != 0 || ranges[0].baseArrayLayer != 0 || cmd->in_render || !g_res.image ||
