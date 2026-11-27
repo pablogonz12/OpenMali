@@ -1057,10 +1057,13 @@ test_degrade(const char *name)
       {VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, 0, 0, 1, "clear-rt1", 0},
       {VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, 0, 0, 0, "resolve1-copy", VK_FORMAT_R8G8B8A8_UNORM},
       {VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, 0, 0, 0, "resolve1-blit", VK_FORMAT_R8_UNORM},
+      {VK_FORMAT_R8G8B8A8_UNORM, VK_SAMPLE_COUNT_1_BIT, 0, 0, 0, "resolve1-view-reinterpret", VK_FORMAT_R8_UNORM},
    };
-   const unsigned w = 32, h = 32;
    int bad = 0;
    for (unsigned k = 0; k < sizeof cfg / sizeof cfg[0]; k++) {
+      int exact = !strcmp(cfg[k].what, "resolve1-view-reinterpret");
+      if (exact && !g_only) continue; /* avoid changing unrelated golden resource numbering */
+      const unsigned w = exact ? 512 : 32, h = exact ? 64 : 32;
       VkImage im = VK_NULL_HANDLE, res = VK_NULL_HANDLE;
       VkDeviceMemory mem = VK_NULL_HANDLE, rmem = VK_NULL_HANDLE;
       VkImageView iv = VK_NULL_HANDLE, rv = VK_NULL_HANDLE;
@@ -1089,6 +1092,7 @@ test_degrade(const char *name)
           VkImageCreateInfo ri2 = ii;
           ri2.samples = VK_SAMPLE_COUNT_1_BIT;
           if (cfg[k].resolve1) ri2.format = cfg[k].resolve1;
+          if (exact) ri2.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
          ri2.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
          if (CreateImage(dev, &ri2, NULL, &res) != VK_SUCCESS) { g_fail = 1; break; }
          GetImageMemoryRequirements(dev, res, &mr);
@@ -1096,7 +1100,7 @@ test_degrade(const char *name)
          if (AllocateMemory(dev, &ai, NULL, &rmem) != VK_SUCCESS || BindImageMemory(dev, res, rmem, 0) != VK_SUCCESS) { g_fail = 1; break; }
           VkImageViewCreateInfo rvi = vi;
           rvi.image = res;
-          rvi.format = ri2.format;
+          rvi.format = exact ? VK_FORMAT_R8G8B8A8_UNORM : ri2.format;
          if (CreateImageView(dev, &rvi, NULL, &rv) != VK_SUCCESS) { g_fail = 1; break; }
       }
       VkRenderingAttachmentInfo att[2];

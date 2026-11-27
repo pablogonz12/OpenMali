@@ -24,6 +24,7 @@
 #include "vk_alloc.h"
 #include "vk_graphics_state.h"
 #include "util/bitset.h"
+#include "util/u_math.h"
 
 static struct mali_cmd_res_ops g_res;
 static struct mali_hw g_hw;
@@ -1217,15 +1218,22 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          psrc.sample_stride = t.surface_stride;
       }
     } else if (ca->resolveMode != VK_RESOLVE_MODE_NONE) {
-      struct mali_cmd_target rt;
       struct mali_image_view *cv = mali_image_view_from_handle(ca->imageView);
       struct mali_image_view *rv = mali_image_view_from_handle(ca->resolveImageView);
-      if (f->samples == 1 && ca->resolveMode == VK_RESOLVE_MODE_AVERAGE_BIT && rv && cv &&
-          cv->vk.image && rv->vk.image && ri->layerCount == 1 && !ri->viewMask &&
-          !g_res.image_view(ca->resolveImageView, &rt) && !rt.is_zs && rt.samples == 1 &&
-          f->area[0] >= 0 && f->area[1] >= 0 && f->area[2] >= 0 && f->area[3] >= 0 &&
-          (uint64_t)f->area[0] + f->area[2] <= rt.width &&
-          (uint64_t)f->area[1] + f->area[3] <= rt.height) {
+      const char *why = NULL;
+      if (f->samples != 1) why = "1x resolve: source is not single-sampled";
+      else if (ca->resolveMode != VK_RESOLVE_MODE_AVERAGE_BIT) why = "1x resolve: mode is not AVERAGE";
+      else if (!cv || !rv || !cv->vk.image || !rv->vk.image) why = "1x resolve: missing view or image";
+      else if (ri->layerCount != 1) why = "1x resolve: layerCount is not one";
+      else if (ri->viewMask) why = "1x resolve: multiview is not supported";
+      else if (f->area[0] < 0 || f->area[1] < 0 || f->area[2] < 0 || f->area[3] < 0)
+         why = "1x resolve: negative render area";
+      else if (rv->vk.base_mip_level >= rv->vk.image->mip_levels)
+         why = "1x resolve: invalid resolve image level";
+      else if ((uint64_t)f->area[0] + f->area[2] > u_minify(rv->vk.image->extent.width, rv->vk.base_mip_level) ||
+               (uint64_t)f->area[1] + f->area[3] > u_minify(rv->vk.image->extent.height, rv->vk.base_mip_level))
+         why = "1x resolve: render area exceeds resolve image level";
+      if (!why) {
          f->resolve_src = (uint64_t)(uintptr_t)cv->vk.image;
          f->resolve_dst = (uint64_t)(uintptr_t)rv->vk.image;
          f->resolve_level = cv->vk.base_mip_level;
@@ -1271,7 +1279,7 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          }
          pthread_mutex_unlock(&lock);
       }
-       unsupported(cmd, "resolve of a single-sampled attachment");
+        unsupported(cmd, why);
        return;
       }
    }
