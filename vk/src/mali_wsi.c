@@ -1742,6 +1742,29 @@ mali_wsi_debug_present(struct mali_device *dev, struct wsi_swapchain *chain, uin
    (void)dev; (void)wi;
 }
 
+/* MALI_SHARED_STATS: the swapchain image's dma-buf, as the compositor is about to be handed it. On the dma-buf path
+ * wsi_common imports the present's sync_file and the compositor waits it, so this wait is for the CPU sample only:
+ * bounded like the software present's (1 s, a lost render must not hang a present) and it also ends in kbase's
+ * device->CPU MEM_SYNC. */
+static void
+mali_wsi_shared_stats(struct mali_device *dev, struct wsi_swapchain *chain, uint32_t image_index)
+{
+   if (!dev || !mali_sstats_on(&dev->sstats))
+      return;
+   struct wsi_image *wi = NULL;
+   struct mali_image *mi = present_image(chain, image_index, &wi);
+   if (!mi || !mi->mem)
+      return;
+   const struct mali_backend_ops *be = mali_device_pdev(dev)->backend;
+   int ffd = mali_queue_last_fence_dup(dev);
+   if (ffd >= 0) {
+      if (be->fence_wait)
+         (void)be->fence_wait(dev->kdev, ffd, 1000);
+      close(ffd);
+   }
+   mali_sstats_note(&dev->sstats, be, dev->kdev, &mi->mem->bo, MALI_SSTATS_PRESENT, mali_sstats_next(&dev->sstats));
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL
 mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
 {
@@ -1763,6 +1786,9 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
       VK_FROM_HANDLE(wsi_swapchain, sc, info->pSwapchains[i]);
       if (sc)
          mali_wsi_present_trace(dev, info->pSwapchains[i], sc, info->pImageIndices[i]);
+      /* MALI_SHARED_STATS: per process, per presented buffer (mali_sstats.c). */
+      if (sc)
+         mali_wsi_shared_stats(dev, sc, info->pImageIndices[i]);
    }
    /* Release the images of the previous presents whose GetGeometry reply has arrived: never blocks (design-shm.md A). */
    for (uint32_t i = 0; i < info->swapchainCount; i++)

@@ -190,6 +190,12 @@ for m in 0 1; do run "present order fence=$m" 0 MALI_BACKEND=fake MALI_FAKE_SLOW
 # runs (the Xwayland-glamor read path); MALI_IMPLICIT_SYNC=0 is the A/B arm. Both compare against a control submit.
 run "implicit sync: sampled imported BO waits" 0 MALI_BACKEND=fake MALI_FAKE_DMABUF_SYNC=1 MALI_FAKE_SLOW_US=150000 $TQ --only isync
 run "implicit sync off" 0 MALI_BACKEND=fake MALI_FAKE_DMABUF_SYNC=1 MALI_FAKE_SLOW_US=150000 MALI_IMPLICIT_SYNC=0 $TQ --only isync
+# MALI_SHARED_STATS=1 (mali_sstats.c) on the same submit: the diagnostic samples BOs it finds shared and must not
+# change the result. Its BO here is 4 KiB, i.e. under the 64 KiB floor, so nothing is logged (t_sstats has the lines).
+rm -f "$OUT"/sstats-*.log
+run "implicit sync, MALI_SHARED_STATS=1" 0 MALI_BACKEND=fake MALI_FAKE_DMABUF_SYNC=1 MALI_FAKE_SLOW_US=150000 MALI_SHARED_STATS=1 MALI_WAIT_DBG=$OUT/sstats $TQ --only isync
+if [ -e "$OUT"/sstats-*.log ] && grep -q shared "$OUT"/sstats-*.log; then echo "FAIL  MALI_SHARED_STATS sampled a 4 KiB BO (floor is 64 KiB)"; fail=1; else echo "ok    MALI_SHARED_STATS: nothing sampled under the 64 KiB floor"; fi
+rm -f "$OUT"/sstats-*.log
 run "timeout-0 poll does not queue behind a blocking wait" 0 MALI_BACKEND=fake MALI_FAKE_SLOW_US=300000 $TQ --only poll0
 run "signal-less submit skips the fence" 0 MALI_BACKEND=fake MALI_FAULT_INJECT=5 $TQ --only nofence
 run "MALI_FENCE_ALWAYS restores it (expected fail)" 1 MALI_BACKEND=fake MALI_FAULT_INJECT=5 MALI_FENCE_ALWAYS=1 $TQ --only nofence
@@ -390,8 +396,8 @@ rm -f "$GDIR/geom.jsonl"
 if [ "$SAN" = 1 ]; then
    echo "skip  build-t_*.sh tests (not sanitized)"
 else
-   for t in afbc bc cmd compile desc image isync memsync meta qpool query txf txf_cc; do run "t_$t" 0 "$V/tests/build-t_$t.sh"; done
-   for t in bc bopool cmd compile desc image isync memsync meta qpool query txf txf_cc; do run "t_$t" 0 "$V/tests/build-t_$t.sh"; done
+   for t in afbc bc cmd compile desc image isync memsync meta qpool query sstats txf txf_cc; do run "t_$t" 0 "$V/tests/build-t_$t.sh"; done
+   for t in bc bopool cmd compile desc image isync memsync meta qpool query sstats txf txf_cc; do run "t_$t" 0 "$V/tests/build-t_$t.sh"; done
    # Unity 2023.2 capability probe: every format it hands to vkCreateImage, and the swapchain contract (surface rows only when the tree
    # has a WSI platform; the plain build skips them with a message, the x11 run is tests/xwsi-host.sh's job).
    for g in v11 v13; do run "unity_caps $g" 0 OUT_DIR="$OUT" "$V/tests/build-t_unity_caps.sh" $g; done

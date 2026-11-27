@@ -121,6 +121,22 @@ mali_wait_log(const char *what, const void *sync, const char *state, uint64_t ms
    pthread_mutex_unlock(&wait_file_lock);
 }
 
+/* MALI_SHARED_STATS lines (mali_sstats.c): the formatted text as it is, no "mali_wait: " prefix, so a line can be
+ * grepped by its own tag in the per-process file. Same sink, same lock. */
+void
+mali_wait_line(const char *fmt, ...)
+{
+   if (!mali_wait_debug())
+      return;
+   va_list ap;
+   va_start(ap, fmt);
+   pthread_mutex_lock(&wait_file_lock);
+   vfprintf(wait_file, fmt, ap);
+   fputc('\n', wait_file);
+   pthread_mutex_unlock(&wait_file_lock);
+   va_end(ap);
+}
+
 void
 mali_wait_count(int change)
 {

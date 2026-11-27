@@ -11,6 +11,8 @@ void mali_wait_log(const char *what, const void *sync, const char *state,
 void mali_wait_count(int change);
 void mali_wait_heartbeat(struct mali_device *dev, int submit, int present);
 void mali_wait_event(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+/* One raw line in the same sink (no prefix): MALI_SHARED_STATS (mali_sstats.c). */
+void mali_wait_line(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void mali_wait_result(const char *function, int result, const char *fmt, ...)
    __attribute__((format(printf, 3, 4)));
 static inline uint64_t mali_wait_now(void)
