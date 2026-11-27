@@ -69,7 +69,10 @@ struct mali_isync_dev {
 static inline bool
 mali_isync_xproc_needed(const struct mali_isync_dev *d)
 {
-   return d->enabled != MALI_ISYNC_MODE_OFF && (d->import_ok == 0 || d->export_ok == 0);
+   /* Unconditional while implicit sync is on: a consumer may never run a probe of its own (its swapchain images are
+    * WSI, excluded), and the page lookup is one fstat+cached open per BO. On a kernel WITH the ioctls the page is
+    * usually already consistent (pending == done), so the await is a read of two words. */
+   return d->enabled != MALI_ISYNC_MODE_OFF;
 }
 
 void mali_isync_dev_init(struct mali_isync_dev *d);
