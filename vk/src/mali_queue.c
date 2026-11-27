@@ -649,6 +649,16 @@ mali_present_fence_ok(struct mali_device *dev)
    return __atomic_load_n(&w->cached_sync_file_import_export_result, __ATOMIC_RELAXED) == UINT32_MAX;   /* wsi stores result - 1; VK_SUCCESS -> UINT32_MAX */
 }
 
+/* The cross-process fence seam (mali_xsync.c): its poll is the backend's 0-timeout fence wait. */
+static int
+xsync_fence_wait(void *kdev, int fence_fd, int timeout_ms)
+{
+   struct mali_device *dev = kdev;
+   return mali_device_pdev(dev)->backend->fence_wait(dev->kdev, fence_fd, timeout_ms);
+}
+
+static const struct mali_xsync_ops xsync_ops = {.fence_wait = xsync_fence_wait};
+
 #define MALI_ISYNC_MAX_BOS 16
 
 /* The dma-bufs this submission references that are shared outside a swapchain (mali_isync.h).
@@ -846,6 +856,17 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
    shared.be = be;
    shared.kdev = dev->kdev;
    submit_shared_collect(submit, &shared);
+   /* Cross-process fences (5.10, mali_xsync.c): first retire the writes whose GPU work has finished, so a consumer
+    * waiting on them is woken by this submit instead of by its timeout. Neither call blocks the producer. */
+   if (dev->xsync && mali_isync_xproc_needed(&dev->isync)) {
+      mali_xsync_observe(dev->xsync, &xsync_ops, dev);
+      /* ... and wait for the published write of every imported dma-buf this submit only READS. A hard timeout keeps
+       * a dead or stalled producer from hanging us (MALI_XSYNC_TIMEOUT_MS, default 100 ms). */
+      const char *t = getenv("MALI_XSYNC_TIMEOUT_MS");
+      const int tmo = t && *t ? atoi(t) : 100;
+      for (unsigned i = 0; i < shared.nimpr; i++)
+         (void)mali_xsync_await(dev->xsync, shared.impr[i], tmo, NULL);
+   }
    enum mali_isync_action isync = mali_isync_plan_producer(&dev->isync, shared.n, shared.unlisted);
    /* No GPU work has been submitted yet, so a dependency that cannot be waited fails the submission cleanly (the
     * caller's signals are not signalled, as for any vkQueueSubmit error). */
@@ -918,6 +939,11 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
    int isync_wait = 0;
    if (isync != MALI_ISYNC_NONE)
       mali_isync_producer_ex(&dev->isync, be, dev->kdev, shared.fd, shared.n, shared.unlisted, fd, &isync_wait);
+   /* The submit's fence is also the cross-process one: publish it for whoever reads these buffers. It never blocks the
+    * producer - it is only polled at the next submit (mali_xsync_observe). */
+   if (dev->xsync && isync_wait == 0)
+      for (unsigned i = 0; i < shared.n; i++)
+         mali_xsync_publish(dev->xsync, &xsync_ops, dev, shared.fd[i], fd);
    close(fd);
    if (isync_wait < 0) {
       /* 5.10 path: the submit's own fence was the only thing keeping a consumer out of these buffers and waiting it

@@ -64,6 +64,14 @@ struct mali_isync_dev {
    unsigned stat_skipped;                /* producer: a handoff left unsynced (no ioctl, fence-only mode) */
 };
 
+/* True where the kernel has no dma-buf sync-file ioctl (ENOTTY on either side): the only sync left is the
+ * cross-process one (mali_xsync.c). Latches once the first probe has run. */
+static inline bool
+mali_isync_xproc_needed(const struct mali_isync_dev *d)
+{
+   return d->enabled != MALI_ISYNC_MODE_OFF && (d->import_ok == 0 || d->export_ok == 0);
+}
+
 void mali_isync_dev_init(struct mali_isync_dev *d);
 void mali_isync_dev_finish(struct mali_isync_dev *d);
 bool mali_isync_enabled(struct mali_isync_dev *d);

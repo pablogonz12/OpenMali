@@ -387,6 +387,7 @@ if [ "$SAN" = 1 ]; then
 else
    for t in afbc arena bbox bc cmd compile desc hmask image isync memsync meta qpool query txf txf_cc; do run "t_$t" 0 "$V/tests/build-t_$t.sh"; done
    for t in bc bopool cmd compile desc image isync memsync meta qpool query txf txf_cc; do run "t_$t" 0 "$V/tests/build-t_$t.sh"; done
+   run "t_xsync (two processes)" 0 "$V/tests/build-t_xsync.sh"
    # Unity 2023.2 capability probe: every format it hands to vkCreateImage, and the swapchain contract (surface rows only when the tree
    # has a WSI platform; the plain build skips them with a message, the x11 run is tests/xwsi-host.sh's job).
    for g in v11 v13; do run "unity_caps $g" 0 OUT_DIR="$OUT" "$V/tests/build-t_unity_caps.sh" $g; done

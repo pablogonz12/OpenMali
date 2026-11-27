@@ -15,6 +15,7 @@
 
 #include "mali_backend.h"
 #include "mali_isync.h"
+#include "mali_xsync.h"
 #include "wsi_common.h"
 
 #define MALI_VENDOR_ID_ARM 0x13B5
@@ -74,6 +75,7 @@ struct mali_device {
    int32_t mem_count;         /* live VkDeviceMemory, vs maxMemoryAllocationCount */
    struct mali_hwctx *hw;     /* M9: per-device frame resources (mali_queue.c) */
    struct mali_isync_dev isync;   /* implicit sync of dma-bufs shared outside a swapchain (mali_isync.c) */
+   struct mali_xsync *xsync;      /* cross-process fences where the kernel has no dma-buf sync-file ioctl (mali_xsync.c) */
    int present_fence_fd;      /* dup of the last submission's sync_file: the CPU-side present paths wait it (-1 = none) */
 };
 
