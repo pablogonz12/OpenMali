@@ -1882,11 +1882,11 @@ mali_wsi_queue_present(VkQueue queue, const VkPresentInfoKHR *info)
           * generic path skips the software fence wait for this chain (CR #323 T4). */
          if (info->pResults)
             for (uint32_t j = 0; j < info->swapchainCount; j++)
-               info->pResults[j] = VK_ERROR_DEVICE_LOST;
+               info->pResults[j] = (mali_wait_event("device_lost site=mali_wsi.c:1885"), VK_ERROR_DEVICE_LOST);
          if (mali_wsi_debug())
             fprintf(stderr, "mali_vk: wsi present #%llu: image %u submit fence wait failed -> VK_ERROR_DEVICE_LOST\n",
                     (unsigned long long)n, info->pImageIndices[i]);
-         return VK_ERROR_DEVICE_LOST;
+         return (mali_wait_event("device_lost site=mali_wsi.c:1889"), VK_ERROR_DEVICE_LOST);
       }
       present_image_cpu_sync(dev, mi, info->pImageIndices[i]);
    }

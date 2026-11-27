@@ -322,7 +322,7 @@ mali_sync_wait(struct vk_device *vk, struct vk_sync *sync, uint64_t wait_value,
       if (r != -ETIMEDOUT)
          { result = vk_errorf(vk, VK_ERROR_UNKNOWN, "fence wait failed: %d", r); goto done; }
       if (vk_device_is_lost(vk))
-         { result = VK_ERROR_DEVICE_LOST; goto done; }
+         { result = (mali_wait_event("device_lost site=mali_sync.c:325"), VK_ERROR_DEVICE_LOST); goto done; }
       if (now_ns() >= abs_timeout_ns)
          { result = VK_TIMEOUT; goto done; }
    }
@@ -385,7 +385,7 @@ mali_sync_export_sync_file(struct vk_device *vk, struct vk_sync *sync, int *sync
             mali_wait_log("export_sync_file", s, "done after", (now_ns() - start) / 1000000, 0);
          if (dbg)
             mali_wait_count(-1);
-         return VK_ERROR_DEVICE_LOST;
+         return (mali_wait_event("device_lost site=mali_sync.c:388"), VK_ERROR_DEVICE_LOST);
       }
       if (dbg && !logged && now_ns() - start >= 2000000000ull) {
          mali_wait_log("export_sync_file", s, "waiting for submit for", (now_ns() - start) / 1000000, 0);

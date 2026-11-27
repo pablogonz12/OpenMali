@@ -1,3 +1,4 @@
+#include "mali_wait_debug.h"
 /* SPDX-License-Identifier: MIT */
 /* M8: command buffers (Vulkan layer over mali_cs_emit.c). See mali_cmd.h. Unsupported things do not crash: they mark the command
  * buffer with VK_ERROR_FEATURE_NOT_PRESENT (vkEndCommandBuffer returns it) and are documented in R3-PLAN.md "M8":
@@ -1890,7 +1891,7 @@ mali_cmd_submit(struct vk_command_buffer *vk)
          if (nall) {
             kb_wmb();
             if (g_hw.submit_multi(g_hw.user, all, nall, counted)) {
-               res = VK_ERROR_DEVICE_LOST;
+               res = (mali_wait_event("device_lost site=mali_cmd.c:1894"), VK_ERROR_DEVICE_LOST);
                break;
             }
             nall = counted = 0;
@@ -1921,7 +1922,7 @@ mali_cmd_submit(struct vk_command_buffer *vk)
             res = VK_ERROR_FEATURE_NOT_PRESENT;
          else {
             if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: frame %u/%u submit failed: %d (draws %u ops %u)\n", i, cmd->nframes, rc, cmd->frames[i].ndraws, cmd->frames[i].nops);
-            res = VK_ERROR_DEVICE_LOST;
+            res = (mali_wait_event("device_lost site=mali_cmd.c:1925"), VK_ERROR_DEVICE_LOST);
          }
          break;
       }
@@ -1945,7 +1946,7 @@ mali_cmd_submit(struct vk_command_buffer *vk)
       kb_wmb();
       int rc = g_hw.submit_multi(g_hw.user, all, nall, counted);
       if (rc)
-         res = VK_ERROR_DEVICE_LOST;
+         res = (mali_wait_event("device_lost site=mali_cmd.c:1949"), VK_ERROR_DEVICE_LOST);
    } else if (res != VK_SUCCESS && counted) {
       /* frames of this command buffer were built (arena consumed) but never submitted: nothing to retire */
    }

@@ -660,7 +660,7 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
    const struct mali_backend_ops *be = mali_device_pdev(dev)->backend;
 
    if (vk_queue_is_lost(vq))
-      return VK_ERROR_DEVICE_LOST;
+      return (mali_wait_event("device_lost site=mali_queue.c:663"), VK_ERROR_DEVICE_LOST);
    if (vk_queue_submit_has_bind(submit))
       return vk_error(vq, VK_ERROR_FEATURE_NOT_PRESENT); /* sparse: not supported */
 
@@ -683,7 +683,7 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
       }
       VkResult r = vk_sync_wait(&dev->vk, w->sync, w->wait_value, VK_SYNC_WAIT_COMPLETE, UINT64_MAX);
       if (r != VK_SUCCESS)
-         return vk_queue_set_lost(vq, "queue wait failed: %d", r);
+         return (mali_wait_event("device_lost site=mali_queue.c:686"), vk_queue_set_lost(vq, "queue wait failed: %d", r));
    }
 
    double p1 = prof_now();
@@ -694,7 +694,7 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
       VkResult cr = mali_cmd_submit(submit->command_buffers[i]);
       if (cr == VK_ERROR_DEVICE_LOST && getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: frame submit lost\n");
       if (cr == VK_ERROR_DEVICE_LOST)
-         return vk_queue_set_lost(vq, "frame submit failed");
+         return (mali_wait_event("device_lost site=mali_queue.c:697"), vk_queue_set_lost(vq, "frame submit failed"));
       if (cr != VK_SUCCESS)
          return vk_error(vq, cr);
    }
@@ -713,7 +713,7 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
       r = be->submit_signal(dev->kdev, &fd);
    if (r != 0) {
       if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: submit_signal failed: %d\n", r);
-      return vk_queue_set_lost(vq, "queue submit failed: %d", r);
+      return (mali_wait_event("device_lost site=mali_queue.c:716"), vk_queue_set_lost(vq, "queue submit failed: %d", r));
    }
 
    VkResult res = VK_SUCCESS;
@@ -746,7 +746,7 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
    if (dev->hw && dev->hw->fp.on && submit->command_buffer_count == 0 && submit->wait_count > 0 && submit->signal_count > 0)
       mali_fprof_present(&dev->hw->fp);
    if (res != VK_SUCCESS)
-      return vk_queue_set_lost(vq, "queue signal import failed: %d", res); /* GPU work is in flight, its fence is lost */
+      return (mali_wait_event("device_lost site=mali_queue.c:749"), vk_queue_set_lost(vq, "queue signal import failed: %d", res)); /* GPU work is in flight, its fence is lost */
    if (getenv("MALI_PROF")) {
       double p3 = prof_now();
       prof_acc[0] += p1 - p0; prof_acc[1] += p2 - p1; prof_acc[2] += p3 - p2;
@@ -763,7 +763,7 @@ mali_device_check_status(struct vk_device *vk)
    struct mali_device *dev = container_of(vk, struct mali_device, vk);
 
    if (mali_device_pdev(dev)->backend->device_lost(dev->kdev))
-      return VK_ERROR_DEVICE_LOST;
+      return (mali_wait_event("device_lost site=mali_queue.c:766"), VK_ERROR_DEVICE_LOST);
    return VK_SUCCESS;
 }
 
