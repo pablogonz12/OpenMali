@@ -493,13 +493,16 @@ raster_tri(struct rctx *c, const float clip[3][4], const float vary[3][MALI_SOFT
             float out[4];
             for (unsigned k = 0; k < 4; k++) {
                if (!(amask & (1u << k))) { out[k] = dst[k]; continue; }
-               if (aen && k < 3)
-                  out[k] = bop((VkBlendOp)oc, frag[r][k] * bfactor((VkBlendFactor)sc, frag[r], dst, bc, k, false),
-                                            dst[k] * bfactor((VkBlendFactor)dc, frag[r], dst, bc, k, false));
-               else if (aen)
-                  out[k] = bop((VkBlendOp)oa, frag[r][k] * bfactor((VkBlendFactor)sa, frag[r], dst, bc, k, true),
-                                            dst[k] * bfactor((VkBlendFactor)da, frag[r], dst, bc, k, true));
-               else
+               if (aen) {
+                  const bool alpha = k == 3;
+                  const VkBlendOp op = (VkBlendOp)(alpha ? oa : oc);
+                  float src = frag[r][k], dest = dst[k];
+                  if (op != VK_BLEND_OP_MIN && op != VK_BLEND_OP_MAX) {
+                     src *= bfactor((VkBlendFactor)(alpha ? sa : sc), frag[r], dst, bc, k, alpha);
+                     dest *= bfactor((VkBlendFactor)(alpha ? da : dc), frag[r], dst, bc, k, alpha);
+                  }
+                  out[k] = bop(op, src, dest);
+               } else
                   out[k] = frag[r][k];
             }
             px_write(&c->col[r], x, y, out);

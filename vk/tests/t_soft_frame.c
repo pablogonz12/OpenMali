@@ -741,14 +741,31 @@ case_blend(void)
    readpx(&s[0], 32, 32, c); CHECK(near4(c, 0.8f, 0.1f, 0.4f), "RT0 (no blend) %f,%f,%f", c[0], c[1], c[2]);
    readpx(&s[1], 32, 32, c);
    CHECK(near4(c, 0.7f, 0.85f, 1.025f), "RT1 (ADD ONE/ONE) %f,%f,%f, expected dst+src = 0.7,0.85,1.025", c[0], c[1], c[2]);
-   readpx(&s[2], 32, 32, c);
-   CHECK(near4(c, 0.35f, 0.175f, 0.03125f), "RT2 (CONSTANT_COLOR) %f,%f,%f, expected 0.35,0.175,0.03125", c[0], c[1], c[2]);
+    readpx(&s[2], 32, 32, c);
+    CHECK(near4(c, 0.35f, 0.175f, 0.03125f), "RT2 (CONSTANT_COLOR) %f,%f,%f, expected 0.35,0.175,0.03125", c[0], c[1], c[2]);
+    CHECK(fabsf(c[2] - 8.0f / 255.0f) < 0.002f, "RT2 blue %f: fragment push data lost", c[2]);
    CHECK(fabsf(c[3] - 0.5f) < 0.02f, "RT2 alpha %f, expected CONSTANT_ALPHA 0.5", c[3]);
    readpx(&s[3], 32, 32, c);
    CHECK(near4(c, 0.9f, 0.9f, 0.6f), "RT3 (REVERSE_SUBTRACT, mask R|B) %f,%f,%f, expected 0.9,0.9,0.6", c[0], c[1], c[2]);
    tilemap("mrt-blend-rt1-rgba16f", &s[1]);
-   tilemap("mrt-blend-rt2-constant", &s[2]);
-   tilemap("mrt-blend-rt3-subtract", &s[3]);
+    tilemap("mrt-blend-rt2-constant", &s[2]);
+    tilemap("mrt-blend-rt3-subtract", &s[3]);
+    /* MIN/MAX ignore the factors, including on alpha, on both RT0 and RT1. */
+    fx.blend_en = true;
+    fx.src_c = fx.dst_c = fx.src_a = fx.dst_a = VK_BLEND_FACTOR_ZERO;
+    fx.op_c = VK_BLEND_OP_MIN; fx.op_a = VK_BLEND_OP_MAX;
+    fx.xatt[0] = (struct mali_fx_att){.en = true, .wmask = 0xf,
+                                      .src_c = VK_BLEND_FACTOR_ZERO, .dst_c = VK_BLEND_FACTOR_ZERO,
+                                      .src_a = VK_BLEND_FACTOR_ZERO, .dst_a = VK_BLEND_FACTOR_ZERO,
+                                      .op_c = VK_BLEND_OP_MAX, .op_a = VK_BLEND_OP_MIN};
+    CHECK(hand_frame(rt, 4, at, 0, 0, 64, 64, &PROG_BLEND, &key_blend_vs, &key_blend_fs, 0, 0, 1, 1, vc, &fx, 0.05f),
+          "MIN/MAX pass");
+    readpx(&s[0], 32, 32, c);
+    CHECK(near4(c, 0.10f, 0.10f, 0.30f) && fabsf(c[3] - 1.0f) < 0.01f,
+          "RT0 MIN RGB MAX alpha %f,%f,%f,%f", c[0], c[1], c[2], c[3]);
+    readpx(&s[1], 32, 32, c);
+    CHECK(near4(c, 0.50f, 0.60f, 0.90f) && fabsf(c[3] - 0.5f) < 0.01f,
+          "RT1 MAX RGB MIN alpha %f,%f,%f,%f", c[0], c[1], c[2], c[3]);
    for (unsigned i = 0; i < 4; i++) scene_free(&s[i]);
    return 1;
 }
