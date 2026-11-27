@@ -153,6 +153,22 @@ static int res_view(VkImageView v, struct mali_cmd_target *o)
 {
    /* --loadstore attachment handles: 1 = RGBA8 colour, 2 = D32F depth, 3 = D32F + S8 (depth and stencil, separate plane VAs),
     * 4 = D24X8 (LOAD is unsupported but NONE is not). Handle 2 is also the D32 depth-only view of --extra logicOp-retained. */
+   if ((uintptr_t)v == 5) { /* 4x colour: 64 x 32 */
+      *o = (struct mali_cmd_target){.va = 0x100000, .row_stride = 256, .width = 64, .height = 32,
+                                    .samples = 4, .surface_stride = 8192};
+      return 0;
+   }
+   if ((uintptr_t)v == 6) { /* 4x S8: 64 x 48, with a padded sample plane */
+      *o = (struct mali_cmd_target){.va = 0x200000, .row_stride = 64, .width = 64, .height = 48,
+                                    .is_zs = true, .has_s = true, .s_va = 0x200000, .s_row_stride = 64,
+                                    .samples = 4, .surface_stride = 3328};
+      return 0;
+   }
+   if ((uintptr_t)v == 7) { /* 4x depth, separate from the S8 target */
+      *o = (struct mali_cmd_target){.va = 0x300000, .row_stride = 256, .width = 64, .height = 48,
+                                    .zs_format = 1, .is_zs = true, .samples = 4, .surface_stride = 12288};
+      return 0;
+   }
    if ((uintptr_t)v == 1) {
       *o = (struct mali_cmd_target){.va = F.rt.gpu_va, .row_stride = W * 4, .width = W, .height = H, .rt = NULL};
       return 0;
@@ -524,6 +540,40 @@ test_stencil_store_stride_baseline(void)
    CHECK(mali_render_pack_fbd(&env, &f, fbd, 0, 0x300000) == 0 && !memcmp(fbd, changed, sizeof fbd), "depth unchanged");
 }
 
+/* Exercise the producer, not just a hand-constructed mali_frame. */
+static void
+test_stencil_store_recording(VkCommandPool pool)
+{
+   DFN(EndCommandBuffer);
+   for (unsigned i = 0; i < 3; i++) {
+      VkCommandBuffer cb;
+      struct vk_command_buffer *vc = new_cmd(pool, &cb);
+      VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+         .imageView = (VkImageView)(uintptr_t)5, .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+      VkRenderingAttachmentInfo sa = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+         .imageView = (VkImageView)(uintptr_t)6, .imageLayout = VK_IMAGE_LAYOUT_STENCIL_ATTACHMENT_OPTIMAL,
+         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+         .storeOp = i == 1 ? VK_ATTACHMENT_STORE_OP_DONT_CARE : VK_ATTACHMENT_STORE_OP_STORE};
+      VkRenderingAttachmentInfo da = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+         .imageView = (VkImageView)(uintptr_t)7, .imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+      VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {64, 32}},
+         .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &ca,
+         .pStencilAttachment = &sa, .pDepthAttachment = i == 2 ? &da : NULL};
+      mali_CmdBeginRendering(cb, &ri);
+      struct mali_cmd_buffer *cmd = mali_cmd_buffer_from_vk(vc);
+      const struct mali_frame *f = &cmd->cur;
+      CHECK(cmd->in_render && f->has_colour && f->has_st && f->samples == 4 && f->height == 32 &&
+            f->st.va == 0x200000 && f->st.row_stride == 64, "record stencil case %u shape", i);
+      CHECK(f->has_zs == (i == 2), "record stencil case %u depth", i);
+      CHECK(f->st.surface_stride == (i == 0 ? 3328u : 0u),
+            "record stencil case %u plane stride %u", i, f->st.surface_stride);
+      mali_CmdEndRendering(cb);
+      CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "record stencil case %u end", i);
+   }
+}
+
 /* Ring wrap + chunking (host, fake kbase backend). A 4 KiB ring, a 3000-instruction stream and pieces from
  * kb_queue_piece_instrs: every piece must be readable at its masked ring address as it crosses the end of the ring,
  * a stream longer than the ring must still be accepted in pieces, and one oversized block must be refused. */
@@ -808,6 +858,8 @@ int main(int argc, char **argv)
    VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
    VkCommandPool pool;
    CHECK(CreateCommandPool(dev, &pci, NULL, &pool) == VK_SUCCESS, "CreateCommandPool");
+   if (extra)
+      test_stencil_store_recording(pool);
    struct vk_buffer *vb = make_buffer(F.vb.gpu_va, sizeof k_pos);
    VkBuffer vbh = vk_buffer_to_handle(vb);
 
