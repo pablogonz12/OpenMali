@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""Internal soak loop, run only inside smoke's guarded session."""
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import zipfile
+
+M = Path(os.environ.get("M", Path(os.environ.get("MALI_LAB_ROOT", Path.home() / ".local/share/mali-phone-lab"))))
+spec = importlib.util.spec_from_file_location("schedule", M / "bin/soak-schedule.py")
+schedule = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(schedule)
+patterns = {
+    "unsupported": r"mali_cmd:.*unsupported",
+    "fatal": r"mali_vk:.*FATAL",
+    "TRANSLATION_FAULT": r"TRANSLATION_FAULT",
+    "DEVICE_LOST": r"DEVICE_LOST",
+    "GUILTY_CONTEXT_RESET": r"GUILTY_CONTEXT_RESET",
+    "SWIFTSHADER": r"SWIFTSHADER",
+    "CrashCount": r"CrashCount",
+    "resolve_1x": r"1x resolve as",
+}
+loss = ("fatal", "TRANSLATION_FAULT", "DEVICE_LOST", "GUILTY_CONTEXT_RESET", "SWIFTSHADER")
+
+
+def command(args, timeout=25):
+    return subprocess.run(args, text=True, capture_output=True, timeout=timeout, check=True).stdout
+
+
+def json_output(text):
+    return json.loads(text[text.index("{"):])
+
+
+def run(phone, out, minutes):
+    ddc = str(M / "bin/ddc")
+    out = Path(out)
+    result = {"screenshots": [], "pacing_screenshot": None, "gpu_pid_restarts": 0,
+              "first_marker": None, "pacing": [], "counters": None}
+    previous_pids = None
+    baseline = None
+    failure = None
+    with (out / "timeline.tsv").open("w", buffering=1) as timeline:
+        timeline.write("scheduled_s\tactual_s\tevent\tdetail\n")
+
+        def call(*args, timeout=25):
+            return command([ddc, phone, *map(str, args)], timeout)
+
+        def log(due, actual, event, detail):
+            timeline.write(f"{due}\t{actual:.3f}\t{event}\t{json.dumps(detail, ensure_ascii=False)}\n")
+
+        def shot(name):
+            png, jpg = out / (name + ".png"), out / (name + ".jpg")
+            call("screenshot", png, timeout=40)
+            command([str(M / "bin/img"), "jpg", str(png), str(jpg)], 20)
+            if not jpg.is_file() or not jpg.stat().st_size:
+                raise RuntimeError("screenshot missing")
+            result["screenshots"].append(str(jpg))
+            return str(jpg)
+
+        def sample(due):
+            nonlocal previous_pids, baseline
+            state = json_output(call("state"))
+            if not state.get("session", {}).get("running"):
+                raise RuntimeError("session not running")
+            # Exclude the grep process itself using a bracketed regex.
+            text = json_output(call("guest", "--", "sh", "-c",
+                "ps -eo pid,args | grep -E '[s]teamwebhelper.*--type=gpu-process' || true"))["stdout"]["text"]
+            pids = sorted({int(line.split(None, 1)[0]) for line in text.splitlines()
+                           if line.split(None, 1) and line.split(None, 1)[0].isdigit()})
+            if previous_pids is not None and pids and pids != previous_pids:
+                result["gpu_pid_restarts"] += len(set(pids) - set(previous_pids))
+            previous_pids = pids
+            logs = out / ("live-logs-%04d" % due)
+            logs.mkdir(exist_ok=True)
+            call("logs", "latest", logs, timeout=60)
+            for z in logs.rglob("*.zip"):
+                with zipfile.ZipFile(z) as archive:
+                    for info in archive.infolist():
+                        target = (logs / info.filename).resolve()
+                        if not target.is_relative_to(logs.resolve()):
+                            raise RuntimeError("unsafe log archive")
+                    archive.extractall(logs)
+            counts = dict.fromkeys(patterns, 0)
+            feature = None
+            for path in sorted(logs.rglob("*")):
+                if not path.is_file() or path.suffix.lower() == ".zip":
+                    continue
+                with path.open(errors="replace") as f:
+                    for line in f:
+                        for name, regex in patterns.items():
+                            if re.search(regex, line, re.I):
+                                counts[name] += 1
+                        m = re.search(r"\[\s*gpu_compositing\s*\]\s*:\s*(\S+)", line, re.I)
+                        if m:
+                            feature = m.group(1)
+            if baseline is None:
+                baseline = counts.copy()
+            delta = {k: max(0, v - baseline[k]) for k, v in counts.items()}
+            if result["first_marker"] is None:
+                for name in loss:
+                    if delta[name]:
+                        result["first_marker"] = {"marker": name, "time_s": due}
+                        break
+            result["counters"] = delta
+            result["gpu_compositing"] = feature
+            return {"pids": pids, "restarts": result["gpu_pid_restarts"],
+                    "counters": delta, "gpu_compositing": feature}
+
+        def event(due, actual, action, index):
+            if action == "screenshot":
+                detail = shot("soak-" + index)
+            elif action == "sample":
+                detail = sample(int(due))
+            else:
+                state = json_output(call("state"))
+                if not state.get("session", {}).get("running"):
+                    raise RuntimeError("session not running before input")
+                call("input", "pad", action)
+                detail = index
+            log(due, actual, action, detail)
+
+        try:
+            schedule.run(minutes, event)
+            call("input", "pad", "b")
+            result["pacing_screenshot"] = shot("pre-pacing")
+            for i in range(3):
+                raw = call("pacing", "--seconds", "30", timeout=90)
+                result["pacing"].append(json_output(raw))
+                log(minutes * 60, minutes * 60, "pacing", i + 1)
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError, RuntimeError, zipfile.BadZipFile) as exc:
+            failure = str(exc)
+            log(-1, -1, "error", failure)
+    result["error"] = failure
+    (out / "soak-data.json").write_text(json.dumps(result) + "\n")
+    if failure:
+        return 4
+    return 3 if result["first_marker"] else 0
+
+
+if __name__ == "__main__":
+    sys.exit(run(sys.argv[1], sys.argv[2], int(sys.argv[3])))

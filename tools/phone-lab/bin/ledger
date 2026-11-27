@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# ledger — every change made to an owner's phone that outlives a session, with its original value and its undo.
+#   ledger <phone> add "<what changed>" "<original value>" "<undo command>"
+#   ledger <phone> show          ledger all
+# Rule: no setting, package, prop or file on a phone changes without a ledger line FIRST. Mark an entry
+# undone by editing its "state: ACTIVE" to "state: UNDONE <date>" in M/phones/<phone>/ledger.md.
+set -u
+. "$(dirname "$0")/lib.sh"
+case "${1:-}" in
+  all) for f in "$M"/phones/*/ledger.md; do [ -f "$f" ] && { echo "== $f"; cat "$f"; }; done; exit 0;;
+  "") sed -n '2,6p' "$0"; exit 2;;
+esac
+grep -q "^$1|" "$M/phones.conf" || die "unknown phone '$1' (known: $(phones))"
+f="$M/phones/$1/ledger.md"; mkdir -p "$(dirname "$f")"
+case "${2:-show}" in
+  add) [ $# -eq 5 ] || die 'usage: ledger <phone> add "<what>" "<original>" "<undo command>"'
+       [ -f "$f" ] || echo "# $1 — changes that outlive a session (newest last)" > "$f"
+       echo "- $(date '+%F %H:%M') | $3 | original: $4 | undo: \`$5\` | state: ACTIVE" >> "$f"; tail -1 "$f";;
+  show) [ -f "$f" ] && cat "$f" || echo "(no ledger for $1)";;
+  *) die "unknown subcommand '$2'";;
+esac

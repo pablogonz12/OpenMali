@@ -1,0 +1,2 @@
+# alias|device serial(s), space separated|DroidDeck package|display Hz|optional golden drift %
+# test-device|<device-serial>|<droiddeck-package>|120|8

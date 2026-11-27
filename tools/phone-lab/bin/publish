@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# publish [worktree] — the guarded push for lanes (workers cannot run `git push` themselves).
+# Pushes the worktree's CURRENT branch to origin, fast-forward only. Refuses: main, master, integration, a detached
+# HEAD, uncommitted tracked changes, and anything that would need force. Then prints the PR command (base main).
+set -u
+. "$(dirname "$0")/lib.sh"
+wt=${1:-$PWD}
+git -C "$wt" rev-parse --git-dir >/dev/null 2>&1 || die "$wt is not a git worktree"
+br=$(git -C "$wt" branch --show-current)
+[ -n "$br" ] || die "detached HEAD in $wt: create a branch first"
+case "$br" in main|master|integration) die "refusing to push '$br' from a lane (orchestrator only, and never main)";; esac
+n=$(git -C "$wt" status --porcelain --untracked-files=no | wc -l)
+[ "$n" = 0 ] || die "$n uncommitted tracked change(s) in $wt: commit first"
+out=$(git -C "$wt" push -u origin "HEAD:refs/heads/$br" 2>&1); rc=$?
+echo "$out" | tail -3
+[ $rc = 0 ] || die "push rejected (no force allowed): merge origin/$br or origin/main into the branch, never rebase-and-force" 1
+echo "PUBLISHED branch=$br commit=$(git -C "$wt" rev-parse --short HEAD)"
+pr=$(cd "$wt" && gh pr list --head "$br" --state open --json number,baseRefName -q '.[0]|"#\(.number) base=\(.baseRefName)"' 2>/dev/null)
+if [ -n "$pr" ]; then echo "PR: $pr"; else echo "NO PR yet. If this is one finished issue:  cd $wt && gh pr create --base main --head $br --title '…' --body '…'   (search first: $M/bin/pr-gate --all | grep -i <topic>)"; fi

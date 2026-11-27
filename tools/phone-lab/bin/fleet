@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# fleet — one-call board for the three phones + host. Read-only: never starts, stops or changes anything.
+#   fleet            board (device, transport, uptime, temp, app, phase/mode, toggle, prefs, our procs, foreground)
+#   fleet --shot     also screenshot every reachable phone to /tmp/opencode/fleet/<name>.{png,jpg} + brightness
+# The .jpg is 420 px wide: READ IT (a mean is not a description of a screen).
+# Screenshots are taken only while DroidDeck is in the foreground: these are the owner's daily phones.
+set -u
+ADB=${ADB:-$HOME/Android/Sdk/platform-tools/adb}
+CTL=${CTL:-${MALI_DROIDDECKCTL:-droiddeckctl}}
+REPO=${REPO:-${MALI_REPO:-$HOME/src/OpenMali}}
+OUT=/tmp/opencode/fleet; mkdir -p "$OUT"
+SHOT=0; [ "${1:-}" = "--shot" ] && SHOT=1
+
+# The phone table lives in M/phones.conf (shared with ddc, smoke, phone-snap, board).
+M=${M:-${MALI_LAB_ROOT:-$HOME/.local/share/mali-phone-lab}}
+. "$M/bin/lib.sh"   # mdns_adb
+FLEET=$(grep -v -e '^#' -e '^$' "$M/phones.conf")
+
+one() {
+  local name=$1 serials=$2 pkg=$3 hz=$4 s="" c
+  for c in $serials; do
+    [ "$(timeout 6 "$ADB" -s "$c" get-state 2>/dev/null)" = device ] && { s=$c; break; }
+  done
+  [ -z "$s" ] && s=$(mdns_adb "$serials")
+  if [ -z "$s" ]; then echo "$name | OFFLINE (tried: $serials + mDNS)"; return; fi
+  local dev; dev=$(timeout 15 "$ADB" -s "$s" shell '
+    up=$(cut -d. -f1 /proc/uptime); t=$(dumpsys battery | awk "/temperature/{print \$2/10}")
+    lv=$(dumpsys battery | awk "/^ *level:/{print \$2; exit}"); br=$(getprop ro.boot.bootreason)
+    ours=$(ps -A -o NAME 2>/dev/null | grep -cE "deqp|ld-linux")
+    inst=$(pm list packages 2>/dev/null | grep -c "^package:'"$pkg"'$")
+    top=$(dumpsys activity activities 2>/dev/null | grep -m1 topResumedActivity | sed -E "s/.* ([a-zA-Z0-9_.]+)\/.*/\1/")
+    echo "up=${up}s temp=${t}C bat=${lv}% boot=${br} our_procs=${ours} installed=${inst} fg=${top}"' 2>/dev/null | tr -d '\r')
+  local st phase mode run ff fail cmds prefs vb ld
+  st=$(DROIDDECK_PACKAGE=$pkg timeout 30 "$CTL" --serial "$s" state 2>/dev/null)
+  read -r phase mode run ff fail cmds < <(printf '%s' "$st" | python3 -c '
+import sys,json
+t=sys.stdin.read(); i=t.find("{")
+try:
+    d=json.loads(t[i:]); s=d.get("session") or {}; f=s.get("failure")
+    print(s.get("phase") or "?", s.get("mode") or "-", s.get("running"), s.get("firstFrame"),
+          (f.get("code") if isinstance(f,dict) else f) or "-", (d.get("agent") or {}).get("commands"))
+except Exception: print("NO_ANSWER - - - - -")' 2>/dev/null)
+  vb="?"; ld="?"
+  if [ "${cmds:-}" = True ]; then
+    prefs=$(DROIDDECK_PACKAGE=$pkg timeout 25 "$CTL" --serial "$s" prefs get session 2>/dev/null)
+    read -r vb ld < <(printf '%s' "$prefs" | python3 -c '
+import sys,json,re
+t=sys.stdin.read()
+def g(k):
+    m=re.search(r"\"%s\"\s*:\s*(\"[^\"]*\"|[a-z0-9.]+)"%k,t); return m.group(1).strip("\"") if m else "unset"
+print(g("vkBridge"), g("linuxDriver"))' 2>/dev/null)
+  fi
+  local stack="?"; [ "$vb" = false ] && stack="DRIVER"; [ "$vb" = true ] && stack="bridge"; [ "$vb" = unset ] && stack="bridge(default)"
+  echo "$name | $s | ${hz}Hz | $dev"
+  echo "     app=$pkg phase=${phase:-?} mode=${mode:--} running=${run:-?} firstFrame=${ff:-?} failure=${fail:--}"
+  echo "     debugging_tools=${cmds:-?} stack=$stack vkBridge=$vb linuxDriver=$ld"
+  [ "${cmds:-}" != True ] && echo "     !! Debugging tools OFF -> prefs/env/guest/deploy blocked (human tap: Setup > Developer > Debugging tools)"
+  local fg; fg=$(printf '%s' "$dev" | sed -E 's/.* fg=//')
+  if [ $SHOT = 1 ] && [ "$fg" != "$pkg" ]; then
+    rm -f "$OUT/$name.png" "$OUT/$name.jpg"
+    echo "     shot=SKIPPED: foreground is $fg, not DroidDeck (never capture the owner's other apps)"
+  elif [ $SHOT = 1 ]; then
+    if DROIDDECK_PACKAGE=$pkg timeout 40 "$CTL" --serial "$s" screenshot "$OUT/$name.png" >/dev/null 2>&1 \
+       || timeout 20 "$ADB" -s "$s" exec-out screencap -p > "$OUT/$name.png" 2>/dev/null; then
+      "$M/bin/img" jpg "$OUT/$name.png" "$OUT/$name.jpg" 2>/dev/null
+      local mean; mean=$("$M/bin/img" mean "$OUT/$name.png" 2>/dev/null)
+      echo "     shot=$OUT/$name.jpg brightness=${mean%.*}/255 (black<2; READ the jpg before describing the screen)"
+    else echo "     shot=FAILED"; fi
+  fi
+}
+
+echo "== fleet $(date +%H:%M:%S) =="
+echo "farm: $(farm_state)   (must be inactive on every host)"
+while IFS='|' read -r n ss p h; do one "$n" "$ss" "$p" "$h" > "$OUT/.$n.txt" 2>&1 & done <<< "$FLEET"
+wait
+for n in $(printf '%s\n' "$FLEET" | cut -d'|' -f1); do cat "$OUT/.$n.txt"; done
+
+echo "== host =="
+echo "farm: mali-farm.service=$(systemctl --user is-active mali-farm.service 2>/dev/null) (must stay inactive until #284 is merged and device-verified)"
+if [ -d "$REPO/.git" ]; then
+  so=$REPO/vk/out/a64-glibc-wsi/libvulkan_mali.so
+  echo "repo: $(git -C "$REPO" rev-parse --abbrev-ref HEAD)@$(git -C "$REPO" rev-parse --short HEAD) dirty=$(git -C "$REPO" status --porcelain -- vk libkbase 2>/dev/null | wc -l)"
+  [ -f "$so" ] && echo "artefact: $(sha256sum "$so" | cut -c1-16)… $(file -b "$so" | grep -oE 'ARM aarch64|x86-64' | head -1) built $(date -r "$so" +%H:%M)  (deploy only the sha tools/build-artefact.sh printed)"
+fi

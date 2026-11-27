@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# soak <phone> --minutes N [--env K=V]... [--expect-commit c] [--label s] [--dry-run]
+# Uses smoke's preflight, snapshot, guarded Steam session and teardown.
+# Saves timeline.tsv and soak.json. READ screenshots, especially pre-pacing.jpg.
+set -u
+M=${M:-${MALI_LAB_ROOT:-$HOME/.local/share/mali-phone-lab}}
+usage() { sed -n '2,4p' "$0"; }
+case ${1:-} in ""|--help|-h) usage; exit 0;; esac
+phone=$1; shift
+minutes=""; label=""; args=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --minutes|--label|--env|--expect-commit)
+      [ "$#" -ge 2 ] || { usage >&2; exit 2; }
+      case "$1" in
+        --minutes) minutes=$2;; --label) label=$2;;
+        *) args+=("$1" "$2");;
+      esac; shift 2;;
+    --dry-run) args+=("$1"); shift;;
+    --help|-h) usage; exit 0;;
+    *) usage >&2; exit 2;;
+  esac
+done
+[[ "$minutes" =~ ^[1-9][0-9]*$ ]] || { echo "soak: minutes must be a positive integer" >&2; exit 2; }
+exec "$M/bin/smoke" "$phone" --no-launch --soak-internal "$minutes" --soak-label-internal "$label" "${args[@]}"

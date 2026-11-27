@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# lane-wt — one private git worktree per editing lane, on disk (never on the 16 GB /tmp tmpfs, never shared).
+#   lane-wt new <topic> [base]   creates $LANES/<topic> on branch lane/<topic> (or <topic> itself if it has a '/'),
+#                                from origin/main by default; links third_party; prints WORKTREE= and BRANCH=
+#   lane-wt list                 our lane worktrees: branch, head, uncommitted files, pushed or not
+#   lane-wt gc [--apply] [--all] removes worktrees that are CLEAN and whose HEAD is on the remote (nothing can be lost).
+#                                Default scope: $LANES and /tmp. --all = every worktree of the repo. Dry-run without --apply.
+# First action of every editing worker: lane-wt new. Last action: commit, then  publish <worktree>.
+set -u
+. "$(dirname "$0")/lib.sh"
+KEEP="$REPO ${MALI_KEEP_WORKTREES:-}"
+[ -f "$M/keep-worktrees" ] && KEEP="$KEEP $(grep -v '^#' "$M/keep-worktrees" | tr '\n' ' ')"
+cmd=${1:-}; shift || true
+case "$cmd" in
+  new)
+    t=${1:-}; base=${2:-origin/main}
+    [ -n "$t" ] || die "usage: lane-wt new <topic> [base]"
+    case "$t" in */*) br=$t;; *) br=lane/$t;; esac
+    wt="$LANES/${t//\//-}"; mkdir -p "$LANES"
+    [ -e "$wt" ] && die "$wt already exists — one lane per worktree; pick another topic or continue that lane"
+    git -C "$REPO" fetch -q origin 2>/dev/null
+    git -C "$REPO" show-ref -q --verify "refs/heads/$br" && die "branch $br already exists (git -C $REPO worktree list | grep $br)"
+    git -C "$REPO" worktree add -q "$wt" -b "$br" "$base" || die "git worktree add failed"
+    [ -e "$wt/third_party" ] || ln -s "$REPO/third_party" "$wt/third_party"
+    echo "WORKTREE=$wt"; echo "BRANCH=$br"; echo "BASE=$base@$(git -C "$wt" rev-parse --short HEAD)"
+    echo "Work only here. Commit early. When done:  $M/bin/publish $wt" ;;
+  list)
+    git -C "$REPO" worktree list --porcelain | awk '/^worktree /{print $2}' | while read -r w; do
+      case "$w" in "$LANES"/*|/tmp/*) ;; *) continue;; esac
+      [ -d "$w" ] || continue
+      b=$(git -C "$w" branch --show-current 2>/dev/null); h=$(git -C "$w" rev-parse --short HEAD 2>/dev/null)
+      n=$(git -C "$w" status --porcelain 2>/dev/null | wc -l)
+      r=$(git -C "$w" for-each-ref --count=1 --contains HEAD --format='%(refname:short)' refs/remotes 2>/dev/null)
+      printf '%-52s %-28s %s dirty=%s %s\n' "$w" "${b:-detached}" "$h" "$n" "$([ -n "$r" ] && echo pushed || echo UNPUSHED)"
+    done ;;
+  gc)
+    apply=0; all=0; for a in "$@"; do case "$a" in --apply) apply=1;; --all) all=1;; esac; done
+    rm_n=0; keep_n=0
+    while read -r w; do
+      [ -d "$w" ] || continue
+      case " $KEEP " in *" $w "*) continue;; esac
+      if [ $all = 0 ]; then case "$w" in "$LANES"/*|/tmp/*) ;; *) continue;; esac; fi
+      n=$(git -C "$w" status --porcelain 2>/dev/null | wc -l)
+      r=$(git -C "$w" for-each-ref --count=1 --contains HEAD --format='%(refname:short)' refs/remotes 2>/dev/null)
+      if [ "$n" = 0 ] && [ -n "$r" ]; then
+        rm_n=$((rm_n+1))
+        if [ $apply = 1 ]; then git -C "$REPO" worktree remove --force "$w" >/dev/null 2>&1 && echo "removed $w" || echo "FAILED  $w"
+        else echo "would remove $w"; fi
+      else keep_n=$((keep_n+1)); echo "keep    $w (dirty=$n $([ -n "$r" ] && echo pushed || echo UNPUSHED))"; fi
+    done < <(git -C "$REPO" worktree list --porcelain | awk '/^worktree /{print $2}')
+    [ $apply = 1 ] && git -C "$REPO" worktree prune
+    echo "gc: removable=$rm_n kept=$keep_n apply=$apply  /tmp: $(df -h /tmp | awk 'NR==2{print $5" used, "$4" free"}')" ;;
+  *) sed -n '2,9p' "$0"; exit 2 ;;
+esac

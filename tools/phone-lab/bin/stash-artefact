@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# stash-artefact — freeze the verified fleet build into its own directory so a later build cannot replace it.
+# Runs `tools/build-artefact.sh --check` in $REPO (must say OK … from integration@…), then copies the driver, its
+# provenance, mali_icd.json, every t_* test binary and *.spv to $DEPLOY/<first 12 of sha256>/ (read-only) with a
+# MANIFEST.sha256. Device briefs name THAT directory: lanes push from it and nowhere else.
+#   stash-artefact            -> prints DEPLOY_DIR= SHA256= COMMIT=
+#   stash-artefact --list     -> the stashed builds, newest first
+set -u
+. "$(dirname "$0")/lib.sh"
+mkdir -p "$DEPLOY"
+if [ "${1:-}" = --list ]; then
+  for d in $(ls -1dt "$DEPLOY"/*/ 2>/dev/null); do echo "$(basename "$d")  $(grep -m1 -E '^commit' "$d/libvulkan_mali.so.provenance" 2>/dev/null | tr -s ' =' ' ')  $(date -r "$d" '+%m-%d %H:%M')"; done; exit 0
+fi
+df -P /tmp | awk 'NR==2 && $5+0 > 95 {exit 1}' || die "/tmp is over 95 % full: a full tmpfs fakes artefact failures. Run: lane-wt gc --apply"
+# Bisect builds:  STASH_FROM=<lane worktree> stash-artefact   builds nothing; it stashes that worktree's a64 artefact
+# as an OFF-FLEET build (build it first there with: tools/build-artefact.sh --allow-branch). Never the fleet default.
+allow=""; [ -n "${STASH_FROM:-}" ] && { REPO=$STASH_FROM; allow=--allow-branch; }
+line=$(cd "$REPO" && timeout 300 ./tools/build-artefact.sh --check $allow 2>&1 | tail -1)
+case "$line" in OK:*) ;; *) die "artefact check failed: $line";; esac
+so=$(echo "$line" | sed -E 's/^OK: deploy ([^ ]+) at .*/\1/'); sha=$(echo "$line" | sed -E 's/.* at ([0-9a-f]{64}) .*/\1/')
+ref=$(echo "$line" | sed -E 's/.* from ([^ ]+) .*/\1/')
+[ "$(sha256sum "$so" | cut -d' ' -f1)" = "$sha" ] || die "sha256 of $so does not match the check line"
+src=$(dirname "$so"); dst="$DEPLOY/${sha:0:12}"
+if [ -d "$dst" ]; then echo "already stashed"; else
+  mkdir -p "$dst.tmp"
+  cp -p "$so" "$so.provenance" "$src/mali_icd.json" "$dst.tmp/" 2>/dev/null
+  find "$src" -maxdepth 1 -type f \( -name 't_*' -o -name '*.spv' \) -exec cp -p {} "$dst.tmp/" \;
+  (cd "$dst.tmp" && sha256sum * > MANIFEST.sha256); echo "$line" > "$dst.tmp/CHECK.txt"
+  chmod -R a-w "$dst.tmp"; mv "$dst.tmp" "$dst"
+fi
+# keep the 24 newest (48 MB each), and NEVER a build listed in M/pinned-builds.txt (one sha12 per line, # comments):
+# on 2026-11-21 "keep the 8 newest" deleted the last good fleet build <build-id> while a bisect stashed off-fleet arms.
+PINS="$M/pinned-builds.txt"
+ls -1dt "$DEPLOY"/*/ 2>/dev/null | tail -n +25 | while read -r old; do
+  b=$(basename "$old")
+  [ -f "$PINS" ] && grep -q "^$b\b" "$PINS" && continue
+  chmod -R u+w "$old"; rm -rf "$old"
+done
+echo "DEPLOY_DIR=$dst"; echo "SHA256=$sha"; echo "COMMIT=$ref"; echo "files=$(ls "$dst" | wc -l) size=$(du -sh "$dst" | cut -f1)"
