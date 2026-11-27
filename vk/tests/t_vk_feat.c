@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|provoking|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|tf_reject|tf_write|tf_default|tf_inactive|tf_reset|tf_multi|tf_overflow|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|quadsize|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|samplerate|dparams|gather|gatherlim|fsstore|memmodel|robust2|imgmax] [--robust2]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|provoking|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|tf_reject|tf_write|tf_default|tf_inactive|tf_reset|tf_multi|tf_overflow|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|quadsize|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|samplerate|dparams|gather|gatherlim|fsstore|memmodel|robust2|imgmax|robustimg] [--robust2]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -36,6 +36,7 @@ static PFN_vkResetFences g_rf;
 static PFN_vkResetCommandBuffer g_rcb;
 static PFN_vkEnumerateDeviceExtensionProperties g_edep;
 static VkBool32 g_mirror, g_bda, g_didx;
+static VkBool32 g_ri;   /* robustImageAccess (Vk 1.3 core, test robustimg) */
 static int g_modless;  /* VK_KHR_maintenance5 (test maint5): stages carry a chained VkShaderModuleCreateInfo, module == VK_NULL_HANDLE */
 static int g_ib2;      /* test maint5: vkCmdBindIndexBuffer2KHR instead of vkCmdBindIndexBuffer */
 static int g_cbc, g_cbc_nofmt; static uint32_t g_cbc_max;   /* EXT_custom_border_color: features and maxCustomBorderColorSamplers */
@@ -3400,6 +3401,114 @@ imgmax_sample2d(uint32_t dim)
    return 1;
 }
 
+/* robustImageAccess (Vk 1.3 core, the GL 4.3 item in notes/zink-gl-version.md:50-56): an imageLoad outside the image must
+ * return zero with the missing components filled with 0/0/1, i.e. (0,0,0,1) for R8_UNORM. The image is 64x64 and cleared to
+ * 0x7f, and the same shader loads a texel inside it, so "0" from the far load cannot be an unbound or empty image. Runs with
+ * MALI_EXPERIMENTAL_ROBUSTIMG=1 while the feature is not advertised (nothing here validates the bit). */
+static int
+test_robustimg(void)
+{
+   const int forced = getenv("MALI_EXPERIMENTAL_ROBUSTIMG") != NULL;
+   if (!g_ri && !forced) {
+      printf("{\"test\":\"robustimg\",\"skipped\":\"robustImageAccess not advertised (MALI_EXPERIMENTAL_ROBUSTIMG=1 runs it anyway)\",\"ok\":true}\n");
+      return 1;
+   }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   struct hbuf sb;
+   if (!hbuf_create(&sb, 12 * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+   /* sentinel 0xff, outside every accepted value: the out-of-bounds checks accept 0 for RGB (and 0 or 255 for
+    * alpha), so a zeroed buffer would let a shader that writes only the in-bounds load pass them */
+   memset(sb.p, 0xff, 12 * 4);
+   VkImageCreateInfo ici = img2d(VK_FORMAT_R8_UNORM, 64, 64, 1, 1, 0);
+   ici.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+   VkImage img;
+   CHECK(CreateImage(dev, &ici, NULL, &img) == VK_SUCCESS, "robustimg: image");
+   VkMemoryRequirements mr;
+   GetImageMemoryRequirements(dev, img, &mr);
+   VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size,
+                              .memoryTypeIndex = memtype(mr.memoryTypeBits, 0)};
+   VkDeviceMemory imem;
+   CHECK(AllocateMemory(dev, &ai, NULL, &imem) == VK_SUCCESS, "robustimg: image memory");
+   CHECK(BindImageMemory(dev, img, imem, 0) == VK_SUCCESS, "robustimg: bind image");
+   VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = img, .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                               .format = VK_FORMAT_R8_UNORM, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+   VkImageView view;
+   CHECK(CreateImageView(dev, &vi, NULL, &view) == VK_SUCCESS, "robustimg: view");
+   VkDescriptorSetLayoutBinding lb[2] = {{.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT},
+                                         {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT}};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 2, .pBindings = lb};
+   VkDescriptorSetLayout dsl;
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "robustimg: dsl");
+   VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 2, .pPoolSizes = ps};
+   VkDescriptorPool pool;
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &pool) == VK_SUCCESS, "robustimg: dpool");
+   VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = pool, .descriptorSetCount = 1, .pSetLayouts = &dsl};
+   VkDescriptorSet set;
+   CHECK(AllocateDescriptorSets(dev, &dai, &set) == VK_SUCCESS, "robustimg: alloc set");
+   VkDescriptorImageInfo ii = {VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL};
+   VkDescriptorBufferInfo bi = {sb.b, 0, VK_WHOLE_SIZE};
+   VkWriteDescriptorSet w[2] = {{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 0, .descriptorCount = 1,
+                                 .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &ii},
+                                {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 1, .descriptorCount = 1,
+                                 .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &bi}};
+   UpdateDescriptorSets(dev, 2, w, 0, NULL);
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   if (!make_pipe(&t, "quad.vert.spv", "robustimg.frag.spv", dsl, 16, &lay, &pipe)) return 0;
+   VkImageSubresourceRange rng = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+   VkImageMemoryBarrier b = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                             .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                             .image = img, .subresourceRange = rng};
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "robustimg: cmdbuf");
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+   VkClearColorValue cc = {.float32 = {0x7f / 255.0f, 0.0f, 0.0f, 1.0f}};
+   CmdClearColorImage(cb, img, VK_IMAGE_LAYOUT_GENERAL, &cc, 1, &rng);
+   b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+   b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+   b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+   begin_pass(cb, &t, pipe);
+   CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, lay, 0, 1, &set, 0, NULL);
+   const float s[4] = {1.0f, 1.0f, 0.0f, 0.0f};
+   CmdPushConstants(cb, lay, VK_SHADER_STAGE_VERTEX_BIT, 0, 16, s);
+   CmdDraw(cb, 6, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   {   /* the fragment shader writes sb: make that visible to the host before the readback (a fence says the submission
+        * finished, not that the writes are visible to the host) */
+      VkBufferMemoryBarrier hb = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                                  .dstAccessMask = VK_ACCESS_HOST_READ_BIT, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                  .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .buffer = sb.b, .offset = 0, .size = VK_WHOLE_SIZE};
+      CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 1, &hb, 0, NULL);
+   }
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      VkMappedMemoryRange mmr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = sb.m, .offset = 0, .size = VK_WHOLE_SIZE};
+      (void)InvalidateMappedMemoryRanges(dev, 1, &mmr);   /* no-op on a coherent type */
+      const uint32_t *r = (const uint32_t *)(const void *)sb.p;
+      printf("{\"test\":\"robustimg\",\"oob\":[%u,%u,%u,%u],\"inbounds\":[%u,%u,%u,%u],\"neg\":[%u,%u,%u,%u],\"forced\":%s}\n",
+             r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9], r[10], r[11], forced ? "true" : "false");
+      CHECK(r[4] == 0x7f && r[5] == 0 && r[6] == 0 && r[7] == 255, "robustimg: in-bounds load %u,%u,%u,%u, the clear wrote 127,0,0,255", r[4], r[5], r[6], r[7]);
+      /* robustImageAccess fixes RGB to 0 for an out-of-bounds load and leaves A as either 0 or 1 — an R8_UNORM image has
+       * no alpha, so requiring 255 here rejected a conforming (0,0,0,0) (alpha 1 is a robustImageAccess2 guarantee) */
+      CHECK(r[0] == 0 && r[1] == 0 && r[2] == 0 && (r[3] == 0 || r[3] == 255), "robustimg: out-of-bounds imageLoad returned %u,%u,%u,%u, the spec value is 0,0,0,{0|255}", r[0], r[1], r[2], r[3]);
+      CHECK(r[8] == 0 && r[9] == 0 && r[10] == 0 && (r[11] == 0 || r[11] == 255), "robustimg: negative imageLoad returned %u,%u,%u,%u, the spec value is 0,0,0,{0|255}", r[8], r[9], r[10], r[11]);
+      printf("{\"test\":\"robustimg_ok\",\"ok\":true}\n");
+   } else printf("{\"test\":\"robustimg\",\"skipped\":\"pixels+memory: fake backend\",\"ok\":true}\n");
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   DestroyDescriptorPool(dev, pool, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
+   DestroyImageView(dev, view, NULL);
+   DestroyImage(dev, img, NULL);
+   FreeMemory(dev, imem, NULL);
+   hbuf_destroy(&sb);
+   tgt_destroy(&t);
+   return 1;
+}
 /* maxImageDimension{1D,2D,Cube}, 3D, maxImageArrayLayers, and the framebuffer/viewport limits that must match them */
 static int
 test_imgmax(void)
@@ -4062,7 +4171,7 @@ main(int argc, char **argv)
       g_p11 = p11;
    }
    g_pd = pd; g_gp2 = (PFN_vkGetPhysicalDeviceProperties2)gipa(inst, "vkGetPhysicalDeviceProperties2");
-   g_scalar = f12.scalarBlockLayout; g_ubostd = f12.uniformBufferStandardLayout; g_zinit = f13.shaderZeroInitializeWorkgroupMemory; g_demote = f13.shaderDemoteToHelperInvocation; g_intdot = f13.shaderIntegerDotProduct; g_inlineub = f13.inlineUniformBlock; g_sgctl_feat = f13.subgroupSizeControl; g_fullsg_feat = f13.computeFullSubgroups;
+   g_scalar = f12.scalarBlockLayout; g_ubostd = f12.uniformBufferStandardLayout; g_zinit = f13.shaderZeroInitializeWorkgroupMemory; g_demote = f13.shaderDemoteToHelperInvocation; g_intdot = f13.shaderIntegerDotProduct; g_inlineub = f13.inlineUniformBlock; g_sgctl_feat = f13.subgroupSizeControl; g_fullsg_feat = f13.computeFullSubgroups; g_ri = f13.robustImageAccess;
    g_feat = f2.features;
    g_mm = f12.vulkanMemoryModel && f12.vulkanMemoryModelDeviceScope;
    g_dparams = f11.shaderDrawParameters;
@@ -4093,7 +4202,8 @@ main(int argc, char **argv)
                                            .timelineSemaphore = f12.timelineSemaphore,
       .scalarBlockLayout = f12.scalarBlockLayout, .uniformBufferStandardLayout = f12.uniformBufferStandardLayout,
       .vulkanMemoryModel = f12.vulkanMemoryModel, .vulkanMemoryModelDeviceScope = f12.vulkanMemoryModelDeviceScope};
-   VkPhysicalDeviceVulkan13Features e13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .shaderZeroInitializeWorkgroupMemory = f13.shaderZeroInitializeWorkgroupMemory, .shaderIntegerDotProduct = f13.shaderIntegerDotProduct, .shaderDemoteToHelperInvocation = f13.shaderDemoteToHelperInvocation, .subgroupSizeControl = f13.subgroupSizeControl, .computeFullSubgroups = f13.computeFullSubgroups, .inlineUniformBlock = f13.inlineUniformBlock};
+   VkPhysicalDeviceVulkan13Features e13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .shaderZeroInitializeWorkgroupMemory = f13.shaderZeroInitializeWorkgroupMemory, .shaderIntegerDotProduct = f13.shaderIntegerDotProduct, .shaderDemoteToHelperInvocation = f13.shaderDemoteToHelperInvocation, .subgroupSizeControl = f13.subgroupSizeControl, .computeFullSubgroups = f13.computeFullSubgroups, .inlineUniformBlock = f13.inlineUniformBlock,
+                                            .robustImageAccess = f13.robustImageAccess};   /* the robustimg case enables what it tests */
    e12.pNext = &e13;
    VkPhysicalDeviceVulkan11Features e11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &e12, .storageBuffer16BitAccess = f11.storageBuffer16BitAccess, .shaderDrawParameters = f11.shaderDrawParameters, .samplerYcbcrConversion = f11.samplerYcbcrConversion};
    e12.imagelessFramebuffer = f12.imagelessFramebuffer;
@@ -4221,6 +4331,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("memmodel")) ok &= test_memmodel();
    if (ok && CASE_ON("fsstore")) ok &= test_fsstore();
    if (ok && CASE_ON("imgmax")) ok &= test_imgmax();
+   if (ok && CASE_ON("robustimg")) ok &= test_robustimg();
    if (ok && CASE_ON("privdata")) ok &= test_privdata();
 
    DeviceWaitIdle(dev);

@@ -207,7 +207,11 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
     * features it backs can be advertised on their own. robustBufferAccess alone is still advertised without it (Vulkan
     * 1.0 makes it mandatory, zink needs it): the dynamic array-index clamp (mali_descriptor_lower.c:129) plus the
     * descriptor bounds, not full byte-range clamping. */
-   flat.c.robust_access = dev->vk.enabled_features.robustBufferAccess2 || dev->vk.enabled_features.robustImageAccess2;
+   /* robustImageAccess is in this set too: the pass is where an out-of-bounds image STORE or atomic is predicated off, and
+    * that is the write half of what advertising robustImageAccess promises (its load half is lower_load_bounds/the hardware
+    * clamp). Without it, a device that enables only robustImageAccess would advertise a write guarantee nothing enforces. */
+   flat.c.robust_access = dev->vk.enabled_features.robustBufferAccess2 || dev->vk.enabled_features.robustImageAccess2 ||
+                          dev->vk.enabled_features.robustImageAccess;
 
    /* VK_EXT_transform_feedback: four u64 buffer addresses go after the application's push constants, so an XFB
     * program's push range grows by 32 B (the app never sees it; the shader's range check and the FAU reservation
@@ -644,7 +648,11 @@ create_compute_one(struct mali_device *dev, const VkComputePipelineCreateInfo *c
     * features it backs can be advertised on their own. robustBufferAccess alone is still advertised without it (Vulkan
     * 1.0 makes it mandatory, zink needs it): the dynamic array-index clamp (mali_descriptor_lower.c:129) plus the
     * descriptor bounds, not full byte-range clamping. */
-   flat.c.robust_access = dev->vk.enabled_features.robustBufferAccess2 || dev->vk.enabled_features.robustImageAccess2;
+   /* robustImageAccess is in this set too: the pass is where an out-of-bounds image STORE or atomic is predicated off, and
+    * that is the write half of what advertising robustImageAccess promises (its load half is lower_load_bounds/the hardware
+    * clamp). Without it, a device that enables only robustImageAccess would advertise a write guarantee nothing enforces. */
+   flat.c.robust_access = dev->vk.enabled_features.robustBufferAccess2 || dev->vk.enabled_features.robustImageAccess2 ||
+                          dev->vk.enabled_features.robustImageAccess;
    struct mali_compile_opts o = {.arch = arch, .layout = layout ? &flat.c : NULL, .stage = MALI_STAGE_COMPUTE};
    /* Compute defaults to 8 reserved FAU words (32 B of push constants); a larger push block is copied in from word 0, so reserve it or
       Bifrost asserts (bi_emit_load_push_constant). Never shrink below the default: that would move the immediates of existing shaders. */
