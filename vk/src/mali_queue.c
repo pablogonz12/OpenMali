@@ -84,6 +84,47 @@ bind_hw(struct mali_hwctx *h)
    }
 }
 
+/* The command buffer's own device seam (see mali_queue.h): NULL while the device has no frame resources yet. */
+struct mali_hw *
+mali_queue_hw_of_device(struct vk_device *vkdev)
+{
+   if (!vkdev || !vkdev->physical)
+      return NULL;
+   struct mali_device *dev = container_of(vkdev, struct mali_device, vk);
+   return dev->hw ? &dev->hw->hw : NULL;
+}
+
+/* Bind `want` for one submission. Returns what was bound before, for mali_queue_bind_restore (NULL if nothing was).
+ * The rebind is scoped: it is not pushed on the `below` stack, so a later device destroy cannot unstack it. */
+struct mali_hw *
+mali_queue_bind_for(struct mali_hw *want)
+{
+   struct mali_hwctx *h = want ? container_of(want, struct mali_hwctx, hw) : NULL;
+   struct mali_hwctx *prev;
+   pthread_mutex_lock(&g_bind_lock);
+   prev = g_cur;
+   if (h && h != prev) {
+      g_cur = h;
+      bind_hw(h);
+      mali_wait_event("cross-device submit: command buffer of dev=%p while dev=%p was bound (rebound for this submit)",
+                      (void *)h->dev, (void *)prev->dev);
+   }
+   pthread_mutex_unlock(&g_bind_lock);
+   return prev ? &prev->hw : NULL;
+}
+
+void
+mali_queue_bind_restore(struct mali_hw *prev)
+{
+   struct mali_hwctx *h = prev ? container_of(prev, struct mali_hwctx, hw) : NULL;
+   pthread_mutex_lock(&g_bind_lock);
+   if (g_cur != h) {
+      g_cur = h;
+      bind_hw(h);
+   }
+   pthread_mutex_unlock(&g_bind_lock);
+}
+
 /* M15: per-BO write tracking for the fence-wait CSYNC (mali_backend.h bo_wrote, vk/MEMORY.md). */
 static void
 hw_bo_wrote(void *user, struct mali_bo *bo)

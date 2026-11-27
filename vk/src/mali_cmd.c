@@ -1904,6 +1904,12 @@ mali_cmd_submit(struct vk_command_buffer *vk)
    struct mali_cmd_buffer *cmd = mali_cmd_buffer_from_vk(vk);
    if (!g_hw_set)
       return VK_ERROR_FEATURE_NOT_PRESENT;
+   /* Build and submit through the command buffer's OWN device. The hardware seam is process-wide and the last device
+    * created owns it; two live devices (ANGLE's Chromium GPU process) otherwise record this buffer's attachment VAs
+    * into a stream built with the other device's arena, which the GPU kills with a CS TRANSLATION_FAULT in the other
+    * device's kbase context. */
+   struct mali_hw *own = mali_queue_hw_of_device(vk->base.device);
+   struct mali_hw *prev = own ? mali_queue_bind_for(own) : NULL;
    uint64_t *all = NULL;
    unsigned nall = 0, capall = 0, counted = 0;
    VkResult res = VK_SUCCESS;
@@ -1976,7 +1982,7 @@ mali_cmd_submit(struct vk_command_buffer *vk)
       if (nall + n > capall) {
          capall = (nall + n) * 2;
          all = realloc(all, capall * sizeof *all);
-         if (!all) { free(cs); return VK_ERROR_OUT_OF_HOST_MEMORY; }
+         if (!all) { free(cs); mali_queue_bind_restore(prev); return VK_ERROR_OUT_OF_HOST_MEMORY; }
       }
       memcpy(all + nall, cs, n * sizeof *all);
       nall += n;
@@ -1996,5 +2002,6 @@ mali_cmd_submit(struct vk_command_buffer *vk)
       /* frames of this command buffer were built (arena consumed) but never submitted: nothing to retire */
    }
    free(all);
+   mali_queue_bind_restore(prev);
    return res;
 }
