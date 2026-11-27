@@ -49,6 +49,7 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 	const int ext = zs || st;
 	uint32_t s_row = p->s_row_stride ? p->s_row_stride : (p->width + 15u) & ~15u;
 	if (st && ((p->s_gpu_va & 63) || (s_row & 15))) return -EINVAL;
+	if (st && p->s_layered_stride && s_row >= (1u << 27)) return -EINVAL;
 	uint32_t zs_row = p->zs_row_stride ? p->zs_row_stride : (p->width * kb_zs_bytes_per_pixel(p->zs_format) + 15u) & ~15u;
 	if (zs && ((p->zs_gpu_va & 63) || (zs_row & 15) || p->zs_format > KB_ZS_D16)) return -EINVAL;
 	memset(out, 0, ext ? KB_FB_DESC_SIZE_ZS : KB_FB_DESC_SIZE);
@@ -85,12 +86,12 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 		/* S Target (v10.xml): word 0 bits 16 Write Format S8 (1), 20 Block Format linear, 24 MSAA single, 31 Clean Tile Write Enable (shared bit with ZS) */
 		put(x, 0, 16, 4, 1);
 		put(x, 0, 20, 4, 2);
-		put(x, 0, 24, 2, 0);
+		put(x, 0, 24, 2, p->s_layered_stride ? 3 : 0);
 		put(x, 0, 31, 1, 1);
 		put(x, 12, 0, 32, (uint32_t)p->s_gpu_va);            /* Base */
 		put(x, 13, 0, 32, (uint32_t)(p->s_gpu_va >> 32));
 		put(x, 14, 0, 32, s_row);                            /* Row Stride */
-		put(x, 15, 0, 32, (uint32_t)((uint64_t)s_row * p->height));   /* Surface Stride */
+		put(x, 15, 0, 32, p->s_layered_stride ? p->s_layered_stride : (uint32_t)((uint64_t)s_row * p->height));   /* Surface Stride */
 	}
 	if (zs) {
 		put(f, 12, 18, 1, !p->zs_no_store);                  /* Z Write Enable */

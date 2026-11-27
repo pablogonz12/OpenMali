@@ -467,6 +467,63 @@ test_store_op(void)
    CHECK(fbd_rt_write_enable(false, true) == 1, "MSAA resolve needs the RT write");
 }
 
+/* The stencil image can be taller than the colour framebuffer and its sample
+ * plane can have padding.  The legacy descriptor uses framebuffer height. */
+static void
+test_stencil_store_stride_baseline(void)
+{
+   struct mali_env env = { .arch = ARCH, .tile_log2 = 10 };
+   struct mali_frame f = {0};
+   uint8_t fbd[KB_FB_DESC_SIZE_ZS], changed[KB_FB_DESC_SIZE_ZS];
+   uint32_t mode, stride;
+   f.width = 64;
+   f.height = 32;                 /* colour height; stencil height is 48 */
+   f.has_colour = f.has_st = true;
+   f.samples = 4;
+   f.colour.va = 0x100000;
+   f.colour.row_stride = 256;
+   f.colour.store = true;
+   f.st.va = 0x200000;
+   f.st.row_stride = 64;
+   f.st.surface_stride = 64 * 48 + 256; /* padded actual stencil plane */
+   f.st.store = true;
+   unsetenv("MALI_DIAG_LAYERED_STENCIL_STORE");
+   CHECK(mali_render_pack_fbd(&env, &f, fbd, 0, 0x300000) == 0, "stencil FBD pack");
+   memcpy(&mode, fbd + KB_FB_FBD_SIZE, 4);
+   memcpy(&stride, fbd + KB_FB_FBD_SIZE + 15 * 4, 4);
+   CHECK(((mode >> 24) & 3) == 0, "legacy stencil mode");
+   CHECK(stride == 64 * 32 && stride != f.st.surface_stride, "legacy stride %u", stride);
+   setenv("MALI_DIAG_LAYERED_STENCIL_STORE", "0", 1);
+   CHECK(mali_render_pack_fbd(&env, &f, changed, 0, 0x300000) == 0 && !memcmp(fbd, changed, sizeof fbd), "zero flag unchanged");
+   setenv("MALI_DIAG_LAYERED_STENCIL_STORE", "1", 1);
+   CHECK(mali_render_pack_fbd(&env, &f, changed, 0, 0x300000) == 0, "layered stencil FBD pack");
+   memcpy(&mode, changed + KB_FB_FBD_SIZE, 4);
+   memcpy(&stride, changed + KB_FB_FBD_SIZE + 15 * 4, 4);
+   CHECK(((mode >> 24) & 3) == 3 && stride == 64 * 48 + 256, "layered mode/stride %u/%u", (mode >> 24) & 3, stride);
+   mode &= ~(3u << 24);
+   memcpy(changed + KB_FB_FBD_SIZE, &mode, 4);
+   stride = 64 * 32;
+   memcpy(changed + KB_FB_FBD_SIZE + 15 * 4, &stride, 4);
+   CHECK(!memcmp(fbd, changed, sizeof fbd), "only stencil mode and stride may change");
+   f.samples = 1;
+   CHECK(mali_render_pack_fbd(&env, &f, changed, 0, 0x300000) == 0, "1x on");
+   unsetenv("MALI_DIAG_LAYERED_STENCIL_STORE");
+   CHECK(mali_render_pack_fbd(&env, &f, fbd, 0, 0x300000) == 0 && !memcmp(fbd, changed, sizeof fbd), "1x unchanged");
+   f.samples = 4;
+   f.st.store = false;
+   CHECK(mali_render_pack_fbd(&env, &f, fbd, 0, 0x300000) == 0, "no-store off");
+   setenv("MALI_DIAG_LAYERED_STENCIL_STORE", "1", 1);
+   CHECK(mali_render_pack_fbd(&env, &f, changed, 0, 0x300000) == 0 && !memcmp(fbd, changed, sizeof fbd), "no-store unchanged");
+   f.st.store = true;
+   f.has_zs = true;
+   f.zs.zs_format = KB_ZS_D32F;
+   f.zs.va = 0x400000;
+   f.zs.row_stride = 256;
+   CHECK(mali_render_pack_fbd(&env, &f, changed, 0, 0x300000) == 0, "depth on");
+   unsetenv("MALI_DIAG_LAYERED_STENCIL_STORE");
+   CHECK(mali_render_pack_fbd(&env, &f, fbd, 0, 0x300000) == 0 && !memcmp(fbd, changed, sizeof fbd), "depth unchanged");
+}
+
 /* Ring wrap + chunking (host, fake kbase backend). A 4 KiB ring, a 3000-instruction stream and pieces from
  * kb_queue_piece_instrs: every piece must be readable at its masked ring address as it crosses the end of the ring,
  * a stream longer than the ring must still be accepted in pieces, and one oversized block must be refused. */
@@ -709,6 +766,7 @@ int main(int argc, char **argv)
    test_clear_words();
    test_poly_assemble();
    test_store_op();
+   test_stencil_store_stride_baseline();
    test_resolve_region();
    fill_compiled();
    if (setup_kb())

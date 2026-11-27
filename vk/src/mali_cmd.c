@@ -1303,6 +1303,11 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       }
       f->st.va = t.s_va;
       f->st.row_stride = t.s_row_stride;
+      /* Only a stencil-primary view exposes the S plane in t.surface_stride.
+       * Never use the depth plane stride of a combined D/S view. */
+      if (!t.zs_format && !f->has_zs && t.samples == 4 &&
+          sa->storeOp == VK_ATTACHMENT_STORE_OP_STORE)
+         f->st.surface_stride = t.surface_stride;
       f->st.clear = sa->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR;
       f->st.clear_stencil = (uint8_t)sa->clearValue.depthStencil.stencil;
       f->st.store = sa->storeOp == VK_ATTACHMENT_STORE_OP_STORE;
