@@ -559,7 +559,7 @@ static const struct mali_soft_program PROG_MRT = {.name = "mrt", .vs = vs_gradie
  * c == NULL: the corner colours differ so every 32x32 tile of a covered area has its own value). */
 static int
 hand_quad(struct mali_frame *f, const struct mali_hw *hw, const void *vskey, const void *fskey, float x0, float y0,
-          float x1, float y1, const float *c, const float (*vertices)[2])
+          float x1, float y1, const float *c, const float (*vertices)[2], const float *viewport)
 {
    uint64_t va;
    float (*v)[8] = hw->alloc(hw->user, 6 * sizeof *v, 64, &va);
@@ -568,7 +568,7 @@ hand_quad(struct mali_frame *f, const struct mali_hw *hw, const void *vskey, con
    const float cc[4][4] = {{1, 0, 0, 1}, {0, 1, 0, 1}, {0, 0, 1, 1}, {1, 1, 1, 1}};
    const unsigned ci[6] = {0, 1, 2, 2, 1, 3};
    for (unsigned i = 0; i < 6; i++) {
-      v[i][0] = vertices ? vertices[i][0] : px[i][0]; v[i][1] = vertices ? vertices[i][1] : px[i][1]; v[i][2] = 0.5f; v[i][3] = 1;
+      v[i][0] = vertices ? vertices[i][0] : px[i][0]; v[i][1] = vertices ? vertices[i][1] : px[i][1]; v[i][2] = viewport ? 1.0f : 0.5f; v[i][3] = 1;
       memcpy(&v[i][4], c ? c : cc[ci[i]], 4 * sizeof(float));
       if (c) v[i][7] = 1;
    }
@@ -577,7 +577,8 @@ hand_quad(struct mali_frame *f, const struct mali_hw *hw, const void *vskey, con
    d.gfx.vs = vskey; d.gfx.fs = fskey; d.gfx.prim = 8; d.gfx.nattr = 2;
    d.gfx.attr[0] = (struct mali_attr){.binding = 0, .offset = 0, .stride = 32, .vk_format = VK_FORMAT_R32G32B32A32_SFLOAT};
    d.gfx.attr[1] = (struct mali_attr){.binding = 0, .offset = 16, .stride = 32, .vk_format = VK_FORMAT_R32G32B32A32_SFLOAT};
-   d.vp[2] = (float)f->width; d.vp[3] = (float)f->height; d.vp[5] = 1.0f;
+    d.vp[2] = (float)f->width; d.vp[3] = (float)f->height; d.vp[5] = 1.0f;
+    if (viewport) memcpy(d.vp, viewport, 4 * sizeof(float));
    d.sc[2] = (int32_t)f->width; d.sc[3] = (int32_t)f->height;
    d.vb_va[0] = va; d.vb_size[0] = 6 * sizeof *v;
    d.count = 6; d.instance_count = 1;
@@ -611,7 +612,7 @@ hand_frame(const struct scene *const *rt, unsigned n, const struct mali_att *att
    }
    f.area[0] = ax; f.area[1] = ay; f.area[2] = aw; f.area[3] = ah;
    mali_soft_bind_program(vk, fk, prog);
-   if (!hand_quad(&f, hw, vk, fk, qx0, qy0, qx1, qy1, col, NULL)) { mali_frame_finish(&f); return 0; }
+   if (!hand_quad(&f, hw, vk, fk, qx0, qy0, qx1, qy1, col, NULL, NULL)) { mali_frame_finish(&f); return 0; }
    const bool ok = mali_soft_frame(hw, &f);
    mali_frame_finish(&f);
    CHECK(ok, "soft frame: %s", mali_soft_last()->why);
@@ -640,11 +641,39 @@ case_unequal_edges(void)
       clip[i][1] = xy[i][1] / 2.0f - 1.0f;
    }
    mali_soft_bind_program((const void *)&key_mrt_vs, (const void *)&key_mrt_fs, &PROG_MRT);
-   CHECK(hand_quad(&f, hw, &key_mrt_vs, &key_mrt_fs, 0, 0, 0, 0, white, clip), "triangles");
+   CHECK(hand_quad(&f, hw, &key_mrt_vs, &key_mrt_fs, 0, 0, 0, 0, white, clip, NULL), "triangles");
    CHECK(mali_soft_frame(hw, &f), "edge frame");
    mali_frame_finish(&f);
    float c[4]; readpx(&s, 1024, 0, c);
    CHECK(c[0] > 0.9f, "unequal-area shared edge lost interior sample: %f", c[0]);
+   scene_free(&s);
+   return 1;
+}
+
+static int
+case_far_depth_edge(void)
+{
+   struct scene s;
+   const float black[4] = {0, 0, 0, 1}, white[4] = {1, 1, 1, 1};
+   CHECK(scene_init(&s, 1, 1, VK_FORMAT_R8G8B8A8_UNORM, 0, black, 1), "init far depth scene");
+   const struct mali_hw *hw = mali_soft_device_hw(dev);
+   struct mali_frame f = {.width = 1, .height = 1, .samples = 1, .has_colour = true, .ncolour = 1,
+                          .area = {0, 0, 1, 1}, .colour = {.clear = true, .clear_color = {0, 0, 0, 1}}};
+   CHECK(hw && hand_target(&s, &f.colour), "target");
+   const float viewport[4] = {-6002, -6001, 8192, 8192};
+   const float xy[6][2] = {{0, 0}, {8192, 8191}, {8191, 8189.5f},
+                           {0, 0}, {8192, 8191}, {8191, 8189.5f}};
+   float clip[6][2];
+   for (unsigned i = 0; i < 6; i++) {
+      clip[i][0] = xy[i][0] / 4096.0f - 1.0f;
+      clip[i][1] = xy[i][1] / 4096.0f - 1.0f;
+   }
+   mali_soft_bind_program((const void *)&key_mrt_vs, (const void *)&key_mrt_fs, &PROG_MRT);
+   CHECK(hand_quad(&f, hw, &key_mrt_vs, &key_mrt_fs, 0, 0, 0, 0, white, clip, viewport), "far triangle");
+   CHECK(mali_soft_frame(hw, &f), "far depth frame");
+   mali_frame_finish(&f);
+   float c[4]; readpx(&s, 0, 0, c);
+   CHECK(c[0] > 0.9f, "far-plane interior sample was clipped: %f", c[0]);
    scene_free(&s);
    return 1;
 }
@@ -910,6 +939,7 @@ main(int argc, char **argv)
    if (!only || !strcmp(only, "load")) ok &= case_load();
    if (!only || !strcmp(only, "halves")) ok &= case_halves();
    if (!only || !strcmp(only, "unequal-edges")) ok &= case_unequal_edges();
+   if (!only || !strcmp(only, "far-depth-edge")) ok &= case_far_depth_edge();
    if (!only || !strcmp(only, "fan")) ok &= case_fan();
    p_DeviceWaitIdle(dev);
    printf("%s\n", ok && !g_fail ? "PASS" : "FAILED");

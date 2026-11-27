@@ -419,8 +419,8 @@ raster_tri(struct rctx *c, const float clip[3][4], const float vary[3][MALI_SOFT
       sz[i] = clip[i][2] / clip[i][3];
       iw[i] = 1.0f / clip[i][3];
    }
-   const float area = (sx[1] - sx[0]) * (sy[2] - sy[0]) - (sx[2] - sx[0]) * (sy[1] - sy[0]);
-   if (fabsf(area) < 1e-9f)
+   const double area = edge_value(sx[0], sy[0], sx[1], sy[1], sx[2], sy[2]);
+   if (fabs(area) < 1e-9)
       return;
    /* signed area in framebuffer coordinates (y down): the positive winding is counter-clockwise in NDC */
    const bool front = (area > 0.0f) == front_ccw;
@@ -435,7 +435,7 @@ raster_tri(struct rctx *c, const float clip[3][4], const float vary[3][MALI_SOFT
                         d->vp[4] + sz[1] * (d->vp[5] - d->vp[4]),
                         d->vp[4] + sz[2] * (d->vp[5] - d->vp[4])};
    const float s = area > 0 ? 1.0f : -1.0f;   /* make the edge functions positive inside */
-   const float iarea = 1.0f / (area * s);
+   const double iarea = 1.0 / (area * s);
 
    int x0 = (int)floorf(fminf(sx[0], fminf(sx[1], sx[2])));
    int x1 = (int)ceilf(fmaxf(sx[0], fmaxf(sx[1], sx[2])));
@@ -479,7 +479,9 @@ raster_tri(struct rctx *c, const float clip[3][4], const float vary[3][MALI_SOFT
              (e2 == 0 && !edge_is_top_left((sx[1] - sx[0]) * s, (sy[1] - sy[0]) * s)))
             continue;
          const float w0 = (float)(e0 * iarea), w1 = (float)(e1 * iarea), w2 = (float)(e2 * iarea);
-         const float zn = w0 * sz[0] + w1 * sz[1] + w2 * sz[2];   /* NDC depth, clipped against [0, 1] */
+         /* Anchor interpolation at vertex 0: a constant far-plane depth stays
+          * exactly 1 even if normalized weights round away from a sum of 1. */
+         const float zn = (float)(sz[0] + e1 * iarea * (sz[1] - sz[0]) + e2 * iarea * (sz[2] - sz[0]));
          if (depth_clip && (zn < 0.0f || zn > 1.0f))
             continue;
          /* the framebuffer depth the test and the store see is the viewport transform of the NDC depth */
