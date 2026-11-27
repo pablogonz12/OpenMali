@@ -339,6 +339,9 @@ kbase_bo_alloc(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo 
       struct kb_bo *hit = pool_take(k, size, flags);
       if (hit) {
          hit->host_lazy = true;   /* the next user has not touched it yet; contents are stale (Vulkan allows it) */
+         hit->cpu_dirty = true;   /* the last owner's writes were never MEM_SYNCed after its unmap: never skip the first sync */
+         hit->cpu_mapped = false;
+         hit->user_mem = (flags & MALI_BO_HOSTLAZY) && !(flags & MALI_BO_EXPORT);
          hit->hot = false;
          hit->gpu_writes = hit->synced_writes = 0;   /* a pooled BO starts with no pending write marks */
          *out = (struct mali_bo){.gpu_va = hit->gpu_va, .cpu = hit->cpu, .size = size, .flags = flags,
@@ -397,6 +400,13 @@ kbase_bo_alloc(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo 
     * until vkMapMemory (bo_host_touch). Before this, 4 swapchain dma-bufs were MEM_SYNCed (a real cache op on an imported dma-buf) at every submit. */
    bo->host_lazy = (flags & MALI_BO_HOSTLAZY) || ((flags & MALI_BO_EXPORT) && !(flags & MALI_BO_CACHED));
    bo->hot = (flags & MALI_BO_HOT) != 0;
+   /* MALI_SYNC_DIRTY: a new CPU-side BO starts dirty (the CPU may write it as soon as it is handed out; a CACHED one
+    * was zeroed and written back above), so its first submit still syncs it, exactly like before this tracking. */
+   bo->cpu_dirty = true;
+   bo->cpu_mapped = false;
+   /* MALI_SYNC_DIRTY covers only VkDeviceMemory this driver allocated and nobody else can map: NOT an exported dma-buf
+    * (foreign CPU writers we cannot see) and not a driver-internal BO (the front end does not call us for its writes). */
+   bo->user_mem = (flags & MALI_BO_HOSTLAZY) && !(flags & MALI_BO_EXPORT);
    (void)track_bo(k, bo, true);
    return 0;
 }
@@ -419,8 +429,31 @@ kbase_bo_wrote(struct mali_kdev *k, struct mali_bo *b)
 static void
 kbase_bo_host_touch(struct mali_kdev *k, struct mali_bo *b)
 {
+   if (!b || !b->priv)
+      return;
+   struct kb_bo *bo = b->priv;
+   bo->host_lazy = false;
+   /* MALI_SYNC_DIRTY: the CPU may write through this mapping at any time, so the BO is dirty until it is unmapped and
+    * a sync has covered it (mem_sync_bos keeps it dirty while cpu_mapped is set). */
+   bo->cpu_dirty = true;
+   bo->cpu_mapped = true;
+}
+
+/* MALI_SYNC_DIRTY: vkUnmapMemory. The bytes the CPU wrote are still not visible to the GPU, so cpu_dirty stays set:
+ * only the per-submit sync clears it, and only when the CPU can no longer write behind our back. */
+static void
+kbase_bo_host_unmap(struct mali_kdev *k, struct mali_bo *b)
+{
    if (b && b->priv)
-      ((struct kb_bo *)b->priv)->host_lazy = false;
+      ((struct kb_bo *)b->priv)->cpu_mapped = false;
+}
+
+/* MALI_SYNC_DIRTY: vkFlushMappedMemoryRanges / a driver CPU copy into an app BO (bo_host_touch already covers maps). */
+static void
+kbase_bo_host_dirty(struct mali_kdev *k, struct mali_bo *b)
+{
+   if (b && b->priv)
+      ((struct kb_bo *)b->priv)->cpu_dirty = true;
 }
 
 static int
@@ -707,6 +740,18 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
          continue;
       if (sel == SYNC_POLL && b->imported)
          continue;   /* see the poll path in kbase_fence_wait */
+      /* MALI_SYNC_DIRTY (CPU -> device direction only): a BO the CPU has not written since the last sync has nothing
+       * to push. Concretely: a VkDeviceMemory BO that was never mapped (host_lazy, skipped above) or whose last mapping
+       * was unmapped and already synced is skipped; a BO that is mapped RIGHT NOW is always synced, because the CPU can
+       * write it between this check and the next submit without telling us. Driver-internal BOs (arena, heap, geo, sync,
+       * TLS, CS) are not covered by the rule at all - they keep the per-submit sync - since only the front end knows who
+       * writes them. MALI_SYNC_DIRTY=0 restores the old "sync every mapped BO at every submit". */
+      if (!dev2cpu && b->user_mem) {
+         const char *dd = getenv("MALI_SYNC_DIRTY");
+         if (!dd || dd[0] != '0')
+            if (!b->cpu_dirty && !b->cpu_mapped)
+               continue;
+      }
       uint64_t wrote = 0;
       /* Imports are not marked per submission (the front end marks BOs it renders into), so a write-counter
        * check would either skip them or claim them synced before their submission completes: sync a foreign
@@ -723,6 +768,8 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
       int sr = kb_ioctl_fd(kb_fd(k->ctx), _IOW(KBASE_IOCTL_TYPE, 15, ms), &ms);
       if (dev2cpu && !b->imported && sr >= 0)
          b->synced_writes = wrote;   /* what this ioctl covered; a concurrent submit's mark stays pending */
+      else if (!dev2cpu && sr >= 0 && !b->cpu_mapped)
+         b->cpu_dirty = false;   /* the CPU cannot write it now: this ioctl covered everything it wrote */
    }
    pthread_mutex_unlock(&k->bo_lock);
 }
@@ -845,6 +892,8 @@ const struct mali_backend_ops mali_backend_kbase = {
    .gpu_timestamp = kbase_gpu_timestamp,
    .host_sync = kbase_host_sync,
    .bo_host_touch = kbase_bo_host_touch,
+   .bo_host_unmap = kbase_bo_host_unmap,
+   .bo_host_dirty = kbase_bo_host_dirty,
    .bo_wrote = kbase_bo_wrote,
    .submit_cs = kbase_submit_cs,
    .wait_counter = kbase_wait_counter,
