@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "mali_cmd.h"
 #include "mali_meta.h"
@@ -894,6 +895,44 @@ int main(int argc, char **argv)
    CHECK(CreateCommandPool(dev, &pci, NULL, &pool) == VK_SUCCESS, "CreateCommandPool");
    if (extra)
       test_stencil_store_recording(pool);
+   if (extra) {
+      /* Exercise real refusal sites with debugging disabled, including a
+       * different reason and an identical refusal in a second buffer. */
+      DFN(CmdDraw);
+      DFN(CmdDrawIndexed);
+      VkCommandBuffer a, b;
+      new_cmd(pool, &a);
+      new_cmd(pool, &b);
+      const char *dbg = getenv("MALI_PIPE_DBG");
+      char *saved_dbg = dbg ? strdup(dbg) : NULL;
+      unsetenv("MALI_PIPE_DBG");
+      FILE *log = tmpfile();
+      int saved_stderr = dup(STDERR_FILENO);
+      if (!log || saved_stderr < 0 || dup2(fileno(log), STDERR_FILENO) < 0) {
+         fprintf(stdout, "{\"error\":\"cannot capture stderr\"}\n");
+         exit(1);
+      }
+      CmdDraw(a, 3, 1, 0, 0);
+      CmdDraw(b, 3, 1, 0, 0);
+      CmdDrawIndexed(b, 3, 1, 0, 0, 0);
+      fflush(stderr);
+      dup2(saved_stderr, STDERR_FILENO);
+      close(saved_stderr);
+      rewind(log);
+      char got[1024] = {0};
+      size_t n = fread(got, 1, sizeof(got) - 1, log);
+      fclose(log);
+      if (saved_dbg) {
+         setenv("MALI_PIPE_DBG", saved_dbg, 1);
+         free(saved_dbg);
+      }
+      const char *want =
+         "mali_cmd: unsupported draw outside a rendering with a pipeline\n"
+         "mali_cmd: unsupported indexed draw outside a rendering, without a pipeline or index buffer\n";
+      CHECK(n == strlen(want) && !strcmp(got, want), "refusal stderr mismatch");
+      CHECK(EndCommandBuffer(a) == VK_ERROR_FEATURE_NOT_PRESENT, "first refusal not sticky");
+      CHECK(EndCommandBuffer(b) == VK_ERROR_FEATURE_NOT_PRESENT, "second refusal not sticky");
+   }
    struct vk_buffer *vb = make_buffer(F.vb.gpu_va, sizeof k_pos);
    VkBuffer vbh = vk_buffer_to_handle(vb);
 
