@@ -94,6 +94,7 @@ struct kb_bo {
 	bool host_lazy;  /* driver-level: CPU never touched yet (skip MEM_SYNC until bo_host_touch) */
 	uint64_t gpu_writes;   /* driver-level: GPU-write marks (kb_bo_wrote) since allocation */
 	uint64_t synced_writes; /* driver-level: gpu_writes value the last device->CPU MEM_SYNC covered */
+	bool cpu_wrote;  /* driver-level: the CPU wrote this BO's CACHED mapping since the last CPU->device MEM_SYNC */
 };
 
 /* ioctl with optional per-request counters: MALI_IOCTL_PROF=1 prints count and time by request (type/nr) at exit */
@@ -112,6 +113,10 @@ static inline void kb_wmb(void)
 	__sync_synchronize();
 #endif
 }
+/* The CPU wrote the mapping: only a KB_BO_CPU_CACHED mapping then needs a CPU->device MEM_SYNC (its dirty lines must be
+ * cleaned). A write-combined mapping (no KB_BO_CPU_CACHED) is Normal-NC: the stores are in memory once kb_wmb() has
+ * completed them, which is what PanVK relies on for coherent/write-combined CPU mappings. */
+static inline void kb_bo_mark_cpu_write(struct kb_bo *bo) { bo->cpu_wrote = true; }
 /* Cache maintenance for KB_BO_CPU_CACHED natives: clean+invalidate [off,off+len) (aarch64 `dc civac` from EL0). */
 void kb_bo_cache_flush_inv(const struct kb_bo *bo, size_t off, size_t len);
 /* DMA_BUF_IOCTL_SYNC around CPU access of an imported dma-buf (needed for cached heaps). */

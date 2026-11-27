@@ -21,6 +21,7 @@ extern unsigned kb_fake_memsync_count(uint64_t va);
 /* fake kernel: write into the BO's shadow (the fake "GPU cache"). The CPU mapping stays stale until a MEM_SYNC
  * type 2 (device->CPU) copies it back, so a skipped sync is observable as stale data. */
 extern int kb_fake_gpu_write(uint64_t va, size_t off, const void *src, size_t len);
+extern int kb_fake_gpu_read(uint64_t va, size_t off, void *dst, size_t len);   /* what the GPU sees of a BO */
 
 static int fails;
 #define EXPECT(c, ...) do { if (!(c)) { fails++; printf("FAIL  "); printf(__VA_ARGS__); printf("\n"); } else { printf("ok    "); printf(__VA_ARGS__); printf("\n"); } } while (0)
@@ -52,7 +53,9 @@ int main(void)
       EXPECT(kb_fake_memsync_count(hot.gpu_va) == h0n, "host_sync: hot BO not synced (%u)", kb_fake_memsync_count(hot.gpu_va) - h0n);
       uint64_t c0s[8] = {0};
       b->submit_cs(k, c0s, 0);
-      EXPECT(kb_fake_memsync_count(hot.gpu_va) - h0n == 1, "submit_cs: hot BO synced once (%u)", kb_fake_memsync_count(hot.gpu_va) - h0n);
+      /* the arena is write-combined: the dsb before the submit's doorbell is the ordering it needs, no ioctl */
+      EXPECT(kb_fake_memsync_count(hot.gpu_va) == h0n, "submit_cs: write-combined hot BO needs no MEM_SYNC (%u)",
+             kb_fake_memsync_count(hot.gpu_va) - h0n);
    }
    unsigned e0 = kb_fake_memsync_count(exp.gpu_va), c0 = kb_fake_memsync_count(expc.gpu_va), h0 = kb_fake_memsync_count(hl.gpu_va),
             i0 = kb_fake_memsync_count(imp.gpu_va), n0 = kb_fake_memsync_count(internal.gpu_va);
@@ -68,9 +71,20 @@ int main(void)
          e0 = kb_fake_memsync_count(exp.gpu_va); h0 = kb_fake_memsync_count(hl.gpu_va);
       }
    }
-   EXPECT(kb_fake_memsync_count(exp.gpu_va) - e0 >= N, "mapped export (persistent map): synced at each of %d submits (%u)", N, kb_fake_memsync_count(exp.gpu_va) - e0);
-   EXPECT(kb_fake_memsync_count(hl.gpu_va) - h0 >= N, "mapped VkDeviceMemory: synced at each of %d submits (%u)", N, kb_fake_memsync_count(hl.gpu_va) - h0);
-   EXPECT(kb_fake_memsync_count(expc.gpu_va) - c0 >= 2 * N, "CACHED export: never lazy, synced at each submit (%u)", kb_fake_memsync_count(expc.gpu_va) - c0);
+   /* CPU -> device policy: a write-combined mapping (no HOST_CACHED) never needs the ioctl; a cached one needs it
+    * only after a CPU write. The old policy synced every mapped BO on every submit (audit-perf item 1). */
+   EXPECT(kb_fake_memsync_count(exp.gpu_va) == e0, "mapped export (write-combined): no CPU->device MEM_SYNC in %d submits (%u)", N, kb_fake_memsync_count(exp.gpu_va) - e0);
+   EXPECT(kb_fake_memsync_count(hl.gpu_va) == h0, "mapped VkDeviceMemory (write-combined): no CPU->device MEM_SYNC in %d submits (%u)", N, kb_fake_memsync_count(hl.gpu_va) - h0);
+   EXPECT(kb_fake_memsync_count(expc.gpu_va) == c0, "CACHED export with no CPU write since the last clean: no MEM_SYNC (%u)", kb_fake_memsync_count(expc.gpu_va) - c0);
+   memset(expc.cpu, 0x5a, 64);
+   b->bo_cache(k, &expc, 0, 64, false);   /* vkFlushMappedMemoryRanges */
+   b->host_sync(k);
+   b->submit_cs(k, cs, 0);
+   EXPECT(kb_fake_memsync_count(expc.gpu_va) > c0, "CACHED export: one CPU->device MEM_SYNC after a CPU write");
+   c0 = kb_fake_memsync_count(expc.gpu_va);
+   b->host_sync(k);
+   b->submit_cs(k, cs, 0);
+   EXPECT(kb_fake_memsync_count(expc.gpu_va) == c0, "CACHED export: the next submit does not sync it again");
    EXPECT(kb_fake_memsync_count(imp.gpu_va) - i0 == 0, "imported dma-buf: untracked, no per-submit MEM_SYNC (known gap, pre-existing)");
 
 
@@ -192,6 +206,59 @@ int main(void)
       EXPECT(n_track >= 300 && n_track <= 600, "tracking syncs the written BO only (+ the in-flight one): %u MEM_SYNC for 300 waits", n_track);
       EXPECT(n_all == 1500, "full sweep: 5 BOs x 300 waits = %u", n_all);
    }
+   /* ---- CPU -> device policy: a write-combined mapping needs no MEM_SYNC (the dsb before the doorbell orders it);
+    * a CPU-cached one needs the clean, and only when the CPU wrote since the last clean. Before this, every mapped BO
+    * was MEM_SYNCed (op 1) on every submit: ~8-20 no-op ioctls per frame-submit for a DXVK/zink app (audit-perf item 1). */
+   {
+      enum { NWC = 8 };
+      struct mali_bo wc[NWC], cac;
+      if (b->bo_alloc(k, 65536, MALI_BO_HOSTLAZY | MALI_BO_CACHED, &cac)) { printf("FAIL  bo_alloc cached\n"); return 1; }
+      b->bo_host_touch(k, &cac);
+      for (int i = 0; i < NWC; i++) {
+         if (b->bo_alloc(k, 65536, MALI_BO_HOSTLAZY, &wc[i])) { printf("FAIL  bo_alloc wc\n"); return 1; }
+         b->bo_host_touch(k, &wc[i]);   /* vkMapMemory: a persistent UBO/staging ring */
+      }
+      /* the app fills its rings, exactly the per-frame CPU writes that used to cost an ioctl each */
+      for (int i = 0; i < NWC; i++) memset(wc[i].cpu, 0x40 + i, 256);
+      memset(cac.cpu, 0x99, 256);
+      b->bo_cache(k, &cac, 0, 256, false);   /* vkFlushMappedMemoryRanges on the cached mapping */
+
+      unsigned w0[NWC], k0 = kb_fake_memsync_count(cac.gpu_va);
+      for (int i = 0; i < NWC; i++) w0[i] = kb_fake_memsync_count(wc[i].gpu_va);
+      uint64_t cs2[8] = {0};
+      enum { NS = 5 };
+      for (int s = 0; s < NS; s++) {
+         for (int i = 0; i < NWC; i++) memset(wc[i].cpu, 0x60 + i, 256);   /* refill the ring every frame */
+         b->host_sync(k);
+         b->submit_cs(k, cs2, 0);
+      }
+      unsigned wc_total = 0;
+      for (int i = 0; i < NWC; i++) wc_total += kb_fake_memsync_count(wc[i].gpu_va) - w0[i];
+      unsigned cac_total = kb_fake_memsync_count(cac.gpu_va) - k0;
+      printf("memsync per submit (host fake kernel, %d mapped WC BOs + 1 cached):\n", NWC);
+      printf("  before (every mapped BO): MEM_SYNC %u + %u per %d submits = %.1f/submit\n",
+             NWC * NS, NS, NS, (double)(NWC * NS + NS) / NS);
+      printf("  after  (WC needs none, cached only when written): MEM_SYNC %u + %u per %d submits = %.1f/submit\n",
+             wc_total, cac_total, NS, (double)(wc_total + cac_total) / NS);
+      EXPECT(wc_total == 0, "write-combined mappings: no CPU->device MEM_SYNC at all (%u in %d submits)", wc_total, NS);
+      EXPECT(cac_total <= 1, "cached mapping: one MEM_SYNC for the write, not one per submit (%u in %d submits)", cac_total, NS);
+      uint8_t got = 0;
+      if (kb_fake_gpu_read(wc[3].gpu_va, 0, &got, 1)) { printf("FAIL  kb_fake_gpu_read\n"); return 1; }
+      EXPECT(got == 0x63, "write after map still reaches the GPU with no sync (GPU reads 0x%02x)", got);
+      got = 0;
+      if (kb_fake_gpu_read(cac.gpu_va, 0, &got, 1)) { printf("FAIL  kb_fake_gpu_read\n"); return 1; }
+      EXPECT(got == 0x99, "cached mapping: the flushed write reaches the GPU (0x%02x)", got);
+      /* escape hatch: MALI_SYNC_ALL=1 restores the old sweep for A/B */
+      for (int i = 0; i < NWC; i++) w0[i] = kb_fake_memsync_count(wc[i].gpu_va);
+      setenv("MALI_SYNC_ALL", "1", 1);
+      b->host_sync(k);
+      b->submit_cs(k, cs2, 0);
+      unsetenv("MALI_SYNC_ALL");
+      unsigned wc_old = 0;
+      for (int i = 0; i < NWC; i++) wc_old += kb_fake_memsync_count(wc[i].gpu_va) - w0[i];
+      EXPECT(wc_old == NWC, "MALI_SYNC_ALL=1: every mapped BO is synced again at the submit start (%u)", wc_old);
+   }
+
    /* the device -> CPU direction after a fence wait covers mapped BOs only */
    unsigned before = kb_fake_memsync_count(exp.gpu_va);
    static volatile uint64_t cnt = 1;
