@@ -248,6 +248,7 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
       p.zs_format = (enum kb_zs_format)f->zs.zs_format;
       p.zs_gpu_va = f->zs.va;
       p.zs_row_stride = f->zs.row_stride;
+      if (msaa) p.zs_layered_stride = f->zs.surface_stride;
       p.clear_depth = f->zs.clear ? f->zs.clear_depth : 0.0f;
       p.zs_no_store = !f->zs.store;
    }
@@ -257,6 +258,7 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
       p.s_row_stride = f->st.row_stride;
       p.clear_stencil = f->st.clear ? f->st.clear_stencil : 0;
       p.s_no_store = !f->st.store;
+      if (msaa) p.s_layered_stride = f->st.surface_stride;
    }
    p.arch = env->arch == 13 ? 13 : 0;
    int rc = kb_fb_pack(out, &p);

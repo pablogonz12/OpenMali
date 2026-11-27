@@ -117,7 +117,7 @@ int mali_meta_materialize(const struct mali_meta_job *j, struct mali_meta_mem *m
  * (va[0] depth, va[1] stencil). vp/sc are left to the caller. 0 or -errno. */
 enum mali_preload_kind { MALI_PRELOAD_COLOUR, MALI_PRELOAD_Z, MALI_PRELOAD_S, MALI_PRELOAD_ZS, MALI_PRELOAD_KINDS };
 struct mali_preload_src { uint64_t va[2]; uint32_t bytes[2], row[2], arg, bpp; uint32_t clear[4];
-                          uint32_t samples, sample_stride; };   /* samples > 1: per-sample preload (gl_SampleID), sample_stride = bytes per sample plane */   /* arg 19 (MALI_PRELOAD_COLOUR): constant colour quad of the 4 clear words (CmdClearAttachments), va[0] unused */
+                          uint32_t samples, sample_stride, stencil_sample_stride; };   /* sample strides are independent plane sizes */
 int mali_meta_preload(struct mali_meta_mem *mem, enum mali_preload_kind kind, const struct mali_preload_src *src, struct mali_draw *d);
 
 /* Software reference of the shaders: executes the job with GPU VAs interpreted as host pointers. */

@@ -1336,7 +1336,7 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          zsrc.va[0] = t.va;
          zsrc.row[0] = t.row_stride;
          /* every sample plane, not just sample 0: the per-sample variant reads gl_SampleID * surface_stride on */
-         zsrc.bytes[0] = t.row_stride * t.height * (t.samples > 1 ? t.samples : 1);
+          zsrc.bytes[0] = t.samples > 1 ? t.surface_stride * t.samples : t.row_stride * t.height;
          zsrc.arg = t.zs_format == 3 ? 1 : t.zs_format == 2 ? 2 : 0;   /* preload_zs.frag: 0 D32F, 1 D16, 2 D24 */
          /* multisampled: the per-sample variant reads sample gl_SampleID's plane (surface_stride bytes further on) */
          zsrc.samples = t.samples > 1 ? t.samples : 0;
@@ -1346,10 +1346,7 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       if (no_col) {
          f->width = t.width;
          f->height = t.height;
-         if (t.samples > 1) {
-            unsupported(cmd, "multisampled depth/stencil without a colour attachment");
-            return;
-         }
+          f->samples = t.samples > 1 ? t.samples : 1;
       }
       if (da->resolveMode != VK_RESOLVE_MODE_NONE || (t.samples > 1) != (f->samples == 4)) {
          unsupported(cmd, "depth resolve / depth sample count differs from the colour attachment");
@@ -1375,23 +1372,26 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          sload = true;
          zsrc.va[1] = t.s_va;
          zsrc.row[1] = t.s_row_stride;
-         zsrc.bytes[1] = t.s_row_stride * t.height * (t.samples > 1 ? t.samples : 1);   /* all sample planes (see bytes[0]) */
+          zsrc.bytes[1] = t.samples > 1 ? t.s_surface_stride * t.samples : t.s_row_stride * t.height;
          /* multisampled (the zink/CEF shape): each sample reads its own S8 plane before the pass' draws stencil-test
           * against it. Preloaded per sample like the multisampled colour LOAD; nothing here is sample-0 only. */
          zsrc.samples = t.samples > 1 ? t.samples : 0;
-         zsrc.sample_stride = t.samples > 1 ? t.surface_stride : 0;
+          zsrc.stencil_sample_stride = t.samples > 1 ? t.s_surface_stride : 0;
       }
       f->has_st = true;
       if (no_col) {
          f->width = t.width;
          f->height = t.height;
-         if (t.samples > 1) {
-            unsupported(cmd, "multisampled depth/stencil without a colour attachment");
-            return;
-         }
+         if (!f->has_zs)
+            f->samples = t.samples > 1 ? t.samples : 1;
+      }
+      if ((t.samples > 1) != (f->samples == 4) || sa->resolveMode != VK_RESOLVE_MODE_NONE) {
+         unsupported(cmd, "stencil resolve / stencil sample count differs from other attachment");
+         return;
       }
       f->st.va = t.s_va;
       f->st.row_stride = t.s_row_stride;
+      f->st.surface_stride = t.s_surface_stride;
       f->st.clear = sa->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR;
       f->st.clear_stencil = (uint8_t)sa->clearValue.depthStencil.stencil;
       f->st.store = sa->storeOp == VK_ATTACHMENT_STORE_OP_STORE;
