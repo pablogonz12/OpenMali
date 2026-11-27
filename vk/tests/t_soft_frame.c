@@ -670,6 +670,28 @@ case_unequal_edges(void)
 }
 
 static int
+case_left_edge(void)
+{
+   struct scene s;
+   const float black[4] = {0, 0, 0, 1}, white[4] = {1, 1, 1, 1};
+   CHECK(scene_init(&s, 4, 4, VK_FORMAT_R8G8B8A8_UNORM, 0, black, 1), "init left edge scene");
+   const struct mali_hw *hw = mali_soft_device_hw(dev);
+   struct mali_frame f = {.width = 4, .height = 4, .samples = 1, .has_colour = true, .ncolour = 1,
+                          .area = {0, 0, 4, 4}, .colour = {.clear = true, .clear_color = {0, 0, 0, 1}}};
+   CHECK(hw && hand_target(&s, &f.colour), "target");
+   mali_soft_bind_program((const void *)&key_mrt_vs, (const void *)&key_mrt_fs, &PROG_MRT);
+   CHECK(hand_quad(&f, hw, &key_mrt_vs, &key_mrt_fs, -.75f, -.75f, .25f, .25f,
+                   white, NULL, 0, NULL, NULL), "quad");
+   CHECK(mali_soft_frame(hw, &f), "left edge frame");
+   mali_frame_finish(&f);
+   float c[4];
+   readpx(&s, 0, 1, c); CHECK(c[0] > .9f, "left edge excluded: %f", c[0]);
+   readpx(&s, 2, 1, c); CHECK(c[0] < .1f, "right edge included: %f", c[0]);
+   scene_free(&s);
+   return 1;
+}
+
+static int
 case_far_depth_edge(void)
 {
    struct scene s;
@@ -1036,6 +1058,7 @@ main(int argc, char **argv)
    if (!only || !strcmp(only, "halves")) ok &= case_halves();
    if (!only || !strcmp(only, "unequal-edges")) ok &= case_unequal_edges();
    if (!only || !strcmp(only, "far-depth-edge")) ok &= case_far_depth_edge();
+   if (!only || !strcmp(only, "left-edge")) ok &= case_left_edge();
    if (!only || !strcmp(only, "fan")) ok &= case_fan();
    p_DeviceWaitIdle(dev);
    printf("%s\n", ok && !g_fail ? "PASS" : "FAILED");
