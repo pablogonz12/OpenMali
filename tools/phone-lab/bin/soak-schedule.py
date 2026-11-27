@@ -41,3 +41,17 @@ def run(minutes, callback, clock=time.monotonic, sleep=time.sleep):
         if delay > 0:
             sleep(delay)
         callback(due, clock() - start, action, index)
+
+
+def pacing(duration, interval, callback, clock=time.monotonic, sleep=time.sleep):
+    """Send inputs at absolute offsets, then wait for the capture end."""
+    start = clock()
+    if interval:
+        for due in range(interval, duration, interval):
+            delay = start + due - clock()
+            if delay > 0:
+                sleep(delay)
+            callback(due, clock() - start)
+    delay = start + duration - clock()
+    if delay > 0:
+        sleep(delay)

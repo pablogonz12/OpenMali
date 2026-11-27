@@ -15,11 +15,14 @@ mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 now = [0.]
 old = mod.schedule.run
+old_pacing = mod.schedule.pacing
 reader_started = threading.Event()
 def fake_sleep(s):
     assert reader_started.wait(5), "background reader did not start"
     now[0] += s
 mod.schedule.run = lambda minutes, cb: old(minutes, cb, lambda: now[0], fake_sleep)
+mod.schedule.pacing = lambda duration, interval, cb: old_pacing(
+    duration, interval, cb, lambda: now[0], fake_sleep)
 calls = []
 input_times = []
 def fake(args, timeout=25):
@@ -42,7 +45,7 @@ def fake(args, timeout=25):
             time.sleep(20)  # Deliberately much slower than the input loop.
         Path(cmd[2], "steam.log").write_text("[ gpu_compositing ]: enabled\n")
     if cmd[0] == "pacing":
-        return '{"fpsOnScreen":7}'
+        return '{"fpsOnScreen":7,"frames":210,"presentToPresentMs":{"10":94,"20":5,"30":1}}'
     return "{}"
 mod.command = fake
 with tempfile.TemporaryDirectory() as d:
@@ -63,4 +66,17 @@ with tempfile.TemporaryDirectory() as d:
         due, actual, action, _ = line.split("\t", 3)
         if action == "right":
             assert abs(float(due) - float(actual)) <= 1, line
+now[0] = 0
+input_times.clear()
+with tempfile.TemporaryDirectory() as d:
+    assert mod.run("x4", d, 0, 5) == 0
+    result = json.loads(Path(d, "soak-data.json").read_text())
+    assert result["scenario"] == "steam_shelf_scroll_right_every_5s"
+    assert input_times[0] == ("b", 0)
+    assert [t for action, t in input_times if action == "right"] == [
+        5, 10, 15, 20, 25, 35, 40, 45, 50, 55, 65, 70, 75, 80, 85]
+    assert len(result["pacing"]) == 3
+    for rep in result["pacing"]:
+        assert (rep["displayed_fps"], rep["frames"], rep["p95_interval_ms"], rep["p99_interval_ms"]) == (7, 210, 20, 20)
+    assert Path(result["pacing_screenshot"]).name == "pre-pacing.jpg"
 print("fake ddc: 20-second log stall did not delay input deadlines")

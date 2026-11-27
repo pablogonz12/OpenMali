@@ -147,7 +147,7 @@ case "$1" in
   --rejudge) rejudge "${2:-}"; exit $?;;
 esac
 name=$1; shift
-app=3405340; launch=1; expect=""; secs=15; settle=45; dry=0; bridge=0; envs=(); soak_minutes=0; soak_label=""
+app=3405340; launch=1; expect=""; secs=15; settle=45; dry=0; bridge=0; envs=(); soak_minutes=-1; soak_label=""; pacing_scroll=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --app) app=$2; shift 2;;            --no-launch) launch=0; shift;;
@@ -156,10 +156,13 @@ while [ $# -gt 0 ]; do
     --dry-run) dry=1; shift;;           --bridge-ref) bridge=1; shift;;
     --soak-internal) soak_minutes=$2; shift 2;;
     --soak-label-internal) soak_label=$2; shift 2;;
+    --pacing-scroll) pacing_scroll=$2; shift 2;;
     --rejudge) rejudge "${2:-}"; exit $?;;
     *) usage;;
   esac
 done
+[[ "$pacing_scroll" =~ ^(0|[1-9][0-9]*)$ ]] || { echo "invalid pacing scroll" >&2; exit 2; }
+[[ "$soak_minutes" =~ ^(-1|0|[1-9][0-9]*)$ ]] || { echo "invalid soak duration" >&2; exit 2; }
 if ! phone_lock "$name"; then
   python3 - "$name" "${PHONE_LOCK_REASON:-PHONE_LOCKED}" <<'PY'
 import json, sys
@@ -199,7 +202,7 @@ try:
 except (OSError, subprocess.SubprocessError, ValueError):
     d["fault"] = None
 d["read"] = [p for p in (f"{out}/shelf.jpg", f"{out}/g1.jpg", f"{out}/g2.jpg") if os.path.exists(p)]
-if soak_minutes != "0":
+if soak_minutes != "-1":
     d["label"] = soak_label
     try:
         extra = json.load(open(f"{out}/soak-data.json"))
@@ -221,7 +224,7 @@ if dry != "1":
     run["engine_files"] = d.get("engine_files") or []
     try: open(f"{out}/run.json", "w").write(json.dumps(run, ensure_ascii=False) + "\n")
     except OSError: pass
-    if soak_minutes != "0":
+    if soak_minutes != "-1":
         open(f"{out}/soak.json", "w").write(s + "\n")
 if dry != "1" and d.get("verdict") not in ("REFUSED", "DRY_RUN"):
     os.makedirs(f"{M}/phones/{phone}", exist_ok=True)
@@ -506,9 +509,9 @@ if [ -s "$out/vulkaninfo.txt" ]; then mkdir -p "$M/phones/$P_NAME"; cp "$out/vul
 gl=$(gtext 'DISPLAY=:1 glxinfo -B 2>/dev/null | grep -E "OpenGL (core profile |ES profile )?version string|Max core profile version" | head -5')
 set_r gl "$(python3 -c 'import json,sys; print(json.dumps([" ".join(l.split()) for l in sys.argv[1].splitlines() if l.strip()]))' "$gl")"
 
-if [ "$soak_minutes" != 0 ]; then
+if [ "$soak_minutes" != -1 ]; then
   log "soak: ${soak_minutes} minutes; caller must READ every screenshot"
-  python3 "$M/bin/soak-run.py" "$P_NAME" "$out" "$soak_minutes"
+  python3 "$M/bin/soak-run.py" "$P_NAME" "$out" "$soak_minutes" "$pacing_scroll"
   rc=$?
   case $rc in
     0) verdict=GPU_STABLE; reason="no sampled GPU-loss marker; READ screenshots including pre-pacing.jpg";;

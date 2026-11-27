@@ -51,6 +51,9 @@ explicitly if other machines can run the farm. `M` overrides the lab root.
   and `REFUSED` as no change. `BLACK`, `STATIC`, `START_FAILED`, `WRONG_BUILD`
   and `INTERRUPTED` are not successful product-path results. Inspect captured
   images and logs, and stop if restoration failed.
+- `soak <phone> --minutes 0 --pacing-scroll 5` runs three 30-second pacing
+  reps while sending right every five seconds; read `pre-pacing.jpg` before
+  interpreting results. Percentiles are estimated from integer histogram bins.
 
 Golden images are manually approved references, never automatically promoted
 from a run. `PICTURE_DRIFT` signals a difference, not a pass or failure.

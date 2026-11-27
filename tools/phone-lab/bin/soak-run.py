@@ -2,6 +2,7 @@
 """Internal soak loop, run only inside smoke's guarded session."""
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import queue
@@ -36,11 +37,28 @@ def json_output(text):
     return json.loads(text[text.index("{"):])
 
 
-def run(phone, out, minutes):
+def pacing_summary(data):
+    hist = data.get("presentToPresentMs") or {}
+    bins = sorted((int(ms), int(n)) for ms, n in hist.items() if int(n) > 0)
+    total = sum(n for _, n in bins)
+    def percentile(p):
+        rank, seen = math.ceil(total * p), 0
+        for ms, n in bins:
+            seen += n
+            if seen >= rank:
+                return ms
+        return None
+    return {"displayed_fps": data.get("fpsOnScreen"), "frames": data.get("frames"),
+            "p95_interval_ms": percentile(.95), "p99_interval_ms": percentile(.99),
+            "raw": data}
+
+
+def run(phone, out, minutes, scroll=0):
     ddc = str(M / "bin/ddc")
     out = Path(out)
     result = {"screenshots": [], "pacing_screenshot": None, "gpu_pid_restarts": 0,
-              "first_marker": None, "pacing": [], "counters": None}
+              "first_marker": None, "pacing": [], "counters": None,
+              "scenario": f"steam_shelf_scroll_right_every_{scroll}s" if scroll else "steam_shelf_idle"}
     previous_pids = None
     baseline = None
     failure = None
@@ -148,22 +166,50 @@ def run(phone, out, minutes):
 
         thread = threading.Thread(target=reader, name="soak-log-reader", daemon=True)
         thread.start()
+        pacing_thread = None
         try:
-            schedule.run(minutes, event)
+            if minutes:
+                schedule.run(minutes, event)
+            else:
+                samples.put((0, 0))
+            call("input", "pad", "b")
+            result["pacing_screenshot"] = shot("pre-pacing")
+            for i in range(3):
+                capture = {}
+                ready = threading.Event()
+                def capture_pacing():
+                    ready.set()
+                    try:
+                        capture["raw"] = call("pacing", "--seconds", "30", timeout=90)
+                    except Exception as exc:
+                        capture["error"] = str(exc)
+                pacing_thread = threading.Thread(target=capture_pacing, daemon=True)
+                pacing_thread.start()
+                ready.wait()
+                base = minutes * 60 + i * 30
+                def input_tick(due, actual):
+                    if sample_errors:
+                        raise RuntimeError("background sample failed: " + sample_errors[0])
+                    call("input", "pad", "right")
+                    log(base + due, base + actual, "pacing_right", i + 1)
+                schedule.pacing(30, scroll, input_tick)
+                pacing_thread.join(timeout=95)
+                if pacing_thread.is_alive() or "error" in capture:
+                    raise RuntimeError("pacing failed: " + capture.get("error", "timeout"))
+                result["pacing"].append(pacing_summary(json_output(capture["raw"])))
+                log(base + 30, base + 30, "pacing", i + 1)
+                if i == 1:
+                    samples.put((base + 30, base + 30))
             samples.put(None)
             thread.join()
             if sample_errors:
                 raise RuntimeError("background sample failed: " + sample_errors[0])
-            call("input", "pad", "b")
-            result["pacing_screenshot"] = shot("pre-pacing")
-            for i in range(3):
-                raw = call("pacing", "--seconds", "30", timeout=90)
-                result["pacing"].append(json_output(raw))
-                log(minutes * 60, minutes * 60, "pacing", i + 1)
         except (OSError, subprocess.SubprocessError, ValueError, KeyError, RuntimeError, zipfile.BadZipFile) as exc:
             failure = str(exc)
             log(-1, -1, "error", failure)
         finally:
+            if pacing_thread is not None and pacing_thread.is_alive():
+                pacing_thread.join(timeout=95)
             if thread.is_alive():
                 samples.put(None)
                 thread.join()
@@ -175,4 +221,4 @@ def run(phone, out, minutes):
 
 
 if __name__ == "__main__":
-    sys.exit(run(sys.argv[1], sys.argv[2], int(sys.argv[3])))
+    sys.exit(run(sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])))
