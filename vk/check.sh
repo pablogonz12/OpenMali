@@ -45,9 +45,13 @@ DXVK_MISSING_MSAA=$DXVK_MISSING
 LOADER_ENV="VK_DRIVER_FILES=$OUT/mali_icd.json VK_ICD_FILENAMES=$OUT/mali_icd.json VK_LOADER_LAYERS_DISABLE=~all~"
 
 run() { # name, expected exit status, command...
-   local name=$1 want=$2 out rc; shift 2
+   local name=$1 want=$2 out rc first; shift 2
    out=$(timeout -k 5 120 env "$@" 2>&1); rc=$?
-   if [ $rc -eq "$want" ]; then echo "ok    $name"
+   first=$(printf '%s\n' "$out" | head -1)
+   # A case that cannot run here says so in its first line ("skipped: ..."): report it as skip, never as ok, so a
+   # missing gamescope cannot make a whole WSI case look green (CR thread, vk/check.sh:312).
+   if [ $rc -eq "$want" ] && [ "${first#skipped}" != "$first" ]; then echo "skip  $name ($first)"
+   elif [ $rc -eq "$want" ]; then echo "ok    $name"
    elif [ $rc -eq 124 ] || [ $rc -eq 137 ]; then echo "FAIL  $name TIMEOUT (120 s, exit $rc)"; fail=1
    else echo "FAIL  $name (exit $rc, want $want)"; fail=1; fi
    if [ $verbose = 1 ] || [ $rc -ne "$want" ]; then echo "$out" | sed 's/^/        /'; fi
@@ -77,11 +81,6 @@ else
    echo "FAIL  blend equation (build)"; sed 's/^/        /' "$OUT/t_blend_eq.build.log"; fail=1
 fi
 for g in v11 v13; do run "vk_mem $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_mem" --direct "$OUT/libvulkan_mali.so"; done
-for g in v10 v13; do run "wsi dump names $g" 0 "$V/tests/xwsi-dump.sh" "$OUT" $g; done
-for g in v10 v13; do run "two conns $g" 0 "$V/tests/xwsi-two-conns.sh" "$OUT" $g; done
-for g in v10 v13; do run "threads $g" 0 "$V/tests/xwsi-threads.sh" "$OUT" $g; done
-for g in v10 v13; do run "caps2 $g" 0 "$V/tests/xwsi-caps2.sh" "$OUT" $g; done
-for g in v10 v13; do run "debug sw on dri3 $g" 0 "$V/tests/xwsi-debug-sw.sh" "$OUT" $g; done
 # heap 0 is the commit cap: with a cap below the fixed 1 GiB default, maxMemoryAllocationSize must be clamped to
 # the heap we report (VkPhysicalDeviceLimits), and the whole heap must still be allocatable.
 for g in v10 v13; do run "vk_mem cap 256 MiB $g" 0 MALI_VRAM_CAP_MB=256 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_mem" --direct "$OUT/libvulkan_mali.so"; done
@@ -401,6 +400,26 @@ run "vk_ref v10"        0 $F "$OUT/t_vk_ref" $DL --spv-dir "$V/shader"
 run "zink host triangle v10" 0 "$V/tests/zink-host.sh" "$OUT" v10
 # X11 WSI (skips itself without gamescope, t_vk_xcb, or an ICD built from a Mesa tree with -Dplatforms=x11): xcb swapchain + glxinfo -B via zink
 for g in v10 v13; do run "x11 wsi host $g" 0 "$V/tests/xwsi-host.sh" "$OUT" $g; done
+# MALI_WSI_DUMP names the process and the chain (<prefix>-<comm>-<pid>-sc<N>-<frame>.ppm) so two processes cannot
+# overwrite each other, and MALI_WSI_DEBUG prints one summary line per chain every N frames (not per frame).
+for g in v10 v13; do run "wsi dump names $g" 0 "$V/tests/xwsi-dump.sh" "$OUT" $g; done
+# The same server without DRI3 (the X4's Xwayland: no DRM node, so MIT-SHM/PutImage is the only present path). zink asks
+# surface support first and stops on FALSE (zink_kopper.c:130-132), so the switch has to be taken at that query and not in
+# vkCreateSwapchainKHR: this case fails on such a driver with "surface not supported by the graphics queue".
+for g in v10 v13; do run "x11 no-dri3 $g" 0 "$V/tests/xwsi-nodri3.sh" "$OUT" $g; done
+# ...and it must stay an X11 decision: wsi.sw is device-wide, so the same flip used to turn every Wayland swapchain of the
+# process into a wl_shm/CPU one (wsi_common_wayland.c:3940) - on X8 the gamescope WSI layer's swapchain, whose shm (memfd)
+# buffers no dma-buf import can take (298 x vkGetMemoryFdPropertiesKHR -> VK_ERROR_INVALID_EXTERNAL_HANDLE in x8-1121-005438).
+for g in v10 v13; do run "wl after x11 no-dri3 $g" 0 "$V/tests/xwsi-wl-after-x11.sh" "$OUT" $g; done
+# Mesa's own software request (MESA_VK_WSI_DEBUG=sw) on a DRI3 server: the device is built for software (no
+# GetMemoryFdKHR), so the X11 swapchain must stay software too - #323 pushed it onto the dma-buf path and
+# wsi_common_x11 dereferenced the NULL export callback (SIGSEGV, exit 139, CMF + X8 on integration@20bb6c6).
+for g in v10 v13; do run "debug sw on dri3 $g" 0 "$V/tests/xwsi-debug-sw.sh" "$OUT" $g; done
+# CR #323 N2/N4/N5 on the X11 path: the software decision is per connection, a blocked acquire stalls nothing, and the
+# *2KHR surface queries answer what the 1-forms answer.
+for g in v10 v13; do run "two conns $g" 0 "$V/tests/xwsi-two-conns.sh" "$OUT" $g; done
+for g in v10 v13; do run "threads $g" 0 "$V/tests/xwsi-threads.sh" "$OUT" $g; done
+for g in v10 v13; do run "caps2 $g" 0 "$V/tests/xwsi-caps2.sh" "$OUT" $g; done
 for g in v10 v13; do run "x11 shm leak $g" 0 "$V/tests/xwsi-shm-leak.sh" "$OUT" $g; done
 for g in v10 v13; do run "x11 shm gate $g" 0 "$V/tests/xwsi-shm-gate.sh" "$OUT" $g; done
 for g in v10 v13; do run "wl mock host $g" 0 "$V/tests/wlmock-host.sh" "$OUT" $g; done
