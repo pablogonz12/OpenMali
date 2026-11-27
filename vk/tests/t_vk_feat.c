@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|provoking|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|tf_reject|tf_write|tf_default|tf_inactive|tf_reset|tf_multi|tf_overflow|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|quadsize|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|samplerate|dparams|gather|gatherlim|fsstore|memmodel|robust2|imgmax] [--robust2]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only firstinst|provoking|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|tf_reject|tf_write|tf_default|tf_inactive|tf_reset|tf_multi|tf_overflow|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|quadsize|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|samplerate|dparams|gather|gatherlim|fsstore|memmodel|robust2|imgmax|vsstore] [--robust2]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -80,7 +80,7 @@ static VkBool32 g_lr_rect, g_lr_bres, g_lr_smooth, g_lr_stip_rect, g_lr_stip_bre
    X(UpdateDescriptorSets) X(CreateSampler) X(DestroySampler) X(CreateBufferView) X(DestroyBufferView) X(CmdBindDescriptorSets) X(CmdCopyBufferToImage) X(CmdClearColorImage)      \
    X(CmdPipelineBarrier) X(CreateComputePipelines) X(CmdDispatch) X(CmdCopyImageToBuffer) X(GetBufferDeviceAddress) \
    X(CreateSamplerYcbcrConversion) X(DestroySamplerYcbcrConversion) X(CreateRenderPass2) X(CmdBeginRenderPass2) X(CmdEndRenderPass2) \
-   X(CmdBindVertexBuffers) X(InvalidateMappedMemoryRanges)
+   X(CmdBindVertexBuffers) X(InvalidateMappedMemoryRanges) X(FlushMappedMemoryRanges)
 
 #define DECL(n) static PFN_vk##n n;
 DEV_FNS(DECL)
@@ -3400,6 +3400,112 @@ imgmax_sample2d(uint32_t dim)
    return 1;
 }
 
+/* vertexPipelineStoresAndAtomics (zink GL 4.2 gate, notes/zink-gl-version.md:44): the vertex stage stores i+1 into an SSBO and
+ * does atomicAdd/atomicMax on it, keeping what each atomic returned (oldc[]). The binding is VK_SHADER_STAGE_VERTEX_BIT only and
+ * vsstore.frag just passes the colour through, so whatever lands in the buffer came from the vertex stage. Stores and atomics
+ * share the one feature bit, so both are checked: an atomic that quietly returned 0 would still leave data[] correct.
+ * The counter is an exact count, not a lower bound: an IDVS vertex program runs once per vertex in the vertex job and again
+ * per tile in the varying job, and mali_compile.c lower_vs_side_effects puts every VS store/atomic behind the FAU
+ * SHADER_OUTPUT position test so only the first instance acts. A counter of 12 is that guard missing (PR #372). */
+static int
+test_vsstore(void)
+{
+   /* Advertised on arch >= 13 (mali_physical_device.c); on the older fake/newer arch the bit is false and MALI_EXPERIMENTAL_VSSTORE=1
+    * is how the falsifier is re-run anyway. No validation layer checks the bit, so the pipeline runs either way. */
+   const int forced = getenv("MALI_EXPERIMENTAL_VSSTORE") != NULL;
+   if (!g_feat.vertexPipelineStoresAndAtomics && !forced) {
+      printf("{\"test\":\"vsstore\",\"skipped\":\"vertexPipelineStoresAndAtomics not advertised (MALI_EXPERIMENTAL_VSSTORE=1 runs it anyway)\",\"ok\":true}\n");
+      return 1;
+   }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   enum { N = 26 };   /* count, maxi, data[8], oldc[8], oldm[8] (vsstore.vert) */
+   struct hbuf sb;
+   if (!hbuf_create(&sb, N * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+   memset(sb.p, 0, N * 4);
+   ((uint32_t *)(void *)sb.p)[1] = 3;   /* maxi starts at 3: atomicMax(maxi, 5) must return that 3 once, not 0 */
+   {   /* hbuf_create only requires HOST_VISIBLE: on a non-coherent type this CPU initialization would not reach the GPU,
+        * and the atomics would start from whatever the allocation held */
+      VkMappedMemoryRange mmr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = sb.m, .offset = 0, .size = VK_WHOLE_SIZE};
+      (void)FlushMappedMemoryRanges(dev, 1, &mmr);
+   }
+   VkDescriptorSetLayoutBinding lb = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1,
+                                      .stageFlags = VK_SHADER_STAGE_VERTEX_BIT};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &lb};
+   VkDescriptorSetLayout dsl;
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "vsstore: dsl");
+   VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &ps};
+   VkDescriptorPool pool;
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &pool) == VK_SUCCESS, "vsstore: dpool");
+   VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = pool, .descriptorSetCount = 1, .pSetLayouts = &dsl};
+   VkDescriptorSet set;
+   CHECK(AllocateDescriptorSets(dev, &dai, &set) == VK_SUCCESS, "vsstore: alloc set");
+   VkDescriptorBufferInfo bi = {sb.b, 0, VK_WHOLE_SIZE};
+   VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 0, .descriptorCount = 1,
+                             .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &bi};
+   UpdateDescriptorSets(dev, 1, &w, 0, NULL);
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   if (!make_pipe(&t, "vsstore.vert.spv", "vsstore.frag.spv", dsl, 0, &lay, &pipe)) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "vsstore: cmdbuf");
+   begin_pass(cb, &t, pipe);
+   CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, lay, 0, 1, &set, 0, NULL);
+   CmdDraw(cb, 6, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   {   /* the shader writes the SSBO: make them visible to the host before the readback (a fence only says the
+        * submission finished), and invalidate if the allocation is not coherent */
+      VkBufferMemoryBarrier bb = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                                  .dstAccessMask = VK_ACCESS_HOST_READ_BIT, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                  .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .buffer = sb.b, .offset = 0,
+                                  .size = VK_WHOLE_SIZE};
+      CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 1, &bb, 0, NULL);
+   }
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      VkMappedMemoryRange mmr = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = sb.m, .offset = 0, .size = VK_WHOLE_SIZE};
+      (void)InvalidateMappedMemoryRanges(dev, 1, &mmr);   /* ignored where the type is coherent */
+   }
+   if (!g_fake) {
+      const uint32_t *b = (const uint32_t *)(const void *)sb.p;
+      /* The spec only requires at least one execution per vertex, but the driver's contract here is exactly one: the
+       * position|attribute IDVS instance runs the store and the atomic, the per-tile varying instance skips them
+       * (mali_compile.c lower_vs_side_effects). 12 was the bug of #372, so the count is exact. */
+      if (b[0] != 6) {   /* which vertex indices ran? data[i] = i+1 says lane i stored; oldc[i] = its atomicAdd return */
+         printf("{\"diag\":\"vsstore\",\"count\":%u,\"data\":[%u,%u,%u,%u,%u,%u,%u,%u],\"oldc\":[%u,%u,%u,%u,%u,%u,%u,%u]}\n", b[0],
+                b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15], b[16], b[17]);
+      }
+      CHECK(b[0] == 6, "vsstore: atomicAdd counter %u, expected exactly 6 (an IDVS instance repeated the VS side effect)", b[0]);
+      CHECK(b[1] == 5, "vsstore: atomicMax %u expected 5", b[1]);
+      {   /* the return values: the first atomicMax saw the initialized 3, every other one 5. A driver that updates maxi
+           * correctly but returns 0 would leave no 3 here and still pass the final-maximum check. */
+         unsigned n3 = 0, n5 = 0;
+         for (uint32_t i = 0; i < 6; i++) {
+            n3 += b[18 + i] == 3;
+            n5 += b[18 + i] == 5;
+            CHECK(b[18 + i] == 3 || b[18 + i] == 5, "vsstore: atomicMax returned %u for vertex %u, expected 3 (first) or 5", b[18 + i], i);
+         }
+         CHECK(n3 == 1 && n5 == 5, "vsstore: atomicMax returns %u x 3 and %u x 5 for 6 vertices", n3, n5);
+      }
+      for (uint32_t i = 0; i < 6; i++) CHECK(b[2 + i] == i + 1, "vsstore: data[%u] = %u expected %u", i, b[2 + i], i + 1);
+      uint32_t seen = 0;
+      for (uint32_t i = 0; i < 6; i++) {
+         CHECK(b[10 + i] < 6, "vsstore: atomicAdd returned %u for vertex %u", b[10 + i], i);
+         seen |= 1u << b[10 + i];
+      }
+      CHECK(seen == 0x3f, "vsstore: the six atomicAdd returns are not 0..5 (0x%x)", seen);
+      printf("{\"test\":\"vsstore\",\"count\":%u,\"vs_runs_per_vertex\":%u,\"max\":%u,\"forced\":%s,\"ok\":true}\n",
+             b[0], b[0] / 6, b[1], forced ? "true" : "false");   /* vs_runs_per_vertex must read 1 */
+   } else printf("{\"test\":\"vsstore\",\"skipped\":\"pixels+memory: fake backend\",\"ok\":true}\n");
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   DestroyDescriptorPool(dev, pool, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
+   hbuf_destroy(&sb);
+   tgt_destroy(&t);
+   return 1;
+}
 /* maxImageDimension{1D,2D,Cube}, 3D, maxImageArrayLayers, and the framebuffer/viewport limits that must match them */
 static int
 test_imgmax(void)
@@ -4221,6 +4327,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("memmodel")) ok &= test_memmodel();
    if (ok && CASE_ON("fsstore")) ok &= test_fsstore();
    if (ok && CASE_ON("imgmax")) ok &= test_imgmax();
+   if (ok && CASE_ON("vsstore")) ok &= test_vsstore();
    if (ok && CASE_ON("privdata")) ok &= test_privdata();
 
    DeviceWaitIdle(dev);

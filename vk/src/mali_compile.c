@@ -34,7 +34,7 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 42 /* 42: xfb/xfb_pc are part of the cache key and MALI_XFB_PLAIN (an XFB shader that stores nothing) is a legal compile instead of a cache-hit copy of the STORES binary, so an XFB vertex program's code differs from 41 ; 41: the gl_PointSize output stripped for a non-point topology also fixes the deref modes, so such a VS now compiles (it aborted nir_validate and every such pipeline failed to create) ; 40: the robust store bound spans the lowest..highest written component (a sparse write mask left a gap uncounted) and rejects a wrapping component offset, so the code differs from 39 ; 39: robust SSBO stores are bounded by our own wrap-safe predicate instead of Mesa's 32-bit "offset + size - 1" test (a scalar-layout vec4 at 0xfffffff4 wrapped to 3 and wrote past the descriptor), so their code differs from 38 ; 38: the get_ssbo_size/get_ubo_size lowering runs for every shader (a non-robust shader with a size query kept an intrinsic Valhall does not have), so its code differs from 37 ; 37: robust load bounds reject a wrapping end offset (offset 0xfffffff4 + 4 summed to 3 and passed the size test) and the pass invalidates metadata (it inserts an if), so a robust program's code differs from 36 ; 36: number collision on 34 merged -- main's 34 (noperspective varyings) and this lane's 34/35 (robustness2 size query, then out-of-bounds loads returning zero) both change generated code, so neither alone may be reused ; 35: robustness2 out-of-bounds LOADS return zero (mali_descriptor_lower.c lower_load_bounds wraps them in an if; Mesa's pass only rewrote the offset, which read element 0), so a robust program's code differs from 34 ; 34: robustness2 buffer bounds: get_ssbo_size/get_ubo_size is lowered to a load of dw1 of the hardware Buffer descriptor through resource table 62 (mali_descriptor_lower.c lower_size_query), so a robust program's code differs from 33 ; 33: a texelFetch (txf/txf_ms) of a combined image sampler takes the sampler half of that binding instead of the all-zero dummy sampler (the fetch returned 0 on the phone) ; 32: nir_lower_xfb_to_stores keeps the captured outputs for rasterization (keep_outputs), so the generated code of an XFB vertex shader differs from 31 ; 31: mali_spirv_has_xfb() keys on OpExecutionMode Xfb (16/11) from word 5, the same word spirv_to_nir reads (29/30 detected nothing, so no stores were ever emitted) ; 29: transform-feedback outputs lowered to global stores, per-buffer bases loaded from the driver's push-constant area ; 27: transform-feedback vertex shaders are detected and refused (MALI_COMPILE_UNSUPPORTED), before anything is cached ; 26: requested subgroup size (arch warp, 16) is validated, part of the cache key and recorded in mali_compiled ; 25: logicOp blend shader; logicOp in mali_compile_blend (opts struct grew) ; 24: merged fau_reserved API-push-block fix with the unique cache temporary (pid + sequence, O_EXCL) ; 23: fau_reserved covers the API push block (promoted immediates could land in it: >56 B VS, >32 B CS/FS-v11) / cache_store unique temporary ; 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table 34: noperspective varyings: the VS gets the linked FS's noperspective bitfield inlined (nir_intrinsic_load_noperspective_varyings_pan), so the VS stores x w wherever the FS multiplies by gl_FragCoord.w; cached 33 VS code of a noperspective pipeline has no multiply and renders c/w */
+#define MALI_COMPILE_VERSION 44 /* 44: merge main cache-key changes with the vertex-side-effect lowering ; 43: the FAU_SHADER_OUTPUT position|attribute guard now also runs on arch 10/11 (two separate IDVS binaries, the mask inlined per variant), so a Bifrost VS with an SSBO/image store or atomic differs from 42 ; 42: an arch >= 12 vertex shader that stores to an SSBO/image (or runs an atomic whose result no output uses) wraps it in the FAU SHADER_OUTPUT position|attribute test, so the side effect happens once per vertex instead of once per IDVS instance, and its code differs from 41 ; 41: the gl_PointSize output stripped for a non-point topology also fixes the deref modes, so such a VS now compiles (it aborted nir_validate and every such pipeline failed to create) ; 40: the robust store bound spans the lowest..highest written component (a sparse write mask left a gap uncounted) and rejects a wrapping component offset, so the code differs from 39 ; 39: robust SSBO stores are bounded by our own wrap-safe predicate instead of Mesa's 32-bit "offset + size - 1" test (a scalar-layout vec4 at 0xfffffff4 wrapped to 3 and wrote past the descriptor), so their code differs from 38 ; 38: the get_ssbo_size/get_ubo_size lowering runs for every shader (a non-robust shader with a size query kept an intrinsic Valhall does not have), so its code differs from 37 ; 37: robust load bounds reject a wrapping end offset (offset 0xfffffff4 + 4 summed to 3 and passed the size test) and the pass invalidates metadata (it inserts an if), so a robust program's code differs from 36 ; 36: number collision on 34 merged -- main's 34 (noperspective varyings) and this lane's 34/35 (robustness2 size query, then out-of-bounds loads returning zero) both change generated code, so neither alone may be reused ; 35: robustness2 out-of-bounds LOADS return zero (mali_descriptor_lower.c lower_load_bounds wraps them in an if; Mesa's pass only rewrote the offset, which read element 0), so a robust program's code differs from 34 ; 34: robustness2 buffer bounds: get_ssbo_size/get_ubo_size is lowered to a load of dw1 of the hardware Buffer descriptor through resource table 62 (mali_descriptor_lower.c lower_size_query), so a robust program's code differs from 33 ; 33: a texelFetch (txf/txf_ms) of a combined image sampler takes the sampler half of that binding instead of the all-zero dummy sampler (the fetch returned 0 on the phone) ; 32: nir_lower_xfb_to_stores keeps the captured outputs for rasterization (keep_outputs), so the generated code of an XFB vertex shader differs from 31 ; 31: mali_spirv_has_xfb() keys on OpExecutionMode Xfb (16/11) from word 5, the same word spirv_to_nir reads (29/30 detected nothing, so no stores were ever emitted) ; 29: transform-feedback outputs lowered to global stores, per-buffer bases loaded from the driver's push-constant area ; 27: transform-feedback vertex shaders are detected and refused (MALI_COMPILE_UNSUPPORTED), before anything is cached ; 26: requested subgroup size (arch warp, 16) is validated, part of the cache key and recorded in mali_compiled ; 25: logicOp blend shader; logicOp in mali_compile_blend (opts struct grew) ; 24: merged fau_reserved API-push-block fix with the unique cache temporary (pid + sequence, O_EXCL) ; 23: fau_reserved covers the API push block (promoted immediates could land in it: >56 B VS, >32 B CS/FS-v11) / cache_store unique temporary ; 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table 34: noperspective varyings: the VS gets the linked FS's noperspective bitfield inlined (nir_intrinsic_load_noperspective_varyings_pan), so the VS stores x w wherever the FS multiplies by gl_FragCoord.w; cached 33 VS code of a noperspective pipeline has no multiply and renders c/w */
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -92,6 +92,75 @@ lower_sysvals(nir_builder *b, nir_intrinsic_instr *i, void *d)
    b->cursor = nir_before_instr(&i->instr);
    nir_def *v = nir_load_push_constant(b, i->def.num_components, i->def.bit_size, nir_imm_int(b, off));
    nir_def_replace(&i->def, v);
+   return true;
+}
+
+/* vertexPipelineStoresAndAtomics (zink GL 4.2, DXVK's VS-SSBO path): on arch >= 12 a vertex shader is one IDVS binary that
+ * the hardware runs twice per vertex - the position/attribute part in the vertex job and the varying part in the per-tile
+ * job - and BIR_FAU_SHADER_OUTPUT (nir_intrinsic_load_shader_output_pan, bifrost_compile.c:2119) says which instance is
+ * running. pan_nir_lower_vs_outputs already tests it on every output store (pan_nir_lower_vs_outputs.c:309) and Mesa's
+ * bifrost_nir_lower_vs_atomics (bifrost_nir.c:1185) does the same for an atomic whose result lands in one stage's output,
+ * but a plain SSBO/image store or a "fire and forget" atomic had no guard: it ran in BOTH instances, so t_vk_feat vsstore
+ * counted 12 for a 6-vertex draw (PR #372). Wrap every memory-writing intrinsic in
+ * "FAU_SHADER_OUTPUT & (POSITION | ATTRIB)", so the side effect happens exactly once per vertex, in the position program.
+ * An atomic's result in the other instance is undef, which is what Mesa's own pass does and what the Vulkan memory model
+ * permits (no ordering promise between two runs of one vertex shader; an app that reads its own VS store from the varying
+ * instance is relying on the same undefined behaviour PanVK relies on). A shader without such an intrinsic is untouched. */
+#define VA_OUT_POSITION_ATTRIB ((1u << 0) | (1u << 1))   /* valhall.h: va_shader_output POSITION = 0, ATTRIB = 1 */
+
+struct vs_side_fx { bool skip_global; };   /* transform feedback's captured outputs are already lowered to store_global */
+
+/* The intrinsics whose side effect must happen once per vertex: everything a vertex shader can use to write memory it does
+ * not own as a varying. store_global is the app's bufferDeviceAddress store; transform feedback's own capture stores are the
+ * opt-out (they only need to run in one instance too, but that path is shared with the output lowering this pass must not
+ * touch twice - see the call site). */
+static bool
+vs_side_effect_match(nir_intrinsic_instr *intr, const struct vs_side_fx *fx)
+{
+   switch (intr->intrinsic) {
+   case nir_intrinsic_store_ssbo:
+   case nir_intrinsic_ssbo_atomic:
+   case nir_intrinsic_ssbo_atomic_swap:
+   case nir_intrinsic_image_store:
+   case nir_intrinsic_image_atomic:
+   case nir_intrinsic_image_atomic_swap:
+   case nir_intrinsic_bindless_image_store:
+   case nir_intrinsic_bindless_image_atomic:
+   case nir_intrinsic_bindless_image_atomic_swap:
+      return true;
+   case nir_intrinsic_store_global:
+   case nir_intrinsic_store_global_2x32:
+      return !fx->skip_global;
+   default:
+      return false;
+   }
+}
+
+static bool
+lower_vs_side_effects_impl(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   const struct vs_side_fx *fx = data;
+   if (!vs_side_effect_match(intr, fx))
+      return false;
+   if (getenv("MALI_VS_SIDEFX_DBG"))
+      fprintf(stderr, "vs_sidefx: %s dest %u comps %u\n", nir_intrinsic_infos[intr->intrinsic].name,
+              nir_intrinsic_infos[intr->intrinsic].has_dest, intr->def.num_components);
+
+   b->cursor = nir_before_instr(&intr->instr);
+   nir_def *out = nir_load_shader_output_pan(b);
+   nir_push_if(b, nir_i2b(b, nir_iand_imm(b, out, VA_OUT_POSITION_ATTRIB)));
+   nir_intrinsic_instr *copy = nir_instr_as_intrinsic(nir_instr_clone(b->shader, &intr->instr));
+   nir_builder_instr_insert(b, &copy->instr);
+   nir_pop_if(b, NULL);
+
+   if (nir_intrinsic_infos[intr->intrinsic].has_dest) {
+      /* nir_def_rewrite_uses, never nir_def_replace: the latter also removes the def's own instruction (nir.h:5116),
+       * and the nir_instr_remove below then unlinked an already-removed atomic (SIGSEGV in nir_instr_remove_v /
+       * remove_defs_uses). The same shape without a dest is what lower_store_bounds (mali_descriptor_lower.c:288) uses. */
+      nir_def *res = nir_if_phi(b, &copy->def, nir_undef(b, intr->def.num_components, intr->def.bit_size));
+      nir_def_rewrite_uses(&intr->def, res);
+   }
+   nir_instr_remove(&intr->instr);
    return true;
 }
 
@@ -713,6 +782,34 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
       NIR_PASS(_, nir, nir_opt_gcm, true);
       NIR_PASS(_, nir, nir_opt_dce);
    }
+   /* pan_nir_lower_noperspective_vs (bifrost_nir.c:884) returns immediately unless info.outputs_written names
+    * gl_Position (pan_nir_lower_noperspective.c:129). This driver never runs nir_shader_gather_info (the FS branch
+    * below works around the same gap), so that bit was empty: the pass never inserted the "mask ? v * w : v" and the
+    * mask inlined next had nothing to select. Set exactly the bit the guard reads, from the lowered POS store. */
+   if (stage == MESA_SHADER_VERTEX) {
+      nir_foreach_block(blk, nir_shader_get_entrypoint(nir))
+         nir_foreach_instr(ins, blk) {
+            if (ins->type != nir_instr_type_intrinsic)
+               continue;
+            nir_intrinsic_instr *it = nir_instr_as_intrinsic(ins);
+            if (it->intrinsic == nir_intrinsic_store_output &&
+                nir_intrinsic_io_semantics(it).location == VARYING_SLOT_POS)
+               nir->info.outputs_written |= BITFIELD64_BIT(VARYING_SLOT_POS);
+         }
+   }
+   if (stage == MESA_SHADER_VERTEX && !getenv("MALI_NO_VS_SIDEFX")) {
+      /* One execution per vertex of every VS SSBO/image store and "fire and forget" atomic
+       * (lower_vs_side_effects_impl). Before pan_postprocess_nir on purpose: that pass lowers the vertex outputs to
+       * store_global itself and already puts the FAU_SHADER_OUTPUT test on them, so wrapping those again would make the
+       * varying bucket unreachable.
+       * Both IDVS shapes are covered by the one marker: arch >= 12 has a run-time FAU_SHADER_OUTPUT (bifrost_compile.c:2119)
+       * that is POSITION|ATTRIB in the vertex job and VARY in the per-tile job; arch 10/11 compiles two separate binaries
+       * and bifrost_nir.c:1434 inlines the mask into each, so the varying binary's "if (VARY & POSITION|ATTRIB)" folds to
+       * "if (0)" and the atomic/store is DCE'd there (bifrost_nir.c:1436-1444). */
+      struct vs_side_fx vsfx = { .skip_global = o->xfb };
+      /* nir_metadata_none: inserting an if invalidates block indices and dominance, which nir_metadata_control_flow keeps */
+      NIR_PASS(_, nir, nir_shader_intrinsics_pass, lower_vs_side_effects_impl, nir_metadata_none, &vsfx);
+   }
    pan_postprocess_nir(nir, &in, &info);
    /* pan_postprocess_nir -> bifrost_nir.c:884 has just wrapped every non-special output store in
     * "mask ? v * w : v" (pan_nir_lower_noperspective.c:68) with the mask loaded from the sysval; inline the FS's
@@ -747,6 +844,10 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    struct util_dynarray bin;
    util_dynarray_init(&bin, NULL);
    pan_shader_compile(nir, &in, &bin, &info);
+   if (stage == MESA_SHADER_VERTEX && getenv("MALI_VS_SIDEFX_DBG"))
+      fprintf(stderr, "vs_sidefx: arch %u bin %u B, idvs %u, secondary %u at %u, work regs %u\n", arch,
+              (unsigned)util_dynarray_num_elements(&bin, uint8_t), info.vs.idvs, info.vs.secondary_enable,
+              info.vs.secondary_offset, info.work_reg_count);
 
    memset(out, 0, sizeof *out);
    out->arch = arch;
@@ -887,7 +988,9 @@ mali_compile(const struct mali_compile_opts *o, struct mali_compiled *out, char 
       return fail(err, errsz, "push constants leave no FAU space for immediates");
 
    char dir[900], hex[65];
-   int use_cache = cache_dir(o, dir, sizeof dir) && !getenv("MALI_OPT_GCM");
+   /* The diagnostic switch changes vertex code and is deliberately not part of
+    * mkey. Never read or populate the shared cache while it is active. */
+   int use_cache = cache_dir(o, dir, sizeof dir) && !getenv("MALI_OPT_GCM") && !getenv("MALI_NO_VS_SIDEFX");
    if (use_cache) {
       mkey(o, fau_reserved, push_base, hex);
       if (cache_load(dir, hex, out)) {
