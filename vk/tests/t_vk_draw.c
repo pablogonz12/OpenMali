@@ -1603,18 +1603,25 @@ test_triangle(void)
 
 /* The counter file is per process: a fixed /tmp name was shared by every test run on the machine (other worktrees, parallel check.sh) and
  * made share_inst / share_dirty fail at random with wrapped or foreign byte totals. */
-static char g_alloc_stats[64];
+static char g_alloc_stats[256];   /* an externally set MALI_ALLOC_STATS may be an absolute path */
+static int g_alloc_stats_own;   /* we made the name: remove it at exit. An externally set MALI_ALLOC_STATS is the caller's */
 static void
 alloc_stats_rm(void)
 {
-   if (g_alloc_stats[0]) unlink(g_alloc_stats);
+   if (g_alloc_stats[0] && g_alloc_stats_own) unlink(g_alloc_stats);
 }
 static void
 alloc_stats_start(void)   /* fresh counter file; the library writes the running total of hw_alloc bytes to $MALI_ALLOC_STATS at every submit */
 {
    if (!g_alloc_stats[0]) {
-      snprintf(g_alloc_stats, sizeof g_alloc_stats, "/tmp/mali_alloc_stats.%d.txt", (int)getpid());
-      atexit(alloc_stats_rm);
+      const char *e = getenv("MALI_ALLOC_STATS");   /* build-t_arena.sh compares two processes through the same file name */
+      if (e && e[0]) {
+         snprintf(g_alloc_stats, sizeof g_alloc_stats, "%s", e);
+      } else {
+         snprintf(g_alloc_stats, sizeof g_alloc_stats, "/tmp/mali_alloc_stats.%d.txt", (int)getpid());
+         g_alloc_stats_own = 1;
+         atexit(alloc_stats_rm);
+      }
    }
    unlink(g_alloc_stats);
    setenv("MALI_ALLOC_STATS", g_alloc_stats, 1);

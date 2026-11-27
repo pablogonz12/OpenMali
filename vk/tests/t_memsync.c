@@ -7,6 +7,11 @@
  *    change; pinned here so a change is deliberate). Foreign CPU writers must use DMA_BUF_IOCTL_SYNC / implicit fences.
  *  - VkDeviceMemory (HOSTLAZY) is lazy until touched, then synced every submit
  *  - an arch 11 driver-internal BO (NOCOH) is never synced; with MALI_INT_NOCOH=0 it is
+ *  - MALI_SYNC_DIRTY (CPU -> device): only a VkDeviceMemory BO this driver allocated (HOSTLAZY, not exported) whose CPU
+ *    may have written it since the last sync is MEM_SYNCed at a submit. A BO mapped right now is always synced (the CPU
+ *    can write between any two submits); after vkUnmapMemory one more submit covers the writes and then the BO is clean;
+ *    vkFlushMappedMemoryRanges (bo_host_dirty) dirties it again; MALI_SYNC_DIRTY=0 restores one sync per submit; an
+ *    exported (foreign-writer) or driver-internal BO is never skipped.
  *  - M15: per-BO write tracking. A fence wait CSYNCs only BOs marked with bo_wrote; the fake kernel models a
  *    non-coherent GPU (kb_fake_gpu_write writes a shadow that only MEM_SYNC type 2 makes visible), so an
  *    unmarked GPU write reads back as stale data - that is the case the test asserts on purpose first. */
@@ -73,6 +78,51 @@ int main(void)
    EXPECT(kb_fake_memsync_count(expc.gpu_va) - c0 >= 2 * N, "CACHED export: never lazy, synced at each submit (%u)", kb_fake_memsync_count(expc.gpu_va) - c0);
    EXPECT(kb_fake_memsync_count(imp.gpu_va) - i0 == 0, "imported dma-buf: untracked, no per-submit MEM_SYNC (known gap, pre-existing)");
 
+
+   /* ---- MALI_SYNC_DIRTY: CPU -> device MEM_SYNC only for the BOs the CPU may have written ---- */
+   {
+      struct mali_bo u, ex;
+      if (b->bo_alloc(k, 65536, MALI_BO_HOSTLAZY, &u) || b->bo_alloc(k, 65536, MALI_BO_EXPORT, &ex)) {
+         printf("FAIL  bo_alloc dirty\n");
+         return 1;
+      }
+      unsigned d0 = kb_fake_memsync_count(u.gpu_va), x0 = kb_fake_memsync_count(ex.gpu_va);
+      b->host_sync(k);
+      EXPECT(kb_fake_memsync_count(u.gpu_va) == d0, "dirty: an unmapped, never-touched VkDeviceMemory BO is lazy (%u)", kb_fake_memsync_count(u.gpu_va) - d0);
+      for (int i = 0; i < 5; i++) b->host_sync(k);
+      EXPECT(kb_fake_memsync_count(u.gpu_va) == d0, "dirty: nothing written -> skipped at 5 more submits (%u)", kb_fake_memsync_count(u.gpu_va) - d0);
+      b->bo_host_touch(k, &u);   /* vkMapMemory */
+      memset(u.cpu, 0x5a, 64);
+      for (int i = 0; i < 3; i++) b->host_sync(k);
+      EXPECT(kb_fake_memsync_count(u.gpu_va) == d0 + 3, "dirty: a mapped BO is synced at each submit (%u)", kb_fake_memsync_count(u.gpu_va) - d0);
+      b->bo_host_unmap(k, &u);   /* vkUnmapMemory */
+      b->host_sync(k);
+      unsigned after = kb_fake_memsync_count(u.gpu_va);
+      EXPECT(after == d0 + 4, "dirty: the submit after the unmap covers those writes (%u)", after - d0);
+      for (int i = 0; i < 3; i++) b->host_sync(k);
+      EXPECT(kb_fake_memsync_count(u.gpu_va) == after, "dirty: ... and then the BO is clean (%u)", kb_fake_memsync_count(u.gpu_va) - after);
+      b->bo_host_dirty(k, &u);   /* vkFlushMappedMemoryRanges after the unmap */
+      b->host_sync(k);
+      EXPECT(kb_fake_memsync_count(u.gpu_va) == after + 1, "dirty: an explicit flush dirties it again (%u)", kb_fake_memsync_count(u.gpu_va) - after);
+      /* A BO that is dirty for the GPU with the frame still in flight is not lost: the next submit syncs it again (the
+       * flag is only cleared by a sync, and a sync happens before every kick that could need the data). */
+      for (int i = 0; i < 3; i++) { b->host_sync(k); b->submit_cs(k, cs, 0); }
+      EXPECT(kb_fake_memsync_count(u.gpu_va) == after + 1, "dirty: host_sync+submit keeps it clean (%u)", kb_fake_memsync_count(u.gpu_va) - after);
+      /* Exported dma-buf: a foreign CPU writer can map it without telling us, so it keeps the old per-submit sync. */
+      b->bo_host_touch(k, &ex);
+      b->bo_host_unmap(k, &ex);
+      b->host_sync(k);
+      x0 = kb_fake_memsync_count(ex.gpu_va);
+      for (int i = 0; i < 3; i++) b->host_sync(k);
+      EXPECT(kb_fake_memsync_count(ex.gpu_va) == x0 + 3, "dirty: an exported BO is still synced at each submit (%u)", kb_fake_memsync_count(ex.gpu_va) - x0);
+      setenv("MALI_SYNC_DIRTY", "0", 1);
+      unsigned b0 = kb_fake_memsync_count(u.gpu_va);
+      for (int i = 0; i < 3; i++) b->host_sync(k);
+      EXPECT(kb_fake_memsync_count(u.gpu_va) == b0 + 3, "MALI_SYNC_DIRTY=0: one MEM_SYNC per submit again (%u)", kb_fake_memsync_count(u.gpu_va) - b0);
+      unsetenv("MALI_SYNC_DIRTY");
+      b->bo_free(k, &u);
+      b->bo_free(k, &ex);
+   }
 
    /* ---- M15: per-BO write tracking for the fence wait (MALI_SYNC_TRACK, MALI_SYNC_ALL) ---- */
    {

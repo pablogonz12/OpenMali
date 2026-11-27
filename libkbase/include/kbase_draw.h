@@ -99,6 +99,10 @@ uint32_t kb_draw_prim_flags_triangles(int secondary_shader);
 uint64_t kb_draw_scissor(unsigned minx, unsigned miny, unsigned maxx, unsigned maxy);   /* 2 words, max inclusive */
 uint64_t kb_draw_srt_ptr(uint64_t table_va, unsigned entries);                          /* entries are rounded up to KB_RES_TABLE_ALIGN */
 uint64_t kb_draw_fau_ptr(uint64_t fau_va, unsigned words32);                            /* 64-bit entry count in bits 63:56 */
+/* Tiler hierarchy mask derived from the effective fragment tile, as pan_desc.c. tile_log2 is log2 of the tile AREA in
+ * pixels (the driver's env->tile_log2: 10 = 32x32, 12 = 64x64): 32x32 -> 0xfe, 64x64 -> 0xfc, 128x128 -> 0xf8.
+ * Mask bit n enables the bin level of (16 << n)^2 pixels. */
+uint32_t kb_tiler_hmask_from_tile(unsigned tile_log2);
 
 /* TODO(v13): the descriptor packers (fb.c, draw.c) encode the Mesa genxml v11 layouts. Mesa has separate v12/v13 genxml
  * (Framebuffer/Render Target/Tiler Context/SPD may differ) that we have not compared. For arch not in {0, 11} this warns
