@@ -63,7 +63,10 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxImageDimensionCube = MALI_MAX_DIM_2D,
       .maxImageArrayLayers = MALI_MAX_LAYERS,
       .maxTexelBufferElements = 65536,
-      .maxUniformBufferRange = 16384,
+      .maxUniformBufferRange = 65536,   /* GL_MAX_UNIFORM_BLOCK_SIZE's GL 4.x minimum, and what a Valhall UBO descriptor's size field
+                                         * carries. zink reads it straight into that GL limit (zink_screen.c:610-612). PanVK advertises
+                                         * 1 MiB on the same hardware (panvk_vX_physical_device.c:873); 64 KiB is the number a GL 4.x
+                                         * client requires and this driver can back with a single Buffer descriptor. */
       .maxStorageBufferRange = 1u << 27,
       .maxPushConstantsSize = 256,   /* 64 FAU words. Hardware: 64 FAU slots = 128 words (Mesa pan_compiler.h PAN_MAX_PUSH, all known
                                       * Bifrost/Valhall); PanVK advertises 256 on the same GPUs. VS/reserved words 0..9 leave 118
@@ -72,7 +75,9 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxSamplerAllocationCount = 4000,
       .bufferImageGranularity = 1,
       .maxBoundDescriptorSets = 8,   /* SRT table slots: 0 = driver set, 1..8 = user sets, 9 = dynamic-buffer table (16 in hardware) */
-      .maxPerStageDescriptorSamplers = 16,
+      .maxPerStageDescriptorSamplers = 32,   /* zink caps GL_MAX_TEXTURE_IMAGE_UNITS at PIPE_MAX_SAMPLERS = 32
+                                        * (zink_screen.c:643-646: min(samplers, sampled_images, PIPE_MAX_SAMPLERS)), so 32 is the most
+                                        * that can become visible; the descriptor tables already index 2^20 per set. */
       .maxPerStageDescriptorUniformBuffers = ubo_count,   /* not a hardware wall: a Valhall UBO is one Buffer descriptor in a set table
                                                      * and the SRT descriptor index is 24 bits (third_party/mesa compiler/pan_compiler.h:610-636;
                                                      * PanVK, "Hardware limit is 2^24 each of buffer, texture, and sampler descriptors",
@@ -80,9 +85,11 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
                                                      * maxPerStageResources = 128: a stage cannot reference more descriptors than that,
                                                      * so 128 is the honest per-stage UBO ceiling. 12 was the Vulkan 1.0 textbook minimum and
                                                      * made zink report 11 const buffers, one short of ARB_uniform_buffer_object. */
-      .maxPerStageDescriptorStorageBuffers = 4,
-      .maxPerStageDescriptorSampledImages = 16,
-      .maxPerStageDescriptorStorageImages = 4,
+      .maxPerStageDescriptorStorageBuffers = 8,   /* GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS is 8 from GL 4.3 (zink_screen.c:648-650
+                                                   * min()s this with PIPE_MAX_SHADER_BUFFERS); the sets already allow 24. */
+      .maxPerStageDescriptorSampledImages = 32,
+      .maxPerStageDescriptorStorageImages = 8,   /* GL_MAX_IMAGE_UNITS is 8 from GL 4.3 (zink_screen.c:671-674 min()s this with
+                                                 * ZINK_MAX_SHADER_IMAGES = 32); the sets already allow 24. */
       .maxPerStageDescriptorInputAttachments = 4,
       .maxPerStageResources = 128,
       .maxDescriptorSetSamplers = 96,
@@ -122,8 +129,13 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxFragmentCombinedOutputResources = 4,
       .maxComputeSharedMemorySize = 16384,
       .maxComputeWorkGroupCount = {65535, 65535, 65535},
-      .maxComputeWorkGroupInvocations = 128,
-      .maxComputeWorkGroupSize = {128, 128, 64},
+      /* 1024: the CMF (G615, arch 11) ran a 1024-invocation workgroup with 4 KiB of shared memory and 10 barrier rounds
+       * (t_vk_compute --only scan1024: {"test":"scan1024","groups":4,"ok":true}) and a 1024-wide dispatch overall, so
+       * GLSL 4.30 compute (ARB_compute_shader gates on >= 1024) works here. PanVK reports the GPU's
+       * max_threads_per_wg in the same three fields (panvk_vX_physical_device.c:969-973), which is 1024 on this part.
+       * X4 (G610, arch 10) runs the same bundle: if that fails, this goes back to 128. */
+      .maxComputeWorkGroupInvocations = 1024,
+      .maxComputeWorkGroupSize = {1024, 1024, 1024},   /* PanVK: the same max_threads_per_wg in all three (panvk_vX_physical_device.c:971-973); the product is what the invocations limit caps */
       .subPixelPrecisionBits = 4,
       .subTexelPrecisionBits = 4,
       .mipmapPrecisionBits = 4,
@@ -183,8 +195,8 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxUpdateAfterBindDescriptorsInAllPools = 500000, .shaderSampledImageArrayNonUniformIndexingNative = false,
       .quadDivergentImplicitLod = false,
       .maxPerStageDescriptorUpdateAfterBindSamplers = 500000, .maxPerStageDescriptorUpdateAfterBindSampledImages = 500000,
-      .maxPerStageDescriptorUpdateAfterBindUniformBuffers = ubo_count, .maxPerStageDescriptorUpdateAfterBindStorageBuffers = 4,
-      .maxPerStageDescriptorUpdateAfterBindStorageImages = 4, .maxPerStageDescriptorUpdateAfterBindInputAttachments = 4,
+      .maxPerStageDescriptorUpdateAfterBindUniformBuffers = ubo_count, .maxPerStageDescriptorUpdateAfterBindStorageBuffers = 8,
+      .maxPerStageDescriptorUpdateAfterBindStorageImages = 8, .maxPerStageDescriptorUpdateAfterBindInputAttachments = 4,
       .maxPerStageUpdateAfterBindResources = 500000,
       .maxDescriptorSetUpdateAfterBindSamplers = 500000, .maxDescriptorSetUpdateAfterBindSampledImages = 500000,
       .maxDescriptorSetUpdateAfterBindUniformBuffers = ubo_set_count, .maxDescriptorSetUpdateAfterBindUniformBuffersDynamic = 8,
@@ -464,6 +476,10 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .KHR_present_id = true, .KHR_present_wait = true,                    /* gamescope chains both feature structs unconditionally */
       .EXT_swapchain_maintenance1 = true, .KHR_swapchain_maintenance1 = true, /* gamescope's WSI layer forces it onto every client device */
       .EXT_hdr_metadata = true,              /* wsi_SetHdrMetadataEXT (wsi_common); stored by the Wayland chain, no-op elsewhere */
+      .EXT_image_2d_view_of_3d = true,       /* feature image2DViewOf3D: a 2D view of one slice of a 3D image (GL 4.2's
+                                              * texture views). The slice addressing already exists for the core
+                                              * VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT path (t_vk_meta view3d2d); the EXT only adds
+                                              * a create flag that does not require the core one. t_vk_feat image2dview. */
       .KHR_incremental_present = true,       /* wsi_common parses VkPresentRegionsKHR; regions are only a damage hint and may be ignored (t_vk_present, t_steam_caps) */
    };
    /* VK_EXT_physical_device_drm only together with node identity: a DRM alias of our own device (t_vk_drm). */
@@ -486,6 +502,10 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
        * on, mali_pipeline.c sets the compile layout's robust_access flag, so nir_lower_robust_access clamps
        * buffer/image indices and offsets before the backend sees them. */
       .robustBufferAccess = true,
+      /* VK_EXT_image_2d_view_of_3d: PanVK advertises both features on this class of GPU (panvk_vX_physical_device.c,
+       * image2DViewOf3D). A 3D image's slices are already addressable as a 2D array view (mali_image.c:191-206
+       * packs per-layer offsets), so only the create flag had to be accepted (mali_format.c). */
+      .image2DViewOf3D = true,
       /* VK_EXT_robustness2 (DXVK 3.1.1 requires robustBufferAccess2 at device creation, DXVK-GAP.md:11). The bound of an
        * SSBO/UBO/texel buffer is dw1 of its 32-byte descriptor; lower_size_query turns the size query into a read of that word
        * through resource table 62 (PanVK's panvk_vX_shader.c:607-630) and lower_load_bounds wraps every load in "in range ?

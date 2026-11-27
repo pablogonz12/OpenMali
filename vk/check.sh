@@ -250,6 +250,10 @@ run "refdiff selftest" 0 python3 -I "$V/tests/refdiff.py" --selftest
 for g in v11 v13; do
    run "vk_feat $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader"
 done
+# Dedicated slice test records clear/dispatch/readback; fake submission cannot verify contents.
+for g in v10 v11 v13; do
+   run "image2dview commands $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only image2dview
+done
 
 # VK_EXT_provoking_vertex: the fake backend asserts the two hardware copies of "First provoking vertex" (FBD word 11 bit 14, tiler ctx
 # word 2 bit 18) in t_cmd --extra (build-t_cmd.sh, below); the t_vk_feat provoking case (flat v0 red / v2 blue) is named here so the

@@ -231,9 +231,9 @@ run_case(const char *name, int kind, const char *spv, unsigned local, unsigned g
             unsigned bad = 0, first = 0;
             for (unsigned g = 0; g < groups; g++) {
                uint32_t acc = 0;
-               for (unsigned l = 0; l < 256; l++) {
-                  acc += s[g * 256 + l];
-                  if (d[g * 256 + l] != acc) { if (!bad) first = g * 256 + l; bad++; }
+               for (unsigned l = 0; l < local; l++) {
+                  acc += s[g * local + l];
+                  if (d[g * local + l] != acc) { if (!bad) first = g * local + l; bad++; }
                }
             }
             CHECK(bad == 0, "scan: %u of %u wrong, first at %u: got %u", bad, N, first, d[first]);
@@ -491,6 +491,14 @@ main(int argc, char **argv)
    if (ok && CASE_ON("atomic256")) ok &= run_case("atomic256", K_ATOMIC, "atomic256.comp.spv", 256, 37, 0);
    if (ok && CASE_ON("atomic_ind")) ok &= run_case("atomic_ind", K_ATOMIC, "atomic.comp.spv", 64, 100, 1);
    if (ok && CASE_ON("scan")) ok &= run_case("scan", K_SCAN, "scan.comp.spv", 256, 64, 0);
+   /* GL 4.3 asks for 1024 invocations per workgroup: one 1024-wide group doing a shared-memory prefix sum with barriers
+    * (4 KiB of shared memory), the same shape as the 256-wide `scan` that passes today. */
+   if (ok && CASE_ON("scan1024")) {
+      if (pp.limits.maxComputeWorkGroupInvocations >= 1024 && pp.limits.maxComputeWorkGroupSize[0] >= 1024)
+         ok &= run_case("scan1024", K_SCAN, "scan1024.comp.spv", 1024, 4, 0);
+      else
+         printf("{\"case\":\"scan1024\",\"skip\":\"workgroup limit below 1024\"}\n");
+   }
 
    DeviceWaitIdle(dev);
    DestroyDevice(dev, NULL);

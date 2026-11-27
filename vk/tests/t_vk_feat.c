@@ -29,12 +29,15 @@ static int g_tf;   /* VK_EXT_transform_feedback advertised (default on; MALI_EXP
 static const VkSpecializationInfo *g_spec_fs;   /* make_pipe: specialization info of the fragment stage (test spec) */
 static VkPhysicalDevice g_pd;
 static PFN_vkGetPhysicalDeviceProperties2 g_gp2;   /* properties2, resolved in main: used by imgmax too */
+static PFN_vkGetPhysicalDeviceFeatures2 g_gf2;     /* features2, resolved in main: image2dview chains the EXT struct */
+static PFN_vkGetPhysicalDeviceFormatProperties g_gfp;   /* format properties, resolved in main: gl43fmt */
 static VkPhysicalDeviceFeatures g_feat;
 static VkPhysicalDeviceProperties g_props;
 static PFN_vkGetImageSubresourceLayout g_gsl;
 static PFN_vkResetFences g_rf;
 static PFN_vkResetCommandBuffer g_rcb;
 static PFN_vkEnumerateDeviceExtensionProperties g_edep;
+static int g_image2dview_enabled;
 static VkBool32 g_mirror, g_bda, g_didx;
 static int g_modless;  /* VK_KHR_maintenance5 (test maint5): stages carry a chained VkShaderModuleCreateInfo, module == VK_NULL_HANDLE */
 static int g_ib2;      /* test maint5: vkCmdBindIndexBuffer2KHR instead of vkCmdBindIndexBuffer */
@@ -3498,6 +3501,320 @@ test_privdata(void)
 }
 
 /* fragmentStoresAndAtomics: see fsstore.frag. Checks the SSBO (stores + atomicAdd/atomicMax), and the storage image (copied back). */
+/* GL 4.0-4.5 limits zink derives straight from Vulkan limits, each asserted against the GL 4.5 core minimum and then
+ * exercised for real (a 64 KiB UBO, 32 combined image samplers, 8 storage buffers and 8 storage images in one set -
+ * that is where a self-imposed packing cap would show). zink lines: maxUniformBufferRange -> GL_MAX_UNIFORM_BLOCK_SIZE
+ * (zink_screen.c:610-612), per-stage samplers/sampled images -> GL_MAX_TEXTURE_IMAGE_UNITS (:643-646), storage buffers
+ * -> GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS (:648-650), storage images -> GL_MAX_IMAGE_UNITS (:671-674). */
+/* A dedicated --only image2dview run writes slice 2, then checks all four slices.
+ * Copying the underlying 3D image uses z offsets/depth, not array layers. */
+static int
+image2dview_content(VkImage img, VkDescriptorSetLayout dsl, VkDescriptorSet set)
+{
+   struct tgt t = {0};
+   VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateCommandPool(dev, &pci, NULL, &t.pool) == VK_SUCCESS, "image2dview command pool");
+   CHECK(CreateFence(dev, &fi, NULL, &t.fence) == VK_SUCCESS, "image2dview fence");
+   struct hbuf out;
+   CHECK(hbuf_create(&out, 16 * 16 * 4 * 4, VK_BUFFER_USAGE_TRANSFER_DST_BIT), "image2dview readback");
+   memset(out.p, 0xa5, 16 * 16 * 4 * 4);
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dsl};
+   VkPipelineLayout lay;
+   CHECK(CreatePipelineLayout(dev, &pli, NULL, &lay) == VK_SUCCESS, "image2dview pipeline layout");
+   VkShaderModule m = load_spv("image2dview.comp.spv");
+   CHECK(m, "image2dview shader");
+   VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = lay,
+      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                .module = m, .pName = "main"}};
+   VkPipeline pipe;
+   VkResult r = CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &ci, NULL, &pipe);
+   DestroyShaderModule(dev, m, NULL);
+   CHECK(r == VK_SUCCESS, "image2dview pipeline %d", r);
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "image2dview command buffer");
+   VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+   VkImageMemoryBarrier ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+      .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .image = img, .subresourceRange = range};
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &ib);
+   VkClearColorValue zero = {.float32 = {0, 0, 0, 0}};
+   CmdClearColorImage(cb, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero, 1, &range);
+   ib.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+   ib.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+   ib.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+   ib.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &ib);
+   CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
+   CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, lay, 0, 1, &set, 0, NULL);
+   CmdDispatch(cb, 4, 4, 1);
+   ib.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+   ib.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+   ib.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+   ib.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                      VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &ib);
+   VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {16, 16, 4}};
+   CmdCopyImageToBuffer(cb, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, out.b, 1, &copy);
+   VkBufferMemoryBarrier hb = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+      .dstAccessMask = VK_ACCESS_HOST_READ_BIT, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .buffer = out.b, .size = VK_WHOLE_SIZE};
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 1, &hb, 0, NULL);
+   CHECK(cb_submit(&t, cb), "image2dview submit");
+   if (!g_fake) {
+      VkMappedMemoryRange mapped = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = out.m, .size = VK_WHOLE_SIZE};
+      CHECK(InvalidateMappedMemoryRanges(dev, 1, &mapped) == VK_SUCCESS, "image2dview invalidate");
+      for (unsigned z = 0; z < 4; z++) for (unsigned y = 0; y < 16; y++) for (unsigned x = 0; x < 16; x++) {
+         const uint8_t *p = out.p + ((z * 16 + y) * 16 + x) * 4;
+         uint8_t v = z == 2 ? 255 : 0;
+         CHECK(p[0] == v && p[1] == 0 && p[2] == v && p[3] == v,
+               "image2dview slice %u (%u,%u): %u,%u,%u,%u", z, x, y, p[0], p[1], p[2], p[3]);
+      }
+   }
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   hbuf_destroy(&out);
+   tgt_destroy(&t);
+   return 1;
+}
+
+/* VK_EXT_image_2d_view_of_3d: use a storage image, not an unsupported sampled view. */
+static int
+test_image2dview(void)
+{
+   VkPhysicalDeviceImage2DViewOf3DFeaturesEXT f3d = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_2D_VIEW_OF_3D_FEATURES_EXT};
+   VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &f3d};
+   CHECK(g_gf2 != NULL, "vkGetPhysicalDeviceFeatures2 resolved");
+   g_gf2(g_pd, &f2);
+   CHECK(f3d.image2DViewOf3D, "image2DViewOf3D not advertised (GL 4.2 needs VK_EXT_image_2d_view_of_3d)");
+   uint32_t en = 0;
+   int have = 0;
+   CHECK(g_edep && g_edep(g_pd, NULL, &en, NULL) == VK_SUCCESS, "count device extensions");
+   VkExtensionProperties *e = calloc(en ? en : 1, sizeof *e);
+   if (e && g_edep(g_pd, NULL, &en, e) == VK_SUCCESS)
+      for (uint32_t i = 0; i < en; i++)
+         if (!strcmp(e[i].extensionName, VK_EXT_IMAGE_2D_VIEW_OF_3D_EXTENSION_NAME)) have = 1;
+   free(e);
+    CHECK(have, "VK_EXT_image_2d_view_of_3d absent from the device extension list");
+   CHECK(g_image2dview_enabled, "image2DViewOf3D was not enabled at device creation");
+
+   /* a 3D image split into four 2D slices, viewable without the core 2D_ARRAY_COMPATIBLE flag */
+   VkImageCreateInfo ici = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                            .flags = VK_IMAGE_CREATE_2D_VIEW_COMPATIBLE_BIT_EXT,
+                            .imageType = VK_IMAGE_TYPE_3D, .format = VK_FORMAT_R8G8B8A8_UNORM,
+                            .extent = {16, 16, 4}, .mipLevels = 1, .arrayLayers = 1,
+                            .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+   VkImage img;
+   CHECK(CreateImage(dev, &ici, NULL, &img) == VK_SUCCESS, "3D image with VK_IMAGE_CREATE_2D_VIEW_COMPATIBLE_BIT_EXT");
+   VkMemoryRequirements mr;
+   GetImageMemoryRequirements(dev, img, &mr);
+   VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size,
+                              .memoryTypeIndex = memtype(mr.memoryTypeBits, 0)};
+   VkDeviceMemory imem;
+   CHECK(AllocateMemory(dev, &ai, NULL, &imem) == VK_SUCCESS, "image memory");
+   CHECK(BindImageMemory(dev, img, imem, 0) == VK_SUCCESS, "bind image");
+   /* slice 2 of 4: the EXT view takes one 2D slice of the 3D image */
+   VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = img,
+                               .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = VK_FORMAT_R8G8B8A8_UNORM,
+                               .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 2, 1}};
+   VkImageView view;
+   CHECK(CreateImageView(dev, &vi, NULL, &view) == VK_SUCCESS, "2D view of slice 2 of the 3D image");
+   VkDescriptorSetLayoutBinding lb = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                      .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &lb};
+   VkDescriptorSetLayout dsl;
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl");
+   VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &ps};
+   VkDescriptorPool pool;
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &pool) == VK_SUCCESS, "dpool");
+   VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = pool,
+                                      .descriptorSetCount = 1, .pSetLayouts = &dsl};
+   VkDescriptorSet set;
+   CHECK(AllocateDescriptorSets(dev, &dai, &set) == VK_SUCCESS, "alloc set");
+   VkDescriptorImageInfo ii = {VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL};
+   VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 0,
+                             .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &ii};
+   UpdateDescriptorSets(dev, 1, &w, 0, NULL);
+   if (g_only && !image2dview_content(img, dsl, set)) return 0;
+   printf("{\"test\":\"image2dview\",\"slice\":2,\"3d\":\"16x16x4\",\"ok\":true,\"scope\":\"%s\"}\n",
+          !g_only ? "storage descriptor setup only" : g_fake ? "commands submitted; content skipped: fake backend" :
+          "shader write and four-slice readback verified");
+   DestroyDescriptorPool(dev, pool, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
+   DestroyImageView(dev, view, NULL);
+   DestroyImage(dev, img, NULL);
+   FreeMemory(dev, imem, NULL);
+   return 1;
+}
+
+/* GL 4.3's texture-format rows (zink lists them as SAMPLED_IMAGE requirements for the 4.3 profile): R8G8B8A8 UNORM/SRGB,
+ * the 16-bit UNORM/SNORM family, and D32_SFLOAT_S8 sampled. "Unknown" in the audit meant no caps dump had a
+ * VkFormatProperties section; this row is that section, and it must be true for every one of them. */
+/* GL 4.3 -> 4.5 band that is not tessellation / vertex stores / compute-1024. zink's profile tables name exactly two hard
+ * requirements above 4.3 (VP_ZINK_requirements.json): GL 4.4 = B10G11R11_UFLOAT_PACK32 with VERTEX_BUFFER_BIT, GL 4.5 =
+ * shaderCullDistance. Everything else here is what the GL spec adds at those levels and zink reads from a feature bit:
+ * mirror-clamp-to-edge (4.4), depth clamp / clip control (4.5), and the honesty pin for cull distance while it is off
+ * (Vulkan's Required Limits: maxCullDistances is 0 while shaderCullDistance is false). */
+static int
+test_gl44band(void)
+{
+   /* VK_KHR_sampler_mirror_clamp_to_edge has no feature struct: the extension name is the whole contract (GL 4.4's
+    * ARB_texture_mirror_clamp_to_edge). */
+   {
+      uint32_t en = 0;
+      int mirror = 0;
+      CHECK(g_edep && g_edep(g_pd, NULL, &en, NULL) == VK_SUCCESS, "count device extensions");
+      VkExtensionProperties *e = calloc(en ? en : 1, sizeof *e);
+      if (e && g_edep(g_pd, NULL, &en, e) == VK_SUCCESS)
+         for (uint32_t i = 0; i < en; i++)
+            if (!strcmp(e[i].extensionName, VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE_EXTENSION_NAME)) mirror = 1;
+      free(e);
+      CHECK(mirror, "VK_KHR_sampler_mirror_clamp_to_edge absent (GL 4.4 ARB_texture_mirror_clamp_to_edge)");
+   }
+   CHECK(g_feat.depthClamp, "depthClamp false (GL 4.5 depth clamp)");
+   CHECK(g_feat.shaderCullDistance == VK_FALSE, "shaderCullDistance true: #350 is reverted on this base (arm C2), so a shader "
+         "using gl_CullDistance would take an unvalidated path");
+   /* Vulkan's limits rules: maxCullDistances must be 0 while shaderCullDistance is false, and
+    * maxCombinedClipAndCullDistances must be at least maxClipDistances (8 each here: clip only, no cull slots). */
+   CHECK(g_props.limits.maxCullDistances == 0, "maxCullDistances %u must be 0 while shaderCullDistance is false",
+         g_props.limits.maxCullDistances);
+   CHECK(g_props.limits.maxCombinedClipAndCullDistances >= g_props.limits.maxClipDistances,
+         "maxCombinedClipAndCullDistances %u < maxClipDistances %u", g_props.limits.maxCombinedClipAndCullDistances,
+         g_props.limits.maxClipDistances);
+   VkFormatProperties b;
+   CHECK(g_gfp != NULL, "vkGetPhysicalDeviceFormatProperties resolved");
+   g_gfp(g_pd, VK_FORMAT_B10G11R11_UFLOAT_PACK32, &b);
+   CHECK(b.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT,
+         "B10G11R11_UFLOAT_PACK32 has no VERTEX_BUFFER_BIT (0x%x): GL 4.4's only hard format row", b.bufferFeatures);
+   printf("{\"test\":\"gl44band\",\"mirrorClamp\":true,\"depthClamp\":true,\"cull\":false,\"b10g11r11\":\"0x%x\","
+          "\"d32s8_clip_control\":\"%s\",\"ok\":true}\n", b.bufferFeatures, "not advertised");
+   return 1;
+}
+
+static int
+test_gl43fmt(void)
+{
+   static const struct { VkFormat f; const char *n; } f[] = {
+      {VK_FORMAT_R8G8B8A8_UNORM, "rgba8_unorm"}, {VK_FORMAT_R8G8B8A8_SRGB, "rgba8_srgb"},
+      {VK_FORMAT_R16_UNORM, "r16_unorm"}, {VK_FORMAT_R16G16_UNORM, "rg16_unorm"}, {VK_FORMAT_R16G16B16A16_UNORM, "rgba16_unorm"},
+      {VK_FORMAT_R16_SNORM, "r16_snorm"}, {VK_FORMAT_R16G16_SNORM, "rg16_snorm"}, {VK_FORMAT_R16G16B16A16_SNORM, "rgba16_snorm"},
+   };
+   char line[512] = "";
+   for (unsigned i = 0; i < sizeof f / sizeof f[0]; i++) {
+      CHECK(g_gfp != NULL, "vkGetPhysicalDeviceFormatProperties resolved");
+      VkFormatProperties fp;
+      g_gfp(g_pd, f[i].f, &fp);
+      const VkFormatFeatureFlags want = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+      CHECK((fp.optimalTilingFeatures & want) == want, "%s not sampleable+linear in optimal tiling (0x%x, want 0x%x)",
+            f[i].n, fp.optimalTilingFeatures, want);
+      snprintf(line + strlen(line), sizeof line - strlen(line), "%s:0x%x ", f[i].n, fp.optimalTilingFeatures);
+   }
+   VkFormatProperties dz;
+   g_gfp(g_pd, VK_FORMAT_D32_SFLOAT_S8_UINT, &dz);
+   CHECK(dz.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT, "D32_SFLOAT_S8_UINT not sampleable (0x%x)",
+         dz.optimalTilingFeatures);
+   printf("{\"test\":\"gl43fmt\",\"colour\":\"%s\",\"d32s8\":\"0x%x\",\"ok\":true}\n", line, dz.optimalTilingFeatures);
+   return 1;
+}
+
+static int
+test_gl43caps(void)
+{
+   const VkPhysicalDeviceLimits *L = &g_props.limits;
+   enum { NSAMP = 32, NSSBO = 8, NIMG = 8 };
+   CHECK(L->maxUniformBufferRange >= 65536, "maxUniformBufferRange %u < 65536 (GL_MAX_UNIFORM_BLOCK_SIZE, GL 4.x)",
+         L->maxUniformBufferRange);
+   CHECK(L->maxPerStageDescriptorSamplers >= NSAMP && L->maxPerStageDescriptorSampledImages >= NSAMP,
+         "per-stage samplers %u / sampled images %u < %d (GL_MAX_TEXTURE_IMAGE_UNITS)",
+         L->maxPerStageDescriptorSamplers, L->maxPerStageDescriptorSampledImages, NSAMP);
+   CHECK(L->maxPerStageDescriptorStorageBuffers >= NSSBO, "per-stage storage buffers %u < %d (GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS, GL 4.3)",
+         L->maxPerStageDescriptorStorageBuffers, NSSBO);
+   /* GLSL 4.30 compute: st gates ARB_compute_shader on max_threads_per_block >= 1024 (st_extensions.c:1743), and zink
+    * feeds it maxComputeWorkGroupInvocations (zink_screen.c:700-702). */
+   CHECK(L->maxComputeWorkGroupInvocations >= 1024 && L->maxComputeWorkGroupSize[0] >= 1024,
+         "compute work-group %u invocations / size[0] %u < 1024 (GLSL 4.30 compute)", L->maxComputeWorkGroupInvocations,
+         L->maxComputeWorkGroupSize[0]);
+   CHECK(L->maxPerStageDescriptorStorageImages >= NIMG, "per-stage storage images %u < %d (GL_MAX_IMAGE_UNITS, GL 4.3)",
+         L->maxPerStageDescriptorStorageImages, NIMG);
+
+   struct hbuf ubo, ssbo;
+   CHECK(hbuf_create(&ubo, 65536, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT), "64 KiB uniform buffer");
+   CHECK(hbuf_create(&ssbo, 4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT), "storage buffer");
+   VkImageCreateInfo ici = img2d(VK_FORMAT_R8G8B8A8_UNORM, 64, 64, 1, 1, 0);
+   ici.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+   VkImage img;
+   CHECK(CreateImage(dev, &ici, NULL, &img) == VK_SUCCESS, "image");
+   VkMemoryRequirements mr;
+   GetImageMemoryRequirements(dev, img, &mr);
+   VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size,
+                              .memoryTypeIndex = memtype(mr.memoryTypeBits, 0)};
+   VkDeviceMemory imem;
+   CHECK(AllocateMemory(dev, &ai, NULL, &imem) == VK_SUCCESS, "image memory");
+   CHECK(BindImageMemory(dev, img, imem, 0) == VK_SUCCESS, "bind image");
+   VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = img, .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                               .format = VK_FORMAT_R8G8B8A8_UNORM, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+   VkImageView view;
+   CHECK(CreateImageView(dev, &vi, NULL, &view) == VK_SUCCESS, "view");
+   VkSamplerCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+   VkSampler smp;
+   CHECK(CreateSampler(dev, &sci, NULL, &smp) == VK_SUCCESS, "sampler");
+
+   VkDescriptorSetLayoutBinding lb[4] = {
+      {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT},
+      {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = NSAMP, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT},
+      {.binding = 2, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = NSSBO, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT},
+      {.binding = 3, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .descriptorCount = NIMG, .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT}};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 4, .pBindings = lb};
+   VkDescriptorSetLayout dsl;
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl with 32 samplers + 8 SSBOs + 8 images");
+   VkDescriptorPoolSize ps[4] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, NSAMP},
+                                 {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, NSSBO}, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, NIMG}};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 4, .pPoolSizes = ps};
+   VkDescriptorPool pool;
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &pool) == VK_SUCCESS, "dpool");
+   VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = pool,
+                                      .descriptorSetCount = 1, .pSetLayouts = &dsl};
+   VkDescriptorSet set;
+   CHECK(AllocateDescriptorSets(dev, &dai, &set) == VK_SUCCESS, "alloc set");
+
+   VkDescriptorBufferInfo binfo = {ubo.b, 0, VK_WHOLE_SIZE};
+   VkDescriptorBufferInfo sinfo[NSSBO];
+   VkDescriptorImageInfo ii[NSAMP], si[NIMG];
+   for (int i = 0; i < NSAMP; i++)
+      ii[i] = (VkDescriptorImageInfo){smp, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+   for (int i = 0; i < NSSBO; i++)
+      sinfo[i] = (VkDescriptorBufferInfo){ssbo.b, 0, VK_WHOLE_SIZE};
+   for (int i = 0; i < NIMG; i++)
+      si[i] = (VkDescriptorImageInfo){VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL};
+   VkWriteDescriptorSet w[4] = {
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 0, .descriptorCount = 1,
+       .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &binfo},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 1, .descriptorCount = NSAMP,
+       .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = ii},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 2, .descriptorCount = NSSBO,
+       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = sinfo},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 3, .descriptorCount = NIMG,
+       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = si}};
+   UpdateDescriptorSets(dev, 4, w, 0, NULL);
+   printf("{\"test\":\"gl43caps\",\"uboRange\":%u,\"samplers\":%u,\"sampledImages\":%u,\"storageBuffers\":%u,"
+          "\"storageImages\":%u,\"computeInvocations\":%u,\"set\":\"1 ubo(64K) + 32 samplers + 8 ssbo + 8 images\",\"ok\":true}\n",
+          L->maxUniformBufferRange, L->maxPerStageDescriptorSamplers, L->maxPerStageDescriptorSampledImages,
+          L->maxPerStageDescriptorStorageBuffers, L->maxPerStageDescriptorStorageImages, L->maxComputeWorkGroupInvocations);
+   DestroyDescriptorPool(dev, pool, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
+   DestroySampler(dev, smp, NULL);
+   DestroyImageView(dev, view, NULL);
+   DestroyImage(dev, img, NULL);
+   FreeMemory(dev, imem, NULL);
+   hbuf_destroy(&ubo);
+   hbuf_destroy(&ssbo);
+   return 1;
+}
+
 static int
 test_fsstore(void)
 {
@@ -4062,6 +4379,8 @@ main(int argc, char **argv)
       g_p11 = p11;
    }
    g_pd = pd; g_gp2 = (PFN_vkGetPhysicalDeviceProperties2)gipa(inst, "vkGetPhysicalDeviceProperties2");
+   g_gf2 = (PFN_vkGetPhysicalDeviceFeatures2)gipa(inst, "vkGetPhysicalDeviceFeatures2");
+   g_gfp = (PFN_vkGetPhysicalDeviceFormatProperties)gipa(inst, "vkGetPhysicalDeviceFormatProperties");
    g_scalar = f12.scalarBlockLayout; g_ubostd = f12.uniformBufferStandardLayout; g_zinit = f13.shaderZeroInitializeWorkgroupMemory; g_demote = f13.shaderDemoteToHelperInvocation; g_intdot = f13.shaderIntegerDotProduct; g_inlineub = f13.inlineUniformBlock; g_sgctl_feat = f13.subgroupSizeControl; g_fullsg_feat = f13.computeFullSubgroups;
    g_feat = f2.features;
    g_mm = f12.vulkanMemoryModel && f12.vulkanMemoryModelDeviceScope;
@@ -4127,7 +4446,25 @@ main(int argc, char **argv)
       ftf.geometryStreams = q.geometryStreams;
    }
    if (g_tf) { ftf.pNext = e2.pNext; e2.pNext = &ftf; }
-   const char *dexts[8]; uint32_t ndx = 0;
+   VkPhysicalDeviceImage2DViewOf3DFeaturesEXT e3d = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_2D_VIEW_OF_3D_FEATURES_EXT};
+   {
+      VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &e3d};
+      GetPhysicalDeviceFeatures2(pd, &q);
+      uint32_t n = 0;
+      int have = 0;
+      if (g_edep && g_edep(pd, NULL, &n, NULL) == VK_SUCCESS) {
+         VkExtensionProperties *ext = calloc(n ? n : 1, sizeof *ext);
+         if (ext && g_edep(pd, NULL, &n, ext) == VK_SUCCESS)
+            for (uint32_t i = 0; i < n; i++)
+               if (!strcmp(ext[i].extensionName, VK_EXT_IMAGE_2D_VIEW_OF_3D_EXTENSION_NAME)) have = 1;
+         free(ext);
+      }
+      g_image2dview_enabled = have && e3d.image2DViewOf3D;
+      e3d.sampler2DViewOf3D = VK_FALSE;
+      if (g_image2dview_enabled) { e3d.pNext = e2.pNext; e2.pNext = &e3d; }
+   }
+   const char *dexts[9]; uint32_t ndx = 0;
    if (g_pv_last) dexts[ndx++] = "VK_EXT_provoking_vertex";
    if (g_div || g_div0) dexts[ndx++] = "VK_EXT_vertex_attribute_divisor";
    if (g_lr_rect) dexts[ndx++] = "VK_EXT_line_rasterization";
@@ -4136,6 +4473,7 @@ main(int argc, char **argv)
    if (rb2.nullDescriptor) dexts[ndx++] = "VK_EXT_robustness2";
    dexts[ndx++] = "VK_EXT_private_data";
    if (g_tf) dexts[ndx++] = "VK_EXT_transform_feedback";
+   if (g_image2dview_enabled) dexts[ndx++] = VK_EXT_IMAGE_2D_VIEW_OF_3D_EXTENSION_NAME;
    e13.privateData = f13.privateData;
    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &e2, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi,
                             .enabledExtensionCount = ndx, .ppEnabledExtensionNames = dexts};
@@ -4219,6 +4557,10 @@ main(int argc, char **argv)
    if (ok && CASE_ON("gather")) ok &= test_gather();
    if (ok && CASE_ON("gatherlim")) ok &= test_gatherlim();
    if (ok && CASE_ON("memmodel")) ok &= test_memmodel();
+   if (ok && CASE_ON("image2dview")) ok &= test_image2dview();
+   if (ok && CASE_ON("gl44band")) ok &= test_gl44band();
+   if (ok && CASE_ON("gl43fmt")) ok &= test_gl43fmt();
+   if (ok && CASE_ON("gl43caps")) ok &= test_gl43caps();
    if (ok && CASE_ON("fsstore")) ok &= test_fsstore();
    if (ok && CASE_ON("imgmax")) ok &= test_imgmax();
    if (ok && CASE_ON("privdata")) ok &= test_privdata();
