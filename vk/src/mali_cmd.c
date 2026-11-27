@@ -1228,6 +1228,11 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       struct mali_image_view *rv = mali_image_view_from_handle(ca->resolveImageView);
       const char *why = NULL;
       bool skip_resolve = rv && !mali_debug_check_view(ca->resolveImageView);
+      if (getenv("MALI_PIPE_DBG"))
+         fprintf(stderr, "mali_trace: rendering src_view=%p resolve_view=%p area=%d,%d+%ux%u mode=%u layers=%u viewmask=0x%x\n",
+                 (void *)(uintptr_t)ca->imageView, (void *)(uintptr_t)ca->resolveImageView,
+                 ri->renderArea.offset.x, ri->renderArea.offset.y, ri->renderArea.extent.width,
+                 ri->renderArea.extent.height, ca->resolveMode, ri->layerCount, ri->viewMask);
       if (skip_resolve)
          fprintf(stderr, "mali_cmd: skip 1x resolve: invalid image lifetime\n");
       if (rv && !skip_resolve && rv->vk.image) {

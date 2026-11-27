@@ -472,6 +472,23 @@ mali_CreateImage(VkDevice _dev, const VkImageCreateInfo *ci, const VkAllocationC
     }
    if (ci->tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT) img->vk.drm_format_mod = mali_wsi_modifier;   /* M14: linear only */
    *out = mali_image_to_handle(img);
+   if (getenv("MALI_PIPE_DBG")) {
+      fprintf(stderr, "mali_trace: create_image image=%p gen=%llu format=%d extent=%ux%ux%u samples=%u usage=0x%x flags=0x%x tiling=%d type=%d levels=%u layers=%u sharing=%d initial=%d size=%llu\n",
+              (void *)(uintptr_t)*out, (unsigned long long)img->debug_generation, ci->format,
+              ci->extent.width, ci->extent.height, ci->extent.depth, ci->samples,
+              ci->usage, ci->flags, ci->tiling, ci->imageType, ci->mipLevels, ci->arrayLayers,
+              ci->sharingMode, ci->initialLayout, (unsigned long long)img->lay.size);
+      for (const VkBaseInStructure *p = ci->pNext; p; p = p->pNext) {
+         fprintf(stderr, "mali_trace: image_pnext image=%p gen=%llu stype=%d\n",
+                 (void *)(uintptr_t)*out, (unsigned long long)img->debug_generation, p->sType);
+         if (p->sType == VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO) {
+            const VkImageFormatListCreateInfo *fl = (const void *)p;
+            for (uint32_t j = 0; j < fl->viewFormatCount; j++)
+               fprintf(stderr, "mali_trace: image_format_list image=%p gen=%llu index=%u format=%d\n",
+                       (void *)(uintptr_t)*out, (unsigned long long)img->debug_generation, j, fl->pViewFormats[j]);
+         }
+      }
+   }
    return VK_SUCCESS;
 }
 
@@ -481,6 +498,9 @@ mali_DestroyImage(VkDevice _dev, VkImage h, const VkAllocationCallbacks *alloc)
    VK_FROM_HANDLE(mali_device, dev, _dev);
    VK_FROM_HANDLE(mali_image, img, h);
     if (!img) return;
+    if (getenv("MALI_PIPE_DBG"))
+       fprintf(stderr, "mali_trace: destroy_image image=%p gen=%llu\n",
+               (void *)(uintptr_t)h, (unsigned long long)img->debug_generation);
     {
        pthread_mutex_lock(&debug_lock);
        struct debug_image_entry **e = &debug_images;
@@ -535,6 +555,11 @@ mali_BindImageMemory2(VkDevice _dev, uint32_t n, const VkBindImageMemoryInfo *b)
    for (uint32_t i = 0; i < n; i++) {
       VK_FROM_HANDLE(mali_image, img, b[i].image);
       VK_FROM_HANDLE(mali_memory, mem, b[i].memory);
+      if (getenv("MALI_PIPE_DBG"))
+         fprintf(stderr, "mali_trace: bind_image image=%p gen=%llu memory=%p offset=%llu size=%llu\n",
+                 (void *)(uintptr_t)b[i].image, (unsigned long long)img->debug_generation,
+                 (void *)(uintptr_t)b[i].memory, (unsigned long long)b[i].memoryOffset,
+                 (unsigned long long)img->lay.size);
       const VkBindMemoryStatus *st = vk_find_struct_const(b[i].pNext, BIND_MEMORY_STATUS);
       if (!mem) {
          /* Swapchain-aliased binds (VkBindImageMemorySwapchainInfoKHR, memory == VK_NULL_HANDLE) are not implemented:
@@ -671,6 +696,21 @@ mali_CreateImageView(VkDevice _dev, const VkImageViewCreateInfo *ci, const VkAll
    }
    view_refresh(v);
    *out = mali_image_view_to_handle(v);
+   if (getenv("MALI_PIPE_DBG")) {
+      const VkImageSubresourceRange *r = &ci->subresourceRange;
+      fprintf(stderr, "mali_trace: create_view view=%p image=%p gen=%llu format=%d type=%d swizzle=%d,%d,%d,%d aspect=0x%x mip=%u+%u layer=%u+%u\n",
+              (void *)(uintptr_t)*out, (void *)(uintptr_t)ci->image,
+              (unsigned long long)img->debug_generation, ci->format, ci->viewType,
+              ci->components.r, ci->components.g, ci->components.b, ci->components.a,
+              r->aspectMask, r->baseMipLevel, r->levelCount, r->baseArrayLayer, r->layerCount);
+      for (const VkBaseInStructure *p = ci->pNext; p; p = p->pNext) {
+         fprintf(stderr, "mali_trace: view_pnext view=%p stype=%d",
+                 (void *)(uintptr_t)*out, p->sType);
+         if (p->sType == VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO)
+            fprintf(stderr, " usage=0x%x", ((const VkImageViewUsageCreateInfo *)p)->usage);
+         fputc('\n', stderr);
+      }
+   }
    v->debug_image_generation = img->debug_generation;
    {
       struct debug_view_entry *e = malloc(sizeof *e);
@@ -696,6 +736,9 @@ mali_DestroyImageView(VkDevice _dev, VkImageView h, const VkAllocationCallbacks 
    VK_FROM_HANDLE(mali_device, dev, _dev);
    VK_FROM_HANDLE(mali_image_view, v, h);
    if (!v) return;
+   if (getenv("MALI_PIPE_DBG"))
+      fprintf(stderr, "mali_trace: destroy_view view=%p image=%p gen=%llu\n",
+              (void *)(uintptr_t)h, (void *)v->vk.image, (unsigned long long)v->debug_image_generation);
    {
       pthread_mutex_lock(&debug_lock);
       struct debug_view_entry **e = &debug_views;
