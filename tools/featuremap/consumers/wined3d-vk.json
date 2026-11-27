@@ -1,0 +1,88 @@
+{
+  "consumer": "wined3d-vk",
+  "title": "wined3d, Vulkan backend \u2014 D3D11 on Vulkan (renderer=vulkan; the route that is dominated by DXVK)",
+  "ref": "wine",
+  "kind": "vulkan",
+  "note": "Rows are the conditions of the FL 10_0 test in feature_level_from_caps() (adapter_vk.c:2213-2226) and the FL 11_0 test (:2233-2243). They are ANDed per level: a false one falls back to the next lower level, it does not reject the adapter -- a game that asks for the level above what the device reaches still fails, so the route is not a workaround for a DXVK refusal.",
+  "explicit": [
+    {
+      "id": "wined3d-vk-multi-viewport",
+      "family": "feature",
+      "vk": "multiViewport",
+      "required": true,
+      "file": "dlls/wined3d/adapter_vk.c",
+      "line": 2216,
+      "match": "info->features2.features.multiViewport"
+    },
+    {
+      "id": "wined3d-vk-geometry-shader",
+      "family": "feature",
+      "vk": "geometryShader",
+      "required": true,
+      "file": "dlls/wined3d/adapter_vk.c",
+      "line": 2217,
+      "match": "info->features2.features.geometryShader",
+      "unlocks": "FL 10_0 adapter init"
+    },
+    {
+      "id": "wined3d-vk-depth-bias-clamp",
+      "family": "feature",
+      "vk": "depthBiasClamp",
+      "required": true,
+      "file": "dlls/wined3d/adapter_vk.c",
+      "line": 2219,
+      "match": "info->features2.features.depthBiasClamp"
+    },
+    {
+      "id": "wined3d-vk-pipeline-statistics",
+      "family": "feature",
+      "vk": "pipelineStatisticsQuery",
+      "required": true,
+      "file": "dlls/wined3d/adapter_vk.c",
+      "line": 2220,
+      "match": "info->features2.features.pipelineStatisticsQuery"
+    },
+    {
+      "id": "wined3d-vk-vertex-divisor",
+      "family": "feature",
+      "vk": "vertexAttributeInstanceRateDivisor",
+      "section": "VkPhysicalDeviceVertexAttributeDivisorFeaturesKHR",
+      "required": true,
+      "file": "dlls/wined3d/adapter_vk.c",
+      "line": 2224,
+      "match": "info->vertex_divisor_features.vertexAttributeInstanceRateDivisor"
+    },
+    {
+      "id": "wined3d-vk-vertex-divisor-zero",
+      "family": "feature",
+      "vk": "vertexAttributeInstanceRateZeroDivisor",
+      "section": "VkPhysicalDeviceVertexAttributeDivisorFeaturesKHR",
+      "required": true,
+      "file": "dlls/wined3d/adapter_vk.c",
+      "line": 2225,
+      "match": "info->vertex_divisor_features.vertexAttributeInstanceRateZeroDivisor"
+    },
+    {
+      "id": "wined3d-vk-cull-distance",
+      "family": "feature",
+      "vk": "shaderCullDistance",
+      "required": true,
+      "file": "dlls/wined3d/adapter_vk.c",
+      "line": 2222,
+      "match": "info->features2.features.shaderCullDistance"
+    },
+    {
+      "id": "wined3d-vk-tessellation",
+      "family": "feature",
+      "vk": "tessellationShader",
+      "required": true,
+      "file": "dlls/wined3d/adapter_vk.c",
+      "line": 2240,
+      "match": "info->features2.features.tessellationShader",
+      "unlocks": "FL 11_0 adapter init"
+    }
+  ],
+  "default_test": [
+    "t_vk_feat"
+  ]
+}

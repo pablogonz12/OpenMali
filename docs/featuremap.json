@@ -1,0 +1,6558 @@
+{
+ "generated": "2026-11-22T03:22:33+00:00",
+ "generator": "tools/featuremap.py v1",
+ "commit": "51e1a814eef6881e0cdb9ee86c2b3d6b15e02784",
+ "sources": [
+  {
+   "id": "vk.xml",
+   "rev": "v1.4.341 (Vulkan-Headers 1.4.341)",
+   "revname": null,
+   "date": "2026-11-18",
+   "license": "Apache-2.0 OR MIT (Khronos)",
+   "url": "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Docs/v1.4.341/xml/vk.xml"
+  },
+  {
+   "id": "gl.xml",
+   "rev": "OpenGL-Registry main, Mesa copy f48c22e082cd0ae2271f33581e7b43484ff9df3b",
+   "revname": null,
+   "date": "2026-11-18",
+   "license": "Apache-2.0 (Khronos)",
+   "url": "https://raw.githubusercontent.com/KhronosGroup/OpenGL-Registry/main/xml/gl.xml"
+  },
+  {
+   "id": "dxvk",
+   "rev": "9e57fa0b2c5b495ba1c890017d659935e5f1df65",
+   "revname": "master 2026-11-22",
+   "date": "2026-11-22",
+   "license": "zlib",
+   "url": "https://github.com/doitsujin/dxvk"
+  },
+  {
+   "id": "vkd3d-proton",
+   "rev": "cae8353ed7959c448ac976342052de1ec2b81715",
+   "revname": "master 2026-11-22",
+   "date": "2026-11-22",
+   "license": "LGPL-2.1",
+   "url": "https://github.com/HansKristian-Work/vkd3d-proton"
+  },
+  {
+   "id": "wine",
+   "rev": "wine-11.0",
+   "revname": "wine-11.0 (the version the guest runs, Proton 11-12.8 log)",
+   "date": "2026-11-21",
+   "license": "LGPL-2.1+",
+   "url": "https://gitlab.winehq.org/wine/wine"
+  },
+  {
+   "id": "mesa",
+   "rev": "f48c22e082cd0ae2271f33581e7b43484ff9df3b",
+   "revname": "Mesa main 2026-11-18",
+   "date": "2026-11-18",
+   "license": "MIT",
+   "url": "https://gitlab.freedesktop.org/mesa/mesa"
+  }
+ ],
+ "caps": {
+  "x8": {
+   "path": "~/.config/opencode/mali-orchestrator/phones/x8/caps-driver.txt",
+   "api": "1.3.363 (4206955)",
+   "present": true
+  },
+  "cmf": {
+   "path": "~/.config/opencode/mali-orchestrator/phones/cmf/caps-driver.txt",
+   "api": "1.3.363 (4206955)",
+   "present": true
+  }
+ },
+ "bridge": {
+  "path": "~/.config/opencode/mali-orchestrator/phones/cmf/caps-bridge.txt",
+  "present": true
+ },
+ "covdb": true,
+ "rows": [
+  {
+   "id": "dxvk-depthBiasClamp",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "depthBiasClamp",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 859,
+    "match": "ENABLE_FEATURE(core.features, depthBiasClamp, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "honest",
+   "cost_days": "0",
+   "unlocks": "DXVK + wined3d-vk FL 10_0, ARB_polygon_offset_clamp",
+   "note": "caps: true",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-depthBounds",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "depthBounds",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 860,
+    "match": "ENABLE_FEATURE(core.features, depthBounds, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-depthClamp",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "depthClamp",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 861,
+    "match": "ENABLE_FEATURE(core.features, depthClamp, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-drawIndirectFirstInstance",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "drawIndirectFirstInstance",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 862,
+    "match": "ENABLE_FEATURE(core.features, drawIndirectFirstInstance, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK(opt)",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-dualSrcBlend",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "dualSrcBlend",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 863,
+    "match": "ENABLE_FEATURE(core.features, dualSrcBlend, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-fillModeNonSolid",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "fillModeNonSolid",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 864,
+    "match": "ENABLE_FEATURE(core.features, fillModeNonSolid, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-fragmentStoresAndAtomics",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "fragmentStoresAndAtomics",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 865,
+    "match": "ENABLE_FEATURE(core.features, fragmentStoresAndAtomics, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-fullDrawIndexUint32",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "fullDrawIndexUint32",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 866,
+    "match": "ENABLE_FEATURE(core.features, fullDrawIndexUint32, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-geometryShader",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "geometryShader",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 867,
+    "match": "ENABLE_FEATURE(core.features, geometryShader, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "emulated",
+   "cost_days": "12-20",
+   "unlocks": "DXVK device creation, wined3d-vk FL 10_0",
+   "note": "notes/route-decision-2.md \u00a7C row 1 (Valhall has no GS; Arm's GLES driver expands VS->primitives on the same GPU)",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISSING",
+   "games_unlocked": 1,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-imageCubeArray",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "imageCubeArray",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 868,
+    "match": "ENABLE_FEATURE(core.features, imageCubeArray, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-independentBlend",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "independentBlend",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 869,
+    "match": "ENABLE_FEATURE(core.features, independentBlend, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-largePoints",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "largePoints",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 870,
+    "match": "ENABLE_FEATURE(core.features, largePoints, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-logicOp",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "logicOp",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 871,
+    "match": "ENABLE_FEATURE(core.features, logicOp, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK(opt)",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-multiDrawIndirect",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "multiDrawIndirect",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 872,
+    "match": "ENABLE_FEATURE(core.features, multiDrawIndirect, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-multiViewport",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "multiViewport",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 873,
+    "match": "ENABLE_FEATURE(core.features, multiViewport, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "honest",
+   "cost_days": "0",
+   "unlocks": "DXVK + wined3d-vk FL 10_0",
+   "note": "caps: true",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-occlusionQueryPrecise",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "occlusionQueryPrecise",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 874,
+    "match": "ENABLE_FEATURE(core.features, occlusionQueryPrecise, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-pipelineStatisticsQuery",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "pipelineStatisticsQuery",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 875,
+    "match": "ENABLE_FEATURE(core.features, pipelineStatisticsQuery, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": false,
+   "hardware": "emulated",
+   "cost_days": "3-5",
+   "unlocks": "wined3d-vk FL 10_0 adapter",
+   "note": "notes/route-decision-2.md \u00a7D",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-robustBufferAccess",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "robustBufferAccess",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 876,
+    "match": "ENABLE_FEATURE(core.features, robustBufferAccess, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-sampleRateShading",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "sampleRateShading",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 877,
+    "match": "ENABLE_FEATURE(core.features, sampleRateShading, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-samplerAnisotropy",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "samplerAnisotropy",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 878,
+    "match": "ENABLE_FEATURE(core.features, samplerAnisotropy, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-shaderClipDistance",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "shaderClipDistance",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 879,
+    "match": "ENABLE_FEATURE(core.features, shaderClipDistance, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-shaderCullDistance",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "shaderCullDistance",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 880,
+    "match": "ENABLE_FEATURE(core.features, shaderCullDistance, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "emulated",
+   "cost_days": "2-3",
+   "unlocks": "ARB_cull_distance -> wined3d SM5; DXVK device creation",
+   "note": "notes/route-decision-2.md \u00a7C row 2 (nir_lower_clip_cull_distance to varyings + FS discard)",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISSING",
+   "games_unlocked": 1,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-shaderFloat64",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "shaderFloat64",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 881,
+    "match": "ENABLE_FEATURE(core.features, shaderFloat64, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-shaderImageGatherExtended",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "shaderImageGatherExtended",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 882,
+    "match": "ENABLE_FEATURE(core.features, shaderImageGatherExtended, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-shaderInt16",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "shaderInt16",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 883,
+    "match": "ENABLE_FEATURE(core.features, shaderInt16, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-shaderInt64",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "shaderInt64",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 884,
+    "match": "ENABLE_FEATURE(core.features, shaderInt64, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-shaderUniformBufferArrayDynamicIndexing",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "shaderUniformBufferArrayDynamicIndexing",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 885,
+    "match": "ENABLE_FEATURE(core.features, shaderUniformBufferArrayDynamicIndexing, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-shaderSampledImageArrayDynamicIndexing",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "shaderSampledImageArrayDynamicIndexing",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 886,
+    "match": "ENABLE_FEATURE(core.features, shaderSampledImageArrayDynamicIndexing, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-shaderStorageBufferArrayDynamicIndexing",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "shaderStorageBufferArrayDynamicIndexing",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 887,
+    "match": "ENABLE_FEATURE(core.features, shaderStorageBufferArrayDynamicIndexing, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-shaderStorageImageArrayDynamicIndexing",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "shaderStorageImageArrayDynamicIndexing",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 888,
+    "match": "ENABLE_FEATURE(core.features, shaderStorageImageArrayDynamicIndexing, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-sparseBinding",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "sparseBinding",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 889,
+    "match": "ENABLE_FEATURE(core.features, sparseBinding, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-sparseResidencyBuffer",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "sparseResidencyBuffer",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 890,
+    "match": "ENABLE_FEATURE(core.features, sparseResidencyBuffer, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-sparseResidencyImage2D",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "sparseResidencyImage2D",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 891,
+    "match": "ENABLE_FEATURE(core.features, sparseResidencyImage2D, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-sparseResidencyImage3D",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "sparseResidencyImage3D",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 892,
+    "match": "ENABLE_FEATURE(core.features, sparseResidencyImage3D, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-sparseResidency2Samples",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "sparseResidency2Samples",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 893,
+    "match": "ENABLE_FEATURE(core.features, sparseResidency2Samples, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-sparseResidency4Samples",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "sparseResidency4Samples",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 894,
+    "match": "ENABLE_FEATURE(core.features, sparseResidency4Samples, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-sparseResidency8Samples",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "sparseResidency8Samples",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 895,
+    "match": "ENABLE_FEATURE(core.features, sparseResidency8Samples, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-sparseResidency16Samples",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "sparseResidency16Samples",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 896,
+    "match": "ENABLE_FEATURE(core.features, sparseResidency16Samples, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-sparseResidencyAliased",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "sparseResidencyAliased",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 897,
+    "match": "ENABLE_FEATURE(core.features, sparseResidencyAliased, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-shaderResourceResidency",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "shaderResourceResidency",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 898,
+    "match": "ENABLE_FEATURE(core.features, shaderResourceResidency, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-shaderResourceMinLod",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "shaderResourceMinLod",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 899,
+    "match": "ENABLE_FEATURE(core.features, shaderResourceMinLod, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-tessellationShader",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "tessellationShader",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 900,
+    "match": "ENABLE_FEATURE(core.features, tessellationShader, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "emulated",
+   "cost_days": "15-25",
+   "unlocks": "DXVK stage 2, wined3d-vk FL 11_0, GL 4.0",
+   "note": "notes/route-decision-2.md \u00a7C stage 2",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-textureCompressionBC",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "textureCompressionBC",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 901,
+    "match": "ENABLE_FEATURE(core.features, textureCompressionBC, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "honest",
+   "cost_days": "0",
+   "unlocks": "DXVK device creation (BC textures)",
+   "note": "caps: true; decode in software",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-variableMultisampleRate",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "variableMultisampleRate",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 902,
+    "match": "ENABLE_FEATURE(core.features, variableMultisampleRate, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-vertexPipelineStoresAndAtomics",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "vertexPipelineStoresAndAtomics",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 903,
+    "match": "ENABLE_FEATURE(core.features, vertexPipelineStoresAndAtomics, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-wideLines",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "wideLines",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 904,
+    "match": "ENABLE_FEATURE(core.features, wideLines, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK(opt)",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-shaderDrawParameters",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "shaderDrawParameters",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 906,
+    "match": "ENABLE_FEATURE(vk11, shaderDrawParameters, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "honest",
+   "cost_days": "1.5",
+   "unlocks": "DXVK + vkd3d device creation",
+   "note": "vk/R4-GAP.md \u00a73 vk11 row",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-storageBuffer16BitAccess",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "storageBuffer16BitAccess",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 907,
+    "match": "ENABLE_FEATURE(vk11, storageBuffer16BitAccess, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-storagePushConstant16",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "storagePushConstant16",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 908,
+    "match": "ENABLE_FEATURE(vk11, storagePushConstant16, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-bufferDeviceAddress",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "bufferDeviceAddress",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 910,
+    "match": "ENABLE_FEATURE(vk12, bufferDeviceAddress, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "honest",
+   "cost_days": "1",
+   "unlocks": "DXVK + vkd3d device creation",
+   "note": "vk/R4-GAP.md \u00a73 vk12 row (kbase GPU VA = host VA mapping)",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-descriptorIndexing",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "descriptorIndexing",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 911,
+    "match": "ENABLE_FEATURE(vk12, descriptorIndexing, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "emulated",
+   "cost_days": "5-9",
+   "unlocks": "DXVK/vkd3d device creation with bindless-ish resources",
+   "note": "notes/route-decision-2.md \u00a7C row 5 (non-uniform lowering exists in vk/src/mali_descriptor_lower.c)",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISSING",
+   "games_unlocked": 1,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-storageBuffer8BitAccess",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "storageBuffer8BitAccess",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 912,
+    "match": "ENABLE_FEATURE(vk12, storageBuffer8BitAccess, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-storagePushConstant8",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "storagePushConstant8",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 913,
+    "match": "ENABLE_FEATURE(vk12, storagePushConstant8, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-shaderUniformTexelBufferArrayDynamicIndexing",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "shaderUniformTexelBufferArrayDynamicIndexing",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 914,
+    "match": "ENABLE_FEATURE(vk12, shaderUniformTexelBufferArrayDynamicIndexing, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-shaderStorageTexelBufferArrayDynamicIndexing",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "shaderStorageTexelBufferArrayDynamicIndexing",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 915,
+    "match": "ENABLE_FEATURE(vk12, shaderStorageTexelBufferArrayDynamicIndexing, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-shaderUniformBufferArrayNonUniformIndexing",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "shaderUniformBufferArrayNonUniformIndexing",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 916,
+    "match": "ENABLE_FEATURE(vk12, shaderUniformBufferArrayNonUniformIndexing, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-shaderSampledImageArrayNonUniformIndexing",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "shaderSampledImageArrayNonUniformIndexing",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 917,
+    "match": "ENABLE_FEATURE(vk12, shaderSampledImageArrayNonUniformIndexing, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK(opt)",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-shaderStorageBufferArrayNonUniformIndexing",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "shaderStorageBufferArrayNonUniformIndexing",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 918,
+    "match": "ENABLE_FEATURE(vk12, shaderStorageBufferArrayNonUniformIndexing, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-shaderStorageImageArrayNonUniformIndexing",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "shaderStorageImageArrayNonUniformIndexing",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 919,
+    "match": "ENABLE_FEATURE(vk12, shaderStorageImageArrayNonUniformIndexing, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-shaderUniformTexelBufferArrayNonUniformIndexing",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "shaderUniformTexelBufferArrayNonUniformIndexing",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 920,
+    "match": "ENABLE_FEATURE(vk12, shaderUniformTexelBufferArrayNonUniformIndexing, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-shaderStorageTexelBufferArrayNonUniformIndexing",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "shaderStorageTexelBufferArrayNonUniformIndexing",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 921,
+    "match": "ENABLE_FEATURE(vk12, shaderStorageTexelBufferArrayNonUniformIndexing, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-descriptorBindingSampledImageUpdateAfterBind",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "descriptorBindingSampledImageUpdateAfterBind",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 922,
+    "match": "ENABLE_FEATURE(vk12, descriptorBindingSampledImageUpdateAfterBind, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-descriptorBindingUpdateUnusedWhilePending",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "descriptorBindingUpdateUnusedWhilePending",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 923,
+    "match": "ENABLE_FEATURE(vk12, descriptorBindingUpdateUnusedWhilePending, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-descriptorBindingPartiallyBound",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "descriptorBindingPartiallyBound",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 924,
+    "match": "ENABLE_FEATURE(vk12, descriptorBindingPartiallyBound, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-drawIndirectCount",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "drawIndirectCount",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 925,
+    "match": "ENABLE_FEATURE(vk12, drawIndirectCount, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "honest",
+   "cost_days": "1-2",
+   "unlocks": "the geometryShader emulation's second pass, DXVK optional",
+   "note": "notes/route-decision-2.md \u00a7C row 1 (ours absent, bridge :775)",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-hostQueryReset",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "hostQueryReset",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 926,
+    "match": "ENABLE_FEATURE(vk12, hostQueryReset, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "honest",
+   "cost_days": "0",
+   "unlocks": "DXVK 1.2 set",
+   "note": "already done",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-runtimeDescriptorArray",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "runtimeDescriptorArray",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 927,
+    "match": "ENABLE_FEATURE(vk12, runtimeDescriptorArray, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-samplerFilterMinmax",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "samplerFilterMinmax",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 928,
+    "match": "ENABLE_FEATURE(vk12, samplerFilterMinmax, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-samplerMirrorClampToEdge",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "samplerMirrorClampToEdge",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 929,
+    "match": "ENABLE_FEATURE(vk12, samplerMirrorClampToEdge, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "honest",
+   "cost_days": "0.5",
+   "unlocks": "vkd3d-proton device creation, DXVK 1.2 set",
+   "note": "vk/R4-GAP.md \u00a73",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-scalarBlockLayout",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "scalarBlockLayout",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 930,
+    "match": "ENABLE_FEATURE(vk12, scalarBlockLayout, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-shaderFloat16",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "shaderFloat16",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 931,
+    "match": "ENABLE_FEATURE(vk12, shaderFloat16, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "honest",
+   "cost_days": "2-3",
+   "unlocks": "vkd3d-proton optional, DXVK optional",
+   "note": "notes/route-decision-2.md bridge diff (bridge :1150 true)",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-shaderInt8",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "shaderInt8",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 932,
+    "match": "ENABLE_FEATURE(vk12, shaderInt8, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-shaderOutputViewportIndex",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "shaderOutputViewportIndex",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 933,
+    "match": "ENABLE_FEATURE(vk12, shaderOutputViewportIndex, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-shaderOutputLayer",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "shaderOutputLayer",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 934,
+    "match": "ENABLE_FEATURE(vk12, shaderOutputLayer, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-timelineSemaphore",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "timelineSemaphore",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 935,
+    "match": "ENABLE_FEATURE(vk12, timelineSemaphore, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "honest",
+   "cost_days": "0",
+   "unlocks": "DXVK 1.2 set",
+   "note": "already done (vk_sync_timeline)",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-uniformBufferStandardLayout",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "uniformBufferStandardLayout",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 936,
+    "match": "ENABLE_FEATURE(vk12, uniformBufferStandardLayout, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-vulkanMemoryModel",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "vulkanMemoryModel",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 937,
+    "match": "ENABLE_FEATURE(vk12, vulkanMemoryModel, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-inlineUniformBlock",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "inlineUniformBlock",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 939,
+    "match": "ENABLE_FEATURE(vk13, inlineUniformBlock, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-computeFullSubgroups",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "computeFullSubgroups",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 940,
+    "match": "ENABLE_FEATURE(vk13, computeFullSubgroups, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-dynamicRendering",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "dynamicRendering",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 941,
+    "match": "ENABLE_FEATURE(vk13, dynamicRendering, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "honest",
+   "cost_days": "1",
+   "unlocks": "DXVK 1.3 set",
+   "note": "vk/R4-GAP.md \u00a73 vk13 row (BeginRendering already exported)",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-maintenance4",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "maintenance4",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 942,
+    "match": "ENABLE_FEATURE(vk13, maintenance4, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-robustImageAccess",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "robustImageAccess",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 943,
+    "match": "ENABLE_FEATURE(vk13, robustImageAccess, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-pipelineCreationCacheControl",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "pipelineCreationCacheControl",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 944,
+    "match": "ENABLE_FEATURE(vk13, pipelineCreationCacheControl, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-shaderDemoteToHelperInvocation",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "shaderDemoteToHelperInvocation",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 945,
+    "match": "ENABLE_FEATURE(vk13, shaderDemoteToHelperInvocation, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-shaderZeroInitializeWorkgroupMemory",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "shaderZeroInitializeWorkgroupMemory",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 946,
+    "match": "ENABLE_FEATURE(vk13, shaderZeroInitializeWorkgroupMemory, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-subgroupSizeControl",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "subgroupSizeControl",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 947,
+    "match": "ENABLE_FEATURE(vk13, subgroupSizeControl, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-synchronization2",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "synchronization2",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 948,
+    "match": "ENABLE_FEATURE(vk13, synchronization2, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "honest",
+   "cost_days": "1",
+   "unlocks": "DXVK 1.3 set",
+   "note": "vk/R4-GAP.md \u00a73 vk13 row",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-attachmentFeedbackLoopLayout",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "attachmentFeedbackLoopLayout",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 951,
+    "match": "ENABLE_EXT_FEATURE(extAttachmentFeedbackLoopLayout, attachmentFeedbackLoopLayout, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-borderColorSwizzle",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "borderColorSwizzle",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 954,
+    "match": "ENABLE_EXT_FEATURE(extBorderColorSwizzle, borderColorSwizzle, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-borderColorSwizzleFromImage",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "borderColorSwizzleFromImage",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 955,
+    "match": "ENABLE_EXT_FEATURE(extBorderColorSwizzle, borderColorSwizzleFromImage, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-extConservativeRasterization",
+   "consumer": "dxvk",
+   "family": "extension",
+   "vk": "VK_EXT_conservative_rasterization",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 958,
+    "match": "ENABLE_EXT(extConservativeRasterization, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=no",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json",
+    "57 device-extension lines in the caps dump have no name; a nameless line could be this extension"
+   ]
+  },
+  {
+   "id": "dxvk-customBorderColors",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "customBorderColors",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 961,
+    "match": "ENABLE_EXT_FEATURE(extCustomBorderColor, customBorderColors, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK(opt)",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-customBorderColorWithoutFormat",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "customBorderColorWithoutFormat",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 962,
+    "match": "ENABLE_EXT_FEATURE(extCustomBorderColor, customBorderColorWithoutFormat, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK(opt)",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-depthClipEnable",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "depthClipEnable",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 965,
+    "match": "ENABLE_EXT_FEATURE(extDepthClipEnable, depthClipEnable, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-depthBiasControl",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "depthBiasControl",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 968,
+    "match": "ENABLE_EXT_FEATURE(extDepthBiasControl, depthBiasControl, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-leastRepresentableValueForceUnormRepresentation",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "leastRepresentableValueForceUnormRepresentation",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 969,
+    "match": "ENABLE_EXT_FEATURE(extDepthBiasControl, leastRepresentableValueForceUnormRepresentation, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-floatRepresentation",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "floatRepresentation",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 970,
+    "match": "ENABLE_EXT_FEATURE(extDepthBiasControl, floatRepresentation, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-depthBiasExact",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "depthBiasExact",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 971,
+    "match": "ENABLE_EXT_FEATURE(extDepthBiasControl, depthBiasExact, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-descriptorBuffer",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "descriptorBuffer",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 974,
+    "match": "ENABLE_EXT_FEATURE(extDescriptorBuffer, descriptorBuffer, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-descriptorHeap",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "descriptorHeap",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 977,
+    "match": "ENABLE_EXT_FEATURE(extDescriptorHeap, descriptorHeap, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-dynamicRenderingUnusedAttachments",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "dynamicRenderingUnusedAttachments",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 980,
+    "match": "ENABLE_EXT_FEATURE(extDynamicRenderingUnusedAttachments, dynamicRenderingUnusedAttachments, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-extendedDynamicState3AlphaToCoverageEnable",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "extendedDynamicState3AlphaToCoverageEnable",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 983,
+    "match": "ENABLE_EXT_FEATURE(extExtendedDynamicState3, extendedDynamicState3AlphaToCoverageEnable, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-extendedDynamicState3DepthClipEnable",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "extendedDynamicState3DepthClipEnable",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 984,
+    "match": "ENABLE_EXT_FEATURE(extExtendedDynamicState3, extendedDynamicState3DepthClipEnable, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-extendedDynamicState3RasterizationSamples",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "extendedDynamicState3RasterizationSamples",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 985,
+    "match": "ENABLE_EXT_FEATURE(extExtendedDynamicState3, extendedDynamicState3RasterizationSamples, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-extendedDynamicState3SampleMask",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "extendedDynamicState3SampleMask",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 986,
+    "match": "ENABLE_EXT_FEATURE(extExtendedDynamicState3, extendedDynamicState3SampleMask, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-extendedDynamicState3LineRasterizationMode",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "extendedDynamicState3LineRasterizationMode",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 987,
+    "match": "ENABLE_EXT_FEATURE(extExtendedDynamicState3, extendedDynamicState3LineRasterizationMode, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-extendedDynamicState3SampleLocationsEnable",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "extendedDynamicState3SampleLocationsEnable",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 988,
+    "match": "ENABLE_EXT_FEATURE(extExtendedDynamicState3, extendedDynamicState3SampleLocationsEnable, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-fragmentShaderSampleInterlock",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "fragmentShaderSampleInterlock",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 991,
+    "match": "ENABLE_EXT_FEATURE(extFragmentShaderInterlock, fragmentShaderSampleInterlock, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-fragmentShaderPixelInterlock",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "fragmentShaderPixelInterlock",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 992,
+    "match": "ENABLE_EXT_FEATURE(extFragmentShaderInterlock, fragmentShaderPixelInterlock, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-extFullScreenExclusive",
+   "consumer": "dxvk",
+   "family": "extension",
+   "vk": "VK_EXT_full_screen_exclusive",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 995,
+    "match": "ENABLE_EXT(extFullScreenExclusive, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=no",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json",
+    "57 device-extension lines in the caps dump have no name; a nameless line could be this extension"
+   ]
+  },
+  {
+   "id": "dxvk-graphicsPipelineLibrary",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "graphicsPipelineLibrary",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 998,
+    "match": "ENABLE_EXT_FEATURE(extGraphicsPipelineLibrary, graphicsPipelineLibrary, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-extHdrMetadata",
+   "consumer": "dxvk",
+   "family": "extension",
+   "vk": "VK_EXT_hdr_metadata",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1001,
+    "match": "ENABLE_EXT(extHdrMetadata, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=yes",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK(opt)",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-rectangularLines",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "rectangularLines",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1004,
+    "match": "ENABLE_EXT_FEATURE(extLineRasterization, rectangularLines,  false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK(opt)",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-smoothLines",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "smoothLines",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1005,
+    "match": "ENABLE_EXT_FEATURE(extLineRasterization, smoothLines, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-extMemoryBudget",
+   "consumer": "dxvk",
+   "family": "extension",
+   "vk": "VK_EXT_memory_budget",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1008,
+    "match": "ENABLE_EXT(extMemoryBudget, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=yes",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK(opt)",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-memoryPriority",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "memoryPriority",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1009,
+    "match": "ENABLE_EXT_FEATURE(extMemoryPriority, memoryPriority, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-multiDraw",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "multiDraw",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1012,
+    "match": "ENABLE_EXT_FEATURE(extMultiDraw, multiDraw, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-nonSeamlessCubeMap",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "nonSeamlessCubeMap",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1015,
+    "match": "ENABLE_EXT_FEATURE(extNonSeamlessCubeMap, nonSeamlessCubeMap, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-pageableDeviceLocalMemory",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "pageableDeviceLocalMemory",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1018,
+    "match": "ENABLE_EXT_FEATURE(extPageableDeviceLocalMemory, pageableDeviceLocalMemory, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-presentTiming",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "presentTiming",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1021,
+    "match": "ENABLE_EXT_FEATURE(extPresentTiming, presentTiming, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-presentAtAbsoluteTime",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "presentAtAbsoluteTime",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1022,
+    "match": "ENABLE_EXT_FEATURE(extPresentTiming, presentAtAbsoluteTime, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-presentAtRelativeTime",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "presentAtRelativeTime",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1023,
+    "match": "ENABLE_EXT_FEATURE(extPresentTiming, presentAtRelativeTime, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-robustBufferAccess2",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "robustBufferAccess2",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1026,
+    "match": "ENABLE_EXT_FEATURE(extRobustness2, robustBufferAccess2, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "emulated",
+   "cost_days": "3-4",
+   "unlocks": "vkd3d-proton and DXVK device creation",
+   "note": "notes/route-decision-2.md \u00a7C row 3 (robust_access lowering already compiled in)",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISSING",
+   "games_unlocked": 1,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-robustImageAccess2",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "robustImageAccess2",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1027,
+    "match": "ENABLE_EXT_FEATURE(extRobustness2, robustImageAccess2, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "emulated",
+   "cost_days": "1-2",
+   "unlocks": "vkd3d-proton device creation",
+   "note": "notes/route-decision-2.md \u00a7B (bridge :1109 true)",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-nullDescriptor",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "nullDescriptor",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1028,
+    "match": "ENABLE_EXT_FEATURE(extRobustness2, nullDescriptor, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "emulated",
+   "cost_days": "1-2",
+   "unlocks": "vkd3d-proton device creation",
+   "note": "notes/route-decision-2.md \u00a7B row 4",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-extSampleLocations",
+   "consumer": "dxvk",
+   "family": "extension",
+   "vk": "VK_EXT_sample_locations",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1031,
+    "match": "ENABLE_EXT(extSampleLocations, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=no",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json",
+    "57 device-extension lines in the caps dump have no name; a nameless line could be this extension"
+   ]
+  },
+  {
+   "id": "dxvk-shaderModuleIdentifier",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "shaderModuleIdentifier",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1034,
+    "match": "ENABLE_EXT_FEATURE(extShaderModuleIdentifier, shaderModuleIdentifier, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-extShaderStencilExport",
+   "consumer": "dxvk",
+   "family": "extension",
+   "vk": "VK_EXT_shader_stencil_export",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1037,
+    "match": "ENABLE_EXT(extShaderStencilExport, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=no",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json",
+    "57 device-extension lines in the caps dump have no name; a nameless line could be this extension"
+   ]
+  },
+  {
+   "id": "dxvk-swapchainMaintenance1",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "swapchainMaintenance1",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1041,
+    "match": "ENABLE_EXT_FEATURE(extSwapchainMaintenance1, swapchainMaintenance1, false),",
+    "verified": true,
+    "drift": true
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "line re-pinned 1041 (upstream moved)"
+   ]
+  },
+  {
+   "id": "dxvk-transformFeedback",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "transformFeedback",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1044,
+    "match": "ENABLE_EXT_FEATURE(extTransformFeedback, transformFeedback, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK(opt)",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-geometryStreams",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "geometryStreams",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1045,
+    "match": "ENABLE_EXT_FEATURE(extTransformFeedback, geometryStreams, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-vertexAttributeInstanceRateDivisor",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "vertexAttributeInstanceRateDivisor",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1048,
+    "match": "ENABLE_EXT_FEATURE(extVertexAttributeDivisor, vertexAttributeInstanceRateDivisor, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK(opt)",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-vertexAttributeInstanceRateZeroDivisor",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "vertexAttributeInstanceRateZeroDivisor",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1049,
+    "match": "ENABLE_EXT_FEATURE(extVertexAttributeDivisor, vertexAttributeInstanceRateZeroDivisor, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK(opt)",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-khrCalibratedTimestamps",
+   "consumer": "dxvk",
+   "family": "extension",
+   "vk": "VK_KHR_calibrated_timestamps",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1052,
+    "match": "ENABLE_EXT(khrCalibratedTimestamps, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=yes",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK(opt)",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-deviceFault",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "deviceFault",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1055,
+    "match": "ENABLE_EXT_FEATURE(khrDeviceFault, deviceFault, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-deviceFaultVendorBinary",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "deviceFaultVendorBinary",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1056,
+    "match": "ENABLE_EXT_FEATURE(khrDeviceFault, deviceFaultVendorBinary, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-dynamicRenderingLocalRead",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "dynamicRenderingLocalRead",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1059,
+    "match": "ENABLE_EXT_FEATURE(khrDynamicRenderingLocalRead, dynamicRenderingLocalRead, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-khrExternalMemoryWin32",
+   "consumer": "dxvk",
+   "family": "extension",
+   "vk": "VK_KHR_external_memory_win32",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1062,
+    "match": "ENABLE_EXT(khrExternalMemoryWin32, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=no",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json",
+    "57 device-extension lines in the caps dump have no name; a nameless line could be this extension"
+   ]
+  },
+  {
+   "id": "dxvk-khrExternalSemaphoreWin32",
+   "consumer": "dxvk",
+   "family": "extension",
+   "vk": "VK_KHR_external_semaphore_win32",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1063,
+    "match": "ENABLE_EXT(khrExternalSemaphoreWin32, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=no",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json",
+    "57 device-extension lines in the caps dump have no name; a nameless line could be this extension"
+   ]
+  },
+  {
+   "id": "dxvk-khrIncrementalPresent",
+   "consumer": "dxvk",
+   "family": "extension",
+   "vk": "VK_KHR_incremental_present",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1066,
+    "match": "ENABLE_EXT(khrIncrementalPresent, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=yes",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK(opt)",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-khrLoadStoreOpNone",
+   "consumer": "dxvk",
+   "family": "extension",
+   "vk": "VK_KHR_load_store_op_none",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1070,
+    "match": "ENABLE_EXT(khrLoadStoreOpNone, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=yes",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-maintenance5",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "maintenance5",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1073,
+    "match": "ENABLE_EXT_FEATURE(khrMaintenance5, maintenance5, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-maintenance6",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "maintenance6",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1074,
+    "match": "ENABLE_EXT_FEATURE(khrMaintenance6, maintenance6, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-maintenance7",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "maintenance7",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1075,
+    "match": "ENABLE_EXT_FEATURE(khrMaintenance7, maintenance7, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-maintenance8",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "maintenance8",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1076,
+    "match": "ENABLE_EXT_FEATURE(khrMaintenance8, maintenance8, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-maintenance9",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "maintenance9",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1077,
+    "match": "ENABLE_EXT_FEATURE(khrMaintenance9, maintenance9, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-maintenance10",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "maintenance10",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1078,
+    "match": "ENABLE_EXT_FEATURE(khrMaintenance10, maintenance10, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-maintenance11",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "maintenance11",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1079,
+    "match": "ENABLE_EXT_FEATURE(khrMaintenance11, maintenance11, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-khrPipelineLibrary",
+   "consumer": "dxvk",
+   "family": "extension",
+   "vk": "VK_KHR_pipeline_library",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1082,
+    "match": "ENABLE_EXT(khrPipelineLibrary, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=no",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json",
+    "57 device-extension lines in the caps dump have no name; a nameless line could be this extension"
+   ]
+  },
+  {
+   "id": "dxvk-presentId",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "presentId",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1085,
+    "match": "ENABLE_EXT_FEATURE(khrPresentId, presentId, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK(opt)",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-presentId2",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "presentId2",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1086,
+    "match": "ENABLE_EXT_FEATURE(khrPresentId2, presentId2, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-presentWait",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "presentWait",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1087,
+    "match": "ENABLE_EXT_FEATURE(khrPresentWait, presentWait, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK(opt)",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-presentWait2",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "presentWait2",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1088,
+    "match": "ENABLE_EXT_FEATURE(khrPresentWait2, presentWait2, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-shaderFloatControls2",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "shaderFloatControls2",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1091,
+    "match": "ENABLE_EXT_FEATURE(khrShaderFloatControls2, shaderFloatControls2, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-shaderSubgroupUniformControlFlow",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "shaderSubgroupUniformControlFlow",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1094,
+    "match": "ENABLE_EXT_FEATURE(khrShaderSubgroupUniformControlFlow, shaderSubgroupUniformControlFlow, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-shaderUntypedPointers",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "shaderUntypedPointers",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1097,
+    "match": "ENABLE_EXT_FEATURE(khrShaderUntypedPointers, shaderUntypedPointers, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-khrSwapchain",
+   "consumer": "dxvk",
+   "family": "extension",
+   "vk": "VK_KHR_swapchain",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1100,
+    "match": "ENABLE_EXT(khrSwapchain, true),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=yes",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-swapchainMaintenance1",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "swapchainMaintenance1",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1104,
+    "match": "ENABLE_EXT_FEATURE(khrSwapchainMaintenance1, swapchainMaintenance1, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK(opt)",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-khrSwapchainMutableFormat",
+   "consumer": "dxvk",
+   "family": "extension",
+   "vk": "VK_KHR_swapchain_mutable_format",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1107,
+    "match": "ENABLE_EXT(khrSwapchainMutableFormat, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=yes",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK(opt)",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-unifiedImageLayouts",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "unifiedImageLayouts",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1110,
+    "match": "ENABLE_EXT_FEATURE(khrUnifiedImageLayouts, unifiedImageLayouts, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK(opt)",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "dxvk-khrWin32KeyedMutex",
+   "consumer": "dxvk",
+   "family": "extension",
+   "vk": "VK_KHR_win32_keyed_mutex",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1113,
+    "match": "ENABLE_EXT(khrWin32KeyedMutex, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=no",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json",
+    "57 device-extension lines in the caps dump have no name; a nameless line could be this extension"
+   ]
+  },
+  {
+   "id": "dxvk-amdBufferMarker",
+   "consumer": "dxvk",
+   "family": "extension",
+   "vk": "VK_AMD_buffer_marker",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1116,
+    "match": "ENABLE_EXT(amdBufferMarker, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=no",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json",
+    "57 device-extension lines in the caps dump have no name; a nameless line could be this extension"
+   ]
+  },
+  {
+   "id": "dxvk-amdMixedAttachmentSamples",
+   "consumer": "dxvk",
+   "family": "extension",
+   "vk": "VK_AMD_mixed_attachment_samples",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1119,
+    "match": "ENABLE_EXT(amdMixedAttachmentSamples, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=no",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json",
+    "57 device-extension lines in the caps dump have no name; a nameless line could be this extension"
+   ]
+  },
+  {
+   "id": "dxvk-nvDeviceDiagnosticCheckpoints",
+   "consumer": "dxvk",
+   "family": "extension",
+   "vk": "VK_NV_device_diagnostic_checkpoints",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1122,
+    "match": "ENABLE_EXT(nvDeviceDiagnosticCheckpoints, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=no",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json",
+    "57 device-extension lines in the caps dump have no name; a nameless line could be this extension"
+   ]
+  },
+  {
+   "id": "dxvk-nvFramebufferMixedSamples",
+   "consumer": "dxvk",
+   "family": "extension",
+   "vk": "VK_NV_framebuffer_mixed_samples",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1125,
+    "match": "ENABLE_EXT(nvFramebufferMixedSamples, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=no",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json",
+    "57 device-extension lines in the caps dump have no name; a nameless line could be this extension"
+   ]
+  },
+  {
+   "id": "dxvk-nvLowLatency2",
+   "consumer": "dxvk",
+   "family": "extension",
+   "vk": "VK_NV_low_latency2",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1128,
+    "match": "ENABLE_EXT(nvLowLatency2, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=no",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json",
+    "57 device-extension lines in the caps dump have no name; a nameless line could be this extension"
+   ]
+  },
+  {
+   "id": "dxvk-shaderRawAccessChains",
+   "consumer": "dxvk",
+   "family": "feature",
+   "vk": "shaderRawAccessChains",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1131,
+    "match": "ENABLE_EXT_FEATURE(nvRawAccessChains, shaderRawAccessChains, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=none",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json"
+   ]
+  },
+  {
+   "id": "dxvk-nvxBinaryImport",
+   "consumer": "dxvk",
+   "family": "extension",
+   "vk": "VK_NVX_binary_import",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1134,
+    "match": "ENABLE_EXT(nvxBinaryImport, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=no",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json",
+    "57 device-extension lines in the caps dump have no name; a nameless line could be this extension"
+   ]
+  },
+  {
+   "id": "dxvk-nvxImageViewHandle",
+   "consumer": "dxvk",
+   "family": "extension",
+   "vk": "VK_NVX_image_view_handle",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1135,
+    "match": "ENABLE_EXT(nvxImageViewHandle, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=no",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json",
+    "57 device-extension lines in the caps dump have no name; a nameless line could be this extension"
+   ]
+  },
+  {
+   "id": "dxvk-intelDeviceInfo",
+   "consumer": "dxvk",
+   "family": "extension",
+   "vk": "VK_INTEL_device_info",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "dxvk",
+    "file": "src/dxvk/dxvk_device_info.cpp",
+    "line": 1138,
+    "match": "ENABLE_EXT(intelDeviceInfo, false),",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=no",
+   "bridge": false,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISS(opt)",
+   "games_unlocked": 0,
+   "caveats": [
+    "hardware class unknown: fill annotations.json",
+    "57 device-extension lines in the caps dump have no name; a nameless line could be this extension"
+   ]
+  },
+  {
+   "id": "icd-txf-combined-sampler",
+   "consumer": "icd-own",
+   "family": "internal",
+   "vk": null,
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "self",
+    "file": "vk/src/mali_descriptor_lower.c",
+    "line": 76,
+    "match": "lower_tex",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "in tree (line verified)",
+   "bridge": null,
+   "hardware": "honest",
+   "cost_days": "0",
+   "unlocks": "every consumer that texelFetches a combined image sampler (zink's blit)",
+   "note": "",
+   "tests": [
+    "txf"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "icd-view-format-target",
+   "consumer": "icd-own",
+   "family": "internal",
+   "vk": null,
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "self",
+    "file": "vk/src/mali_pipeline.c",
+    "line": 794,
+    "match": "v->vk.view_format && v->vk.view_format != img->vk.format",
+    "verified": true,
+    "drift": true
+   },
+   "ours": true,
+   "ours_text": "in tree (line verified)",
+   "bridge": null,
+   "hardware": "honest",
+   "cost_days": "0",
+   "unlocks": "mutable-format sRGB window views (zink presents this way)",
+   "note": "",
+   "tests": [
+    "view_format"
+   ],
+   "status": "OK",
+   "games_unlocked": 1,
+   "caveats": [
+    "line re-pinned 794 (upstream moved)"
+   ]
+  },
+  {
+   "id": "icd-max-workgroup-invocations",
+   "consumer": "icd-own",
+   "family": "limit",
+   "vk": "maxComputeWorkGroupInvocations",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "self",
+    "file": "vk/src/mali_physical_device.c",
+    "line": 105,
+    "match": "maxComputeWorkGroupInvocations",
+    "verified": false,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "-",
+   "bridge": null,
+   "hardware": "honest",
+   "cost_days": "0.5-1",
+   "unlocks": "ARB_compute_shader -> wined3d SM5 -> D3D11 FL 11_0/11_1",
+   "note": "notes/feature-level.md row 10; PanVK oracle reports 1024 on the same chips",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "?",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "icd-cull-distances",
+   "consumer": "icd-own",
+   "family": "limit",
+   "vk": "maxCullDistances",
+   "gl_ext": null,
+   "required": false,
+   "source": {
+    "ref": "self",
+    "file": "vk/src/mali_physical_device.c",
+    "line": 140,
+    "match": "maxCullDistances",
+    "verified": false,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "-",
+   "bridge": null,
+   "hardware": "emulated",
+   "cost_days": "2-3",
+   "unlocks": "the cull-distance lowering",
+   "note": "notes/route-decision-2.md \u00a7C",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "?",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "vkd3d-xfb-queries",
+   "consumer": "vkd3d-proton",
+   "family": "feature",
+   "vk": "transformFeedbackQueries",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "vkd3d-proton",
+    "file": "libs/vkd3d/device.c",
+    "line": 2510,
+    "match": "transformFeedbackQueries",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "emulated",
+   "cost_days": "3-5",
+   "unlocks": "vkd3d-proton device creation",
+   "note": "notes/route-decision-2.md \u00a7B row 1 (no HW XFB counters; count primitives in the emulation path)",
+   "tests": [
+    "t_dxvk_caps"
+   ],
+   "status": "MISSING",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "vkd3d-texel-offset-single",
+   "consumer": "vkd3d-proton",
+   "family": "limit",
+   "vk": "storageTexelBufferOffsetSingleTexelAlignment",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "vkd3d-proton",
+    "file": "libs/vkd3d/device.c",
+    "line": 2517,
+    "match": "storageTexelBufferOffsetSingleTexelAlignment",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=None/cmf=None",
+   "bridge": null,
+   "hardware": "emulated",
+   "cost_days": "2-4",
+   "unlocks": "vkd3d-proton device creation",
+   "note": "notes/route-decision-2.md \u00a7B row 2 (round down, compensate in the shader)",
+   "tests": [
+    "t_dxvk_caps"
+   ],
+   "status": "MISSING",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "vkd3d-uniform-texel-offset-single",
+   "consumer": "vkd3d-proton",
+   "family": "limit",
+   "vk": "uniformTexelBufferOffsetSingleTexelAlignment",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "vkd3d-proton",
+    "file": "libs/vkd3d/device.c",
+    "line": 2522,
+    "match": "uniformTexelBufferOffsetSingleTexelAlignment",
+    "verified": true,
+    "drift": false
+   },
+   "ours": null,
+   "ours_text": "x8=None/cmf=None",
+   "bridge": null,
+   "hardware": "emulated",
+   "cost_days": "2-4",
+   "unlocks": "vkd3d-proton device creation",
+   "note": "notes/route-decision-2.md \u00a7B row 2",
+   "tests": [
+    "t_dxvk_caps"
+   ],
+   "status": "MISSING",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "vkd3d-sampler-mirror-clamp",
+   "consumer": "vkd3d-proton",
+   "family": "feature",
+   "vk": "samplerMirrorClampToEdge",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "vkd3d-proton",
+    "file": "libs/vkd3d/device.c",
+    "line": 2627,
+    "match": "samplerMirrorClampToEdge",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "honest",
+   "cost_days": "0.5",
+   "unlocks": "vkd3d-proton device creation, DXVK 1.2 set",
+   "note": "vk/R4-GAP.md \u00a73",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "vkd3d-robustness2-buffer",
+   "consumer": "vkd3d-proton",
+   "family": "feature",
+   "vk": "robustBufferAccess2",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "vkd3d-proton",
+    "file": "libs/vkd3d/device.c",
+    "line": 2633,
+    "match": "robustBufferAccess2",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "emulated",
+   "cost_days": "3-4",
+   "unlocks": "vkd3d-proton and DXVK device creation",
+   "note": "notes/route-decision-2.md \u00a7C row 3 (robust_access lowering already compiled in)",
+   "tests": [
+    "t_dxvk_caps"
+   ],
+   "status": "MISSING",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "vkd3d-robustness2-image",
+   "consumer": "vkd3d-proton",
+   "family": "feature",
+   "vk": "robustImageAccess2",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "vkd3d-proton",
+    "file": "libs/vkd3d/device.c",
+    "line": 2634,
+    "match": "robustImageAccess2",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "emulated",
+   "cost_days": "1-2",
+   "unlocks": "vkd3d-proton device creation",
+   "note": "notes/route-decision-2.md \u00a7B (bridge :1109 true)",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISSING",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "vkd3d-null-descriptor",
+   "consumer": "vkd3d-proton",
+   "family": "feature",
+   "vk": "nullDescriptor",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "vkd3d-proton",
+    "file": "libs/vkd3d/device.c",
+    "line": 2640,
+    "match": "nullDescriptor",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "emulated",
+   "cost_days": "1-2",
+   "unlocks": "vkd3d-proton device creation",
+   "note": "notes/route-decision-2.md \u00a7B row 4",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "vkd3d-shader-draw-parameters",
+   "consumer": "vkd3d-proton",
+   "family": "feature",
+   "vk": "shaderDrawParameters",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "vkd3d-proton",
+    "file": "libs/vkd3d/device.c",
+    "line": 2649,
+    "match": "shaderDrawParameters",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "honest",
+   "cost_days": "1.5",
+   "unlocks": "DXVK + vkd3d device creation",
+   "note": "vk/R4-GAP.md \u00a73 vk11 row",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "vkd3d-push-descriptor",
+   "consumer": "vkd3d-proton",
+   "family": "extension",
+   "vk": "VK_KHR_push_descriptor",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "vkd3d-proton",
+    "file": "libs/vkd3d/device.c",
+    "line": 2655,
+    "match": "KHR_push_descriptor",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=no",
+   "bridge": true,
+   "hardware": "honest",
+   "cost_days": "3-4",
+   "unlocks": "vkd3d-proton device creation",
+   "note": "notes/route-decision-2.md \u00a7B row 3 (worktree feat/push-descriptor exists)",
+   "tests": [
+    "t_dxvk_caps"
+   ],
+   "status": "MISSING",
+   "games_unlocked": 0,
+   "caveats": [
+    "57 device-extension lines in the caps dump have no name; a nameless line could be this extension"
+   ]
+  },
+  {
+   "id": "vkd3d-maintenance56",
+   "consumer": "vkd3d-proton",
+   "family": "feature",
+   "vk": "maintenance5",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "vkd3d-proton",
+    "file": "libs/vkd3d/device.c",
+    "line": 2661,
+    "match": "maintenance5",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "vkd3d-vertex-attribute-divisor",
+   "consumer": "vkd3d-proton",
+   "family": "feature",
+   "vk": "vertexAttributeInstanceRateDivisor",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "vkd3d-proton",
+    "file": "libs/vkd3d/device.c",
+    "line": 2266,
+    "match": "vertexAttributeInstanceRateDivisor",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "vkd3d-descriptor-heap-scale",
+   "consumer": "vkd3d-proton",
+   "family": "limit",
+   "vk": "maxPerStageDescriptorSampledImages",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "vkd3d-proton",
+    "file": "libs/vkd3d/device.c",
+    "line": 2458,
+    "match": "vkd3d_init_device_caps",
+    "verified": true,
+    "drift": false
+   },
+   "ours": 16,
+   "ours_text": "x8=16/cmf=16",
+   "bridge": 1048576,
+   "hardware": "emulated",
+   "cost_days": "10-20",
+   "unlocks": "D3D12 bindless without descriptor buffers",
+   "note": "notes/route-decision-2.md \u00a7B descriptor indexing row",
+   "tests": [
+    "dxvk_caps"
+   ],
+   "status": "MISSING",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "wined3d-gl32-context",
+   "consumer": "wined3d-gl",
+   "family": "gl_version",
+   "vk": null,
+   "gl_ext": "GL_VERSION >= 3.2",
+   "required": true,
+   "source": {
+    "ref": "wine",
+    "file": "dlls/wined3d/adapter_gl.c",
+    "line": 1252,
+    "match": "gl_info->supported[WINED3D_GL_VERSION_3_2]",
+    "verified": true,
+    "drift": false
+   },
+   "ours": "3.3",
+   "ours_text": "3.3 (smoke gl line)",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": [
+    "from .config/opencode/mali-orchestrator/phones/x8/smoke-latest.json"
+   ]
+  },
+  {
+   "id": "wined3d-fl10_1-cube-map-array",
+   "consumer": "wined3d-gl",
+   "family": "derived",
+   "vk": null,
+   "gl_ext": "ARB_texture_cube_map_array",
+   "required": true,
+   "source": {
+    "ref": "wine",
+    "file": "dlls/wined3d/adapter_gl.c",
+    "line": 1263,
+    "match": "gl_info->supported[ARB_TEXTURE_CUBE_MAP_ARRAY]",
+    "verified": true,
+    "drift": false
+   },
+   "ours": "OK",
+   "ours_text": "via zink-ARB_texture_cube_map_array",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "wined3d-fl10_1-draw-buffers-blend",
+   "consumer": "wined3d-gl",
+   "family": "derived",
+   "vk": null,
+   "gl_ext": "ARB_draw_buffers_blend",
+   "required": true,
+   "source": {
+    "ref": "wine",
+    "file": "dlls/wined3d/adapter_gl.c",
+    "line": 1264,
+    "match": "gl_info->supported[ARB_DRAW_BUFFERS_BLEND]",
+    "verified": true,
+    "drift": false
+   },
+   "ours": "OK",
+   "ours_text": "via zink-ARB_draw_buffers_blend",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "wined3d-fl10_0-sampler-objects",
+   "consumer": "wined3d-gl",
+   "family": "gl_version",
+   "vk": null,
+   "gl_ext": "ARB_sampler_objects",
+   "required": true,
+   "source": {
+    "ref": "wine",
+    "file": "dlls/wined3d/adapter_gl.c",
+    "line": 1254,
+    "match": "ARB_SAMPLER_OBJECTS",
+    "verified": true,
+    "drift": false
+   },
+   "ours": "3.3",
+   "ours_text": "3.3 (smoke gl line)",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": [
+    "from .config/opencode/mali-orchestrator/phones/x8/smoke-latest.json"
+   ]
+  },
+  {
+   "id": "wined3d-fl10_0-polygon-offset-clamp",
+   "consumer": "wined3d-gl",
+   "family": "derived",
+   "vk": null,
+   "gl_ext": "ARB_polygon_offset_clamp",
+   "required": true,
+   "source": {
+    "ref": "wine",
+    "file": "dlls/wined3d/adapter_gl.c",
+    "line": 1253,
+    "match": "ARB_POLYGON_OFFSET_CLAMP",
+    "verified": true,
+    "drift": false
+   },
+   "ours": "OK",
+   "ours_text": "via zink-ARB_polygon_offset_clamp",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "wined3d-fl11_1-draw-indirect",
+   "consumer": "wined3d-gl",
+   "family": "derived",
+   "vk": null,
+   "gl_ext": "ARB_draw_indirect",
+   "required": true,
+   "source": {
+    "ref": "wine",
+    "file": "dlls/wined3d/adapter_gl.c",
+    "line": 1257,
+    "match": "ARB_DRAW_INDIRECT",
+    "verified": true,
+    "drift": false
+   },
+   "ours": "OK",
+   "ours_text": "via zink-ARB_draw_indirect",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "wined3d-fl11_1-bptc",
+   "consumer": "wined3d-gl",
+   "family": "derived",
+   "vk": null,
+   "gl_ext": "ARB_texture_compression_bptc",
+   "required": true,
+   "source": {
+    "ref": "wine",
+    "file": "dlls/wined3d/adapter_gl.c",
+    "line": 1258,
+    "match": "ARB_TEXTURE_COMPRESSION_BPTC",
+    "verified": true,
+    "drift": false
+   },
+   "ours": "OK",
+   "ours_text": "via dxvk-textureCompressionBC",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "wined3d-sm5-compute",
+   "consumer": "wined3d-gl",
+   "family": "derived",
+   "vk": null,
+   "gl_ext": "ARB_compute_shader",
+   "required": true,
+   "source": {
+    "ref": "wine",
+    "file": "dlls/wined3d/glsl_shader.c",
+    "line": 11289,
+    "match": "gl_info->supported[ARB_COMPUTE_SHADER]",
+    "verified": true,
+    "drift": false
+   },
+   "ours": "MISSING",
+   "ours_text": "via zink-ARB_compute_shader-max-threads",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "MISSING",
+   "games_unlocked": 1,
+   "caveats": []
+  },
+  {
+   "id": "wined3d-sm5-cull-distance",
+   "consumer": "wined3d-gl",
+   "family": "derived",
+   "vk": null,
+   "gl_ext": "ARB_cull_distance",
+   "required": true,
+   "source": {
+    "ref": "wine",
+    "file": "dlls/wined3d/glsl_shader.c",
+    "line": 11290,
+    "match": "gl_info->supported[ARB_CULL_DISTANCE]",
+    "verified": true,
+    "drift": false
+   },
+   "ours": "MISSING",
+   "ours_text": "via zink-ARB_cull_distance",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "MISSING",
+   "games_unlocked": 1,
+   "caveats": []
+  },
+  {
+   "id": "wined3d-sm5-tessellation",
+   "consumer": "wined3d-gl",
+   "family": "derived",
+   "vk": null,
+   "gl_ext": "ARB_tessellation_shader",
+   "required": true,
+   "source": {
+    "ref": "wine",
+    "file": "dlls/wined3d/glsl_shader.c",
+    "line": 11297,
+    "match": "gl_info->supported[ARB_TESSELLATION_SHADER]",
+    "verified": true,
+    "drift": false
+   },
+   "ours": "MISSING",
+   "ours_text": "via zink-ARB_tessellation_shader",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "MISSING",
+   "games_unlocked": 1,
+   "caveats": []
+  },
+  {
+   "id": "wined3d-vk-multi-viewport",
+   "consumer": "wined3d-vk",
+   "family": "feature",
+   "vk": "multiViewport",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "wine",
+    "file": "dlls/wined3d/adapter_vk.c",
+    "line": 2216,
+    "match": "info->features2.features.multiViewport",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "honest",
+   "cost_days": "0",
+   "unlocks": "DXVK + wined3d-vk FL 10_0",
+   "note": "caps: true",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "wined3d-vk-geometry-shader",
+   "consumer": "wined3d-vk",
+   "family": "feature",
+   "vk": "geometryShader",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "wine",
+    "file": "dlls/wined3d/adapter_vk.c",
+    "line": 2217,
+    "match": "info->features2.features.geometryShader",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "emulated",
+   "cost_days": "12-20",
+   "unlocks": "DXVK device creation, wined3d-vk FL 10_0",
+   "note": "notes/route-decision-2.md \u00a7C row 1 (Valhall has no GS; Arm's GLES driver expands VS->primitives on the same GPU)",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "MISSING",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "wined3d-vk-depth-bias-clamp",
+   "consumer": "wined3d-vk",
+   "family": "feature",
+   "vk": "depthBiasClamp",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "wine",
+    "file": "dlls/wined3d/adapter_vk.c",
+    "line": 2219,
+    "match": "info->features2.features.depthBiasClamp",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "honest",
+   "cost_days": "0",
+   "unlocks": "DXVK + wined3d-vk FL 10_0, ARB_polygon_offset_clamp",
+   "note": "caps: true",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "wined3d-vk-pipeline-statistics",
+   "consumer": "wined3d-vk",
+   "family": "feature",
+   "vk": "pipelineStatisticsQuery",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "wine",
+    "file": "dlls/wined3d/adapter_vk.c",
+    "line": 2220,
+    "match": "info->features2.features.pipelineStatisticsQuery",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": false,
+   "hardware": "emulated",
+   "cost_days": "3-5",
+   "unlocks": "wined3d-vk FL 10_0 adapter",
+   "note": "notes/route-decision-2.md \u00a7D",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "MISSING",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "wined3d-vk-vertex-divisor",
+   "consumer": "wined3d-vk",
+   "family": "feature",
+   "vk": "vertexAttributeInstanceRateDivisor",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "wine",
+    "file": "dlls/wined3d/adapter_vk.c",
+    "line": 2224,
+    "match": "info->vertex_divisor_features.vertexAttributeInstanceRateDivisor",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "wined3d-vk-vertex-divisor-zero",
+   "consumer": "wined3d-vk",
+   "family": "feature",
+   "vk": "vertexAttributeInstanceRateZeroDivisor",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "wine",
+    "file": "dlls/wined3d/adapter_vk.c",
+    "line": 2225,
+    "match": "info->vertex_divisor_features.vertexAttributeInstanceRateZeroDivisor",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "wined3d-vk-cull-distance",
+   "consumer": "wined3d-vk",
+   "family": "feature",
+   "vk": "shaderCullDistance",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "wine",
+    "file": "dlls/wined3d/adapter_vk.c",
+    "line": 2222,
+    "match": "info->features2.features.shaderCullDistance",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "emulated",
+   "cost_days": "2-3",
+   "unlocks": "ARB_cull_distance -> wined3d SM5; DXVK device creation",
+   "note": "notes/route-decision-2.md \u00a7C row 2 (nir_lower_clip_cull_distance to varyings + FS discard)",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "MISSING",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "wined3d-vk-tessellation",
+   "consumer": "wined3d-vk",
+   "family": "feature",
+   "vk": "tessellationShader",
+   "gl_ext": null,
+   "required": true,
+   "source": {
+    "ref": "wine",
+    "file": "dlls/wined3d/adapter_vk.c",
+    "line": 2240,
+    "match": "info->features2.features.tessellationShader",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "emulated",
+   "cost_days": "15-25",
+   "unlocks": "DXVK stage 2, wined3d-vk FL 11_0, GL 4.0",
+   "note": "notes/route-decision-2.md \u00a7C stage 2",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "MISSING",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "zink-ARB_cull_distance",
+   "consumer": "zink",
+   "family": "feature",
+   "vk": "shaderCullDistance",
+   "gl_ext": "ARB_cull_distance",
+   "required": true,
+   "source": {
+    "ref": "mesa",
+    "file": "src/gallium/drivers/zink/zink_screen.c",
+    "line": 1130,
+    "match": "caps->cull_distance = screen->info.feats.features.shaderCullDistance",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "emulated",
+   "cost_days": "2-3",
+   "unlocks": "ARB_cull_distance -> wined3d SM5; DXVK device creation",
+   "note": "notes/route-decision-2.md \u00a7C row 2 (nir_lower_clip_cull_distance to varyings + FS discard)",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "MISSING",
+   "games_unlocked": 2,
+   "caveats": []
+  },
+  {
+   "id": "zink-ARB_polygon_offset_clamp",
+   "consumer": "zink",
+   "family": "feature",
+   "vk": "depthBiasClamp",
+   "gl_ext": "ARB_polygon_offset_clamp",
+   "required": true,
+   "source": {
+    "ref": "mesa",
+    "file": "src/gallium/drivers/zink/zink_screen.c",
+    "line": 865,
+    "match": "caps->polygon_offset_clamp = screen->info.feats.features.depthBiasClamp",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "honest",
+   "cost_days": "0",
+   "unlocks": "DXVK + wined3d-vk FL 10_0, ARB_polygon_offset_clamp",
+   "note": "caps: true",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "zink-ARB_shader_image_load_store",
+   "consumer": "zink",
+   "family": "feature",
+   "vk": "shaderStorageImageWriteWithoutFormat",
+   "gl_ext": "ARB_shader_image_load_store",
+   "required": true,
+   "source": {
+    "ref": "mesa",
+    "file": "src/gallium/drivers/zink/zink_screen.c",
+    "line": 1066,
+    "match": "caps->image_store_formatted =",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "zink-ARB_texture_gather",
+   "consumer": "zink",
+   "family": "feature",
+   "vk": "shaderImageGatherExtended",
+   "gl_ext": "ARB_texture_gather",
+   "required": true,
+   "source": {
+    "ref": "mesa",
+    "file": "src/gallium/drivers/zink/zink_screen.c",
+    "line": 1076,
+    "match": "caps->max_texture_gather_components = 4",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "zink-ARB_sample_shading",
+   "consumer": "zink",
+   "family": "feature",
+   "vk": "sampleRateShading",
+   "gl_ext": "ARB_sample_shading",
+   "required": true,
+   "source": {
+    "ref": "mesa",
+    "file": "src/gallium/drivers/zink/zink_screen.c",
+    "line": 934,
+    "match": "caps->sample_shading = screen->info.feats.features.sampleRateShading",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "zink-ARB_texture_cube_map_array",
+   "consumer": "zink",
+   "family": "feature",
+   "vk": "imageCubeArray",
+   "gl_ext": "ARB_texture_cube_map_array",
+   "required": true,
+   "source": {
+    "ref": "mesa",
+    "file": "src/gallium/drivers/zink/zink_screen.c",
+    "line": 1029,
+    "match": "caps->cube_map_array = screen->info.feats.features.imageCubeArray",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "zink-ARB_draw_buffers_blend",
+   "consumer": "zink",
+   "family": "feature",
+   "vk": "independentBlend",
+   "gl_ext": "ARB_draw_buffers_blend",
+   "required": true,
+   "source": {
+    "ref": "mesa",
+    "file": "src/gallium/drivers/zink/zink_screen.c",
+    "line": 984,
+    "match": "caps->indep_blend_func = screen->info.feats.features.independentBlend",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=true",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "zink-ARB_transform_feedback3",
+   "consumer": "zink",
+   "family": "extension",
+   "vk": "VK_EXT_transform_feedback",
+   "gl_ext": "ARB_transform_feedback3",
+   "required": true,
+   "source": {
+    "ref": "mesa",
+    "file": "src/gallium/drivers/zink/zink_screen.c",
+    "line": 992,
+    "match": "caps->stream_output_interleave_buffers = screen->info.have_EXT_transform_feedback",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "x8=yes",
+   "bridge": true,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "zink-ARB_draw_indirect",
+   "consumer": "zink",
+   "family": "constant",
+   "vk": "multiDrawIndirect",
+   "gl_ext": "ARB_draw_indirect",
+   "required": true,
+   "source": {
+    "ref": "mesa",
+    "file": "src/gallium/drivers/zink/zink_screen.c",
+    "line": 823,
+    "match": "caps->draw_indirect = true",
+    "verified": true,
+    "drift": false
+   },
+   "ours": true,
+   "ours_text": "true (consumer hardcodes it)",
+   "bridge": null,
+   "hardware": "unknown",
+   "cost_days": "",
+   "unlocks": "",
+   "note": "",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "OK",
+   "games_unlocked": 0,
+   "caveats": []
+  },
+  {
+   "id": "zink-ARB_compute_shader-max-threads",
+   "consumer": "zink",
+   "family": "limit",
+   "vk": "maxComputeWorkGroupInvocations",
+   "gl_ext": "ARB_compute_shader",
+   "required": true,
+   "source": {
+    "ref": "mesa",
+    "file": "src/mesa/state_tracker/st_extensions.c",
+    "line": 1750,
+    "match": "screen->compute_caps.max_threads_per_block >= 1024",
+    "verified": true,
+    "drift": false
+   },
+   "ours": 128,
+   "ours_text": "x8=128/cmf=128",
+   "bridge": 1024,
+   "hardware": "honest",
+   "cost_days": "0.5-1",
+   "unlocks": "ARB_compute_shader -> wined3d SM5 -> D3D11 FL 11_0/11_1",
+   "note": "notes/feature-level.md row 10; PanVK oracle reports 1024 on the same chips",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "MISSING",
+   "games_unlocked": 2,
+   "caveats": []
+  },
+  {
+   "id": "zink-ARB_tessellation_shader",
+   "consumer": "zink",
+   "family": "feature",
+   "vk": "tessellationShader",
+   "gl_ext": "ARB_tessellation_shader",
+   "required": true,
+   "source": {
+    "ref": "mesa",
+    "file": "src/mesa/state_tracker/st_extensions.c",
+    "line": 1386,
+    "match": "tessellation_shader",
+    "verified": true,
+    "drift": false
+   },
+   "ours": false,
+   "ours_text": "x8=false",
+   "bridge": true,
+   "hardware": "emulated",
+   "cost_days": "15-25",
+   "unlocks": "DXVK stage 2, wined3d-vk FL 11_0, GL 4.0",
+   "note": "notes/route-decision-2.md \u00a7C stage 2",
+   "tests": [
+    "t_vk_feat"
+   ],
+   "status": "MISSING",
+   "games_unlocked": 2,
+   "caveats": []
+  }
+ ],
+ "dropped": [],
+ "falsification": [
+  {
+   "requirement": "icd-txf-combined-sampler",
+   "check": "status",
+   "expected": "OK",
+   "got": "OK",
+   "verdict": "PASS"
+  },
+  {
+   "requirement": "icd-view-format-target",
+   "check": "status",
+   "expected": "OK",
+   "got": "OK",
+   "verdict": "PASS"
+  },
+  {
+   "requirement": "dxvk-shaderCullDistance",
+   "check": "ours",
+   "expected": "false",
+   "got": "false",
+   "verdict": "PASS"
+  },
+  {
+   "requirement": "dxvk-geometryShader",
+   "check": "ours",
+   "expected": "false",
+   "got": "false",
+   "verdict": "PASS"
+  },
+  {
+   "requirement": "zink-ARB_compute_shader-max-threads",
+   "check": "ours",
+   "expected": "128",
+   "got": "128",
+   "verdict": "PASS"
+  }
+ ],
+ "gaps": []
+}

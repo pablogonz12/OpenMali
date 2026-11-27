@@ -1,0 +1,40 @@
+{
+  "comment": "Per Vulkan member (or GL extension): can the hardware do it honestly, only emulated, or not at all; the lane-day cost of the emulation; what it unlocks; which D3D level it gates; which of the owner's games it blocks. Every entry names the note it comes from — the generator does not invent a class. A member with no entry is printed with class `unknown` and a `?` status: that is the signal to fill it, not a guess.",
+  "vk": {
+    "geometryShader": {"hw": "emulated", "cost": "12-20", "d3d_level": ["11_0"], "unlocks": "DXVK device creation, wined3d-vk FL 10_0", "note": "notes/route-decision-2.md §C row 1 (Valhall has no GS; Arm's GLES driver expands VS->primitives on the same GPU)"},
+    "tessellationShader": {"hw": "emulated", "cost": "15-25", "d3d_level": ["11_0", "11_1"], "unlocks": "DXVK stage 2, wined3d-vk FL 11_0, GL 4.0", "note": "notes/route-decision-2.md §C stage 2"},
+    "shaderCullDistance": {"hw": "emulated", "cost": "2-3", "d3d_level": ["10_1", "11_0"], "unlocks": "ARB_cull_distance -> wined3d SM5; DXVK device creation", "note": "notes/route-decision-2.md §C row 2 (nir_lower_clip_cull_distance to varyings + FS discard)"},
+    "robustBufferAccess2": {"hw": "emulated", "cost": "3-4", "unlocks": "vkd3d-proton and DXVK device creation", "note": "notes/route-decision-2.md §C row 3 (robust_access lowering already compiled in)"},
+    "robustImageAccess2": {"hw": "emulated", "cost": "1-2", "unlocks": "vkd3d-proton device creation", "note": "notes/route-decision-2.md §B (bridge :1109 true)"},
+    "descriptorIndexing": {"hw": "emulated", "cost": "5-9", "unlocks": "DXVK/vkd3d device creation with bindless-ish resources", "note": "notes/route-decision-2.md §C row 5 (non-uniform lowering exists in vk/src/mali_descriptor_lower.c)"},
+    "maxComputeWorkGroupInvocations": {"hw": "honest", "cost": "0.5-1", "need_for": "zink ARB_compute_shader needs >= 1024 (st_extensions.c:1750)", "unlocks": "ARB_compute_shader -> wined3d SM5 -> D3D11 FL 11_0/11_1", "note": "notes/feature-level.md row 10; PanVK oracle reports 1024 on the same chips"},
+    "maxCullDistances": {"hw": "emulated", "cost": "2-3", "unlocks": "the cull-distance lowering", "note": "notes/route-decision-2.md §C"},
+    "pipelineStatisticsQuery": {"hw": "emulated", "cost": "3-5", "unlocks": "wined3d-vk FL 10_0 adapter", "note": "notes/route-decision-2.md §D"},
+    "transformFeedbackQueries": {"hw": "emulated", "cost": "3-5", "unlocks": "vkd3d-proton device creation", "note": "notes/route-decision-2.md §B row 1 (no HW XFB counters; count primitives in the emulation path)"},
+    "storageTexelBufferOffsetSingleTexelAlignment": {"hw": "emulated", "cost": "2-4", "unlocks": "vkd3d-proton device creation", "note": "notes/route-decision-2.md §B row 2 (round down, compensate in the shader)"},
+    "uniformTexelBufferOffsetSingleTexelAlignment": {"hw": "emulated", "cost": "2-4", "unlocks": "vkd3d-proton device creation", "note": "notes/route-decision-2.md §B row 2"},
+    "shaderFloat16": {"hw": "honest", "cost": "2-3", "unlocks": "vkd3d-proton optional, DXVK optional", "note": "notes/route-decision-2.md bridge diff (bridge :1150 true)"},
+    "drawIndirectCount": {"hw": "honest", "cost": "1-2", "unlocks": "the geometryShader emulation's second pass, DXVK optional", "note": "notes/route-decision-2.md §C row 1 (ours absent, bridge :775)"},
+    "VK_KHR_push_descriptor": {"hw": "honest", "cost": "3-4", "unlocks": "vkd3d-proton device creation", "note": "notes/route-decision-2.md §B row 3 (worktree feat/push-descriptor exists)"},
+    "shaderDrawParameters": {"hw": "honest", "cost": "1.5", "unlocks": "DXVK + vkd3d device creation", "note": "vk/R4-GAP.md §3 vk11 row"},
+    "bufferDeviceAddress": {"hw": "honest", "cost": "1", "unlocks": "DXVK + vkd3d device creation", "note": "vk/R4-GAP.md §3 vk12 row (kbase GPU VA = host VA mapping)"},
+    "synchronization2": {"hw": "honest", "cost": "1", "unlocks": "DXVK 1.3 set", "note": "vk/R4-GAP.md §3 vk13 row"},
+    "dynamicRendering": {"hw": "honest", "cost": "1", "unlocks": "DXVK 1.3 set", "note": "vk/R4-GAP.md §3 vk13 row (BeginRendering already exported)"},
+    "timelineSemaphore": {"hw": "honest", "cost": "0", "unlocks": "DXVK 1.2 set", "note": "already done (vk_sync_timeline)"},
+    "hostQueryReset": {"hw": "honest", "cost": "0", "unlocks": "DXVK 1.2 set", "note": "already done"},
+    "textureCompressionBC": {"hw": "honest", "cost": "0", "unlocks": "DXVK device creation (BC textures)", "note": "caps: true; decode in software"},
+    "samplerMirrorClampToEdge": {"hw": "honest", "cost": "0.5", "unlocks": "vkd3d-proton device creation, DXVK 1.2 set", "note": "vk/R4-GAP.md §3"},
+    "nullDescriptor": {"hw": "emulated", "cost": "1-2", "unlocks": "vkd3d-proton device creation", "note": "notes/route-decision-2.md §B row 4"},
+    "multiViewport": {"hw": "honest", "cost": "0", "unlocks": "DXVK + wined3d-vk FL 10_0", "note": "caps: true"},
+    "depthBiasClamp": {"hw": "honest", "cost": "0", "unlocks": "DXVK + wined3d-vk FL 10_0, ARB_polygon_offset_clamp", "note": "caps: true"}
+  },
+  "gl_ext": {
+    "ARB_cull_distance": {"via": "shaderCullDistance", "note": "consumers/zink.json zink-ARB_cull_distance"},
+    "ARB_compute_shader": {"via": "maxComputeWorkGroupInvocations >= 1024", "note": "consumers/zink.json zink-ARB_compute_shader-max-threads"}
+  },
+  "requirement": {
+    "icd-txf-combined-sampler": {"hw": "honest", "cost": "0", "unlocks": "every consumer that texelFetches a combined image sampler (zink's blit)"},
+    "icd-view-format-target": {"hw": "honest", "cost": "0", "unlocks": "mutable-format sRGB window views (zink presents this way)"},
+    "vkd3d-descriptor-heap-scale": {"hw": "emulated", "cost": "10-20", "unlocks": "D3D12 bindless without descriptor buffers", "note": "notes/route-decision-2.md §B descriptor indexing row"}
+  }
+}

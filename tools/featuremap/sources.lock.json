@@ -1,0 +1,95 @@
+{
+  "cache": "~/.cache/featuremap/src",
+  "comment": "Nothing here is vendored. Each entry is fetched read-only at generation time (or read from an existing local tree, recorded by revision+sha256) and the exact bytes we reasoned from are identified by sha256. Licences were checked to permit reading and quoting a line number; we quote at most one source line per row.",
+  "sources": [
+    {
+      "id": "vk.xml",
+      "what": "Vulkan registry: every entry point, extension, feature-struct member, limit and dependency",
+      "url": "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Docs/v1.4.341/xml/vk.xml",
+      "local": "~/.cache/mesa-upstream/src/vulkan/registry/vk.xml",
+      "rev": "v1.4.341 (Vulkan-Headers 1.4.341)",
+      "date": "2026-11-18",
+      "license": "Apache-2.0 OR MIT (Khronos)",
+      "sha256": "",
+      "dest": "vk.xml"
+    },
+    {
+      "id": "gl.xml",
+      "what": "OpenGL/GLES registry: entry points and enums per extension (wined3d/zink GL side)",
+      "url": "https://raw.githubusercontent.com/KhronosGroup/OpenGL-Registry/main/xml/gl.xml",
+      "local": "~/.cache/mesa-upstream/src/mesa/glapi/glapi/registry/gl.xml",
+      "rev": "OpenGL-Registry main, Mesa copy f48c22e082cd0ae2271f33581e7b43484ff9df3b",
+      "date": "2026-11-18",
+      "license": "Apache-2.0 (Khronos)",
+      "sha256": "",
+      "dest": "gl.xml"
+    },
+    {
+      "id": "dxvk",
+      "what": "DXVK 2.x: D3D9/10/11 -> Vulkan feature requirements (hard and optional), D3D feature level use",
+      "url": "https://github.com/doitsujin/dxvk",
+      "raw": "https://raw.githubusercontent.com/doitsujin/dxvk/{rev}/",
+      "rev": "9e57fa0b2c5b495ba1c890017d659935e5f1df65",
+      "revname": "master 2026-11-22",
+      "date": "2026-11-22",
+      "license": "zlib",
+      "files": [
+        "src/dxvk/dxvk_device_info.cpp",
+        "src/dxvk/dxvk_device_filter.cpp",
+        "src/dxvk/dxvk_limits.h"
+      ]
+    },
+    {
+      "id": "vkd3d-proton",
+      "what": "vkd3d-proton: D3D12 -> Vulkan hard requirements in vkd3d_init_device_caps",
+      "url": "https://github.com/HansKristian-Work/vkd3d-proton",
+      "raw": "https://raw.githubusercontent.com/HansKristian-Work/vkd3d-proton/{rev}/",
+      "rev": "cae8353ed7959c448ac976342052de1ec2b81715",
+      "revname": "master 2026-11-22",
+      "date": "2026-11-22",
+      "license": "LGPL-2.1",
+      "files": ["libs/vkd3d/device.c"]
+    },
+    {
+      "id": "wine",
+      "what": "wine 11.0 wined3d: the GL backend's feature_level_from_caps and the Vulkan backend's adapter requirements",
+      "url": "https://gitlab.winehq.org/wine/wine",
+      "raw": "https://gitlab.winehq.org/wine/wine/-/raw/{rev}/",
+      "rev": "wine-11.0",
+      "revname": "wine-11.0 (the version the guest runs, Proton 11-12.8 log)",
+      "date": "2026-11-21",
+      "license": "LGPL-2.1+",
+      "files": [
+        "dlls/wined3d/adapter_gl.c",
+        "dlls/wined3d/adapter_vk.c",
+        "dlls/wined3d/glsl_shader.c",
+        "dlls/wined3d/view.c",
+        "dlls/wined3d/swapchain.c"
+      ]
+    },
+    {
+      "id": "mesa",
+      "what": "Mesa zink: which Vulkan feature each GL extension zink exposes is conditioned on",
+      "url": "https://gitlab.freedesktop.org/mesa/mesa",
+      "raw": "https://gitlab.freedesktop.org/mesa/mesa/-/raw/{rev}/",
+      "rev": "f48c22e082cd0ae2271f33581e7b43484ff9df3b",
+      "revname": "Mesa main 2026-11-18",
+      "date": "2026-11-18",
+      "license": "MIT",
+      "local_tree": "~/.cache/mesa-upstream",
+      "files": [
+        "src/gallium/drivers/zink/zink_screen.c",
+        "src/gallium/drivers/zink/zink_device_info.py",
+        "src/mesa/state_tracker/st_extensions.c",
+        "src/mesa/main/version.c"
+      ]
+    }
+  ],
+  "caps": {
+    "comment": "Our own results and the bridge's: written by bin/smoke, read in place.",
+    "driver": "~/.config/opencode/mali-orchestrator/phones/{phone}/caps-driver.txt",
+    "bridge": "~/.config/opencode/mali-orchestrator/phones/{phone}/caps-bridge.txt",
+    "phones": ["x8", "cmf"],
+    "covdb": "~/Documents/Scripts/mali-open/vk/deqp/tools/covdb"
+  }
+}

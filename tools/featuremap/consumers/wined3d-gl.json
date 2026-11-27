@@ -1,0 +1,142 @@
+{
+  "consumer": "wined3d-gl",
+  "title": "wined3d, GL backend \u2014 D3D9/10/11 on GL (PROTON_USE_WINED3D=1, the route that boots today)",
+  "ref": "wine",
+  "kind": "gl",
+  "note": "Rows are the exact conditions of feature_level_from_caps() in wine 11.0 \u2014 there is no 11_0 branch, ask for 11_0 and you get 11_1 or 10_1. Each row's `ours` is derived through zink (consumers/zink.json) and the Vulkan caps below it, so the chain is wined3d -> GL ext -> zink -> Vk feature -> caps dump.",
+  "explicit": [
+    {
+      "id": "wined3d-gl32-context",
+      "family": "gl_version",
+      "gl_ext": "GL_VERSION >= 3.2",
+      "need": "3.2",
+      "required": true,
+      "file": "dlls/wined3d/adapter_gl.c",
+      "line": 1252,
+      "match": "gl_info->supported[WINED3D_GL_VERSION_3_2]",
+      "unlocks": "the FL 10_x/11_x branch at all (below it: 9_3)"
+    },
+    {
+      "id": "wined3d-fl10_1-cube-map-array",
+      "family": "derived",
+      "gl_ext": "ARB_texture_cube_map_array",
+      "derived_from": [
+        "zink-ARB_texture_cube_map_array"
+      ],
+      "required": true,
+      "file": "dlls/wined3d/adapter_gl.c",
+      "line": 1263,
+      "match": "gl_info->supported[ARB_TEXTURE_CUBE_MAP_ARRAY]",
+      "unlocks": "D3D feature level 10_1"
+    },
+    {
+      "id": "wined3d-fl10_1-draw-buffers-blend",
+      "family": "derived",
+      "gl_ext": "ARB_draw_buffers_blend",
+      "derived_from": [
+        "zink-ARB_draw_buffers_blend"
+      ],
+      "required": true,
+      "file": "dlls/wined3d/adapter_gl.c",
+      "line": 1264,
+      "match": "gl_info->supported[ARB_DRAW_BUFFERS_BLEND]",
+      "unlocks": "D3D feature level 10_1"
+    },
+    {
+      "id": "wined3d-fl10_0-sampler-objects",
+      "family": "gl_version",
+      "gl_ext": "ARB_sampler_objects",
+      "need": "3.3",
+      "required": true,
+      "file": "dlls/wined3d/adapter_gl.c",
+      "line": 1254,
+      "match": "ARB_SAMPLER_OBJECTS",
+      "unlocks": "the FL 10_0 branch (with GL 3.2 and polygon offset clamp)"
+    },
+    {
+      "id": "wined3d-fl10_0-polygon-offset-clamp",
+      "family": "derived",
+      "gl_ext": "ARB_polygon_offset_clamp",
+      "derived_from": [
+        "zink-ARB_polygon_offset_clamp"
+      ],
+      "required": true,
+      "file": "dlls/wined3d/adapter_gl.c",
+      "line": 1253,
+      "match": "ARB_POLYGON_OFFSET_CLAMP",
+      "unlocks": "the FL 10_0 branch"
+    },
+    {
+      "id": "wined3d-fl11_1-draw-indirect",
+      "family": "derived",
+      "gl_ext": "ARB_draw_indirect",
+      "derived_from": [
+        "zink-ARB_draw_indirect"
+      ],
+      "required": true,
+      "file": "dlls/wined3d/adapter_gl.c",
+      "line": 1257,
+      "match": "ARB_DRAW_INDIRECT",
+      "unlocks": "D3D feature level 11_1"
+    },
+    {
+      "id": "wined3d-fl11_1-bptc",
+      "family": "derived",
+      "gl_ext": "ARB_texture_compression_bptc",
+      "derived_from": [
+        "dxvk-textureCompressionBC"
+      ],
+      "required": true,
+      "file": "dlls/wined3d/adapter_gl.c",
+      "line": 1258,
+      "match": "ARB_TEXTURE_COMPRESSION_BPTC",
+      "unlocks": "D3D feature level 11_1"
+    },
+    {
+      "id": "wined3d-sm5-compute",
+      "family": "derived",
+      "gl_ext": "ARB_compute_shader",
+      "derived_from": [
+        "zink-ARB_compute_shader-max-threads"
+      ],
+      "required": true,
+      "file": "dlls/wined3d/glsl_shader.c",
+      "line": 11289,
+      "match": "gl_info->supported[ARB_COMPUTE_SHADER]",
+      "unlocks": "shader model 5 -> FL 11_1 (with ARB_draw_indirect + BPTC)"
+    },
+    {
+      "id": "wined3d-sm5-cull-distance",
+      "family": "derived",
+      "gl_ext": "ARB_cull_distance",
+      "derived_from": [
+        "zink-ARB_cull_distance"
+      ],
+      "required": true,
+      "file": "dlls/wined3d/glsl_shader.c",
+      "line": 11290,
+      "match": "gl_info->supported[ARB_CULL_DISTANCE]",
+      "unlocks": "shader model 5 -> FL 11_1"
+    },
+    {
+      "id": "wined3d-sm5-tessellation",
+      "family": "derived",
+      "gl_ext": "ARB_tessellation_shader",
+      "derived_from": [
+        "zink-ARB_tessellation_shader"
+      ],
+      "required": true,
+      "file": "dlls/wined3d/glsl_shader.c",
+      "line": 11297,
+      "match": "gl_info->supported[ARB_TESSELLATION_SHADER]",
+      "unlocks": "shader model 5 -> FL 11_1, and GL 4.0"
+    }
+  ],
+  "default_test": [
+    "t_vk_feat",
+    "vk_draw"
+  ],
+  "d3d_levels": {
+    "output": "these rows produce the D3D levels below; the level rows in the doc are generated from this file's lines 1252-1265"
+  }
+}

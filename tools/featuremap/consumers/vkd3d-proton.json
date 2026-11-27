@@ -1,0 +1,145 @@
+{
+  "consumer": "vkd3d-proton",
+  "title": "vkd3d-proton \u2014 D3D12 on Vulkan (what Proton's D3D12 path runs)",
+  "ref": "vkd3d-proton",
+  "kind": "vulkan",
+  "note": "Explicit rows: each is a check inside vkd3d_init_device_caps() that returns E_INVALIDARG (device creation fails) or flips an extension off. The macro `require` rows are the ones that print ERR( and return.",
+  "explicit": [
+    {
+      "id": "vkd3d-xfb-queries",
+      "family": "feature",
+      "vk": "transformFeedbackQueries",
+      "from": "VkPhysicalDeviceTransformFeedbackPropertiesEXT",
+      "required": true,
+      "file": "libs/vkd3d/device.c",
+      "line": 2510,
+      "match": "transformFeedbackQueries",
+      "unlocks": "D3D12 device creation at all (E_INVALIDARG without it)",
+      "section": "VkPhysicalDeviceTransformFeedbackPropertiesEXT"
+    },
+    {
+      "id": "vkd3d-texel-offset-single",
+      "family": "limit",
+      "vk": "storageTexelBufferOffsetSingleTexelAlignment",
+      "required": true,
+      "file": "libs/vkd3d/device.c",
+      "line": 2517,
+      "match": "storageTexelBufferOffsetSingleTexelAlignment",
+      "requires_any": [
+        "storageTexelBufferOffsetSingleTexelAlignment",
+        "storageTexelBufferOffsetAlignmentBytes==1"
+      ],
+      "unlocks": "D3D12 typed-buffer (SRV/UAV) shaders with byte offsets"
+    },
+    {
+      "id": "vkd3d-uniform-texel-offset-single",
+      "family": "limit",
+      "vk": "uniformTexelBufferOffsetSingleTexelAlignment",
+      "required": true,
+      "file": "libs/vkd3d/device.c",
+      "line": 2522,
+      "match": "uniformTexelBufferOffsetSingleTexelAlignment",
+      "requires_any": [
+        "uniformTexelBufferOffsetSingleTexelAlignment",
+        "uniformTexelBufferOffsetAlignmentBytes==1"
+      ],
+      "unlocks": "D3D12 typed-buffer (SRV) shaders with byte offsets"
+    },
+    {
+      "id": "vkd3d-sampler-mirror-clamp",
+      "family": "feature",
+      "vk": "samplerMirrorClampToEdge",
+      "section": "VkPhysicalDeviceVulkan12Features",
+      "required": true,
+      "file": "libs/vkd3d/device.c",
+      "line": 2627,
+      "match": "samplerMirrorClampToEdge"
+    },
+    {
+      "id": "vkd3d-robustness2-buffer",
+      "family": "feature",
+      "vk": "robustBufferAccess2",
+      "section": "VkPhysicalDeviceRobustness2FeaturesEXT",
+      "required": true,
+      "file": "libs/vkd3d/device.c",
+      "line": 2633,
+      "match": "robustBufferAccess2"
+    },
+    {
+      "id": "vkd3d-robustness2-image",
+      "family": "feature",
+      "vk": "robustImageAccess2",
+      "section": "VkPhysicalDeviceRobustness2FeaturesEXT",
+      "required": true,
+      "file": "libs/vkd3d/device.c",
+      "line": 2634,
+      "match": "robustImageAccess2"
+    },
+    {
+      "id": "vkd3d-null-descriptor",
+      "family": "feature",
+      "vk": "nullDescriptor",
+      "section": "VkPhysicalDeviceRobustness2FeaturesEXT",
+      "required": true,
+      "file": "libs/vkd3d/device.c",
+      "line": 2640,
+      "match": "nullDescriptor"
+    },
+    {
+      "id": "vkd3d-shader-draw-parameters",
+      "family": "feature",
+      "vk": "shaderDrawParameters",
+      "section": "VkPhysicalDeviceVulkan11Features",
+      "required": true,
+      "file": "libs/vkd3d/device.c",
+      "line": 2649,
+      "match": "shaderDrawParameters"
+    },
+    {
+      "id": "vkd3d-push-descriptor",
+      "family": "extension",
+      "vk": "VK_KHR_push_descriptor",
+      "required": true,
+      "file": "libs/vkd3d/device.c",
+      "line": 2655,
+      "match": "KHR_push_descriptor"
+    },
+    {
+      "id": "vkd3d-maintenance56",
+      "family": "feature",
+      "vk": "maintenance5",
+      "section": "VkPhysicalDeviceMaintenance5FeaturesKHR",
+      "required": true,
+      "file": "libs/vkd3d/device.c",
+      "line": 2661,
+      "match": "maintenance5"
+    },
+    {
+      "id": "vkd3d-vertex-attribute-divisor",
+      "family": "feature",
+      "vk": "vertexAttributeInstanceRateDivisor",
+      "section": "VkPhysicalDeviceVertexAttributeDivisorFeaturesKHR",
+      "required": true,
+      "file": "libs/vkd3d/device.c",
+      "line": 2266,
+      "match": "vertexAttributeInstanceRateDivisor"
+    },
+    {
+      "id": "vkd3d-descriptor-heap-scale",
+      "family": "limit",
+      "vk": "maxPerStageDescriptorSampledImages",
+      "need": 1000000,
+      "required": true,
+      "file": "libs/vkd3d/device.c",
+      "line": 2458,
+      "match": "vkd3d_init_device_caps",
+      "unlocks": "D3D12 bindless heap without the descriptor-buffer path (the bridge reports 1 048 576; we report 16)"
+    }
+  ],
+  "default_test": [
+    "t_dxvk_caps"
+  ],
+  "d3d_levels": {
+    "comment": "D3D12 FL 11_0 needs the whole list above; FL 12_0 adds optional ray tracing/mesh (not required)."
+  }
+}

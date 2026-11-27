@@ -1,0 +1,40 @@
+{
+  "comment": "Falsification of the chart itself: five rows whose measured fact is written down in M/notes/*, with the value the chart must compute. The generator compares and prints PASS/FAIL per row; a FAIL is a bug in the generator or a stale note, never something to edit away. Each entry names the note and what it says.",
+  "rows": [
+    {
+      "consumer": "icd-own",
+      "requirement": "icd-txf-combined-sampler",
+      "check": "status",
+      "expect": "OK",
+      "note": "M/notes/txf-fix.md §2: lower_tex() takes the binding's sampler (slot+stride-1) instead of pan_res_handle(0, MALI_DUMMY_SAMPLER_IDX); MALI_COMPILE_VERSION 33; vk/check.sh txf rows are ok. A texelFetch of a combined image sampler must therefore read the real sampler."
+    },
+    {
+      "consumer": "icd-own",
+      "requirement": "icd-view-format-target",
+      "check": "status",
+      "expect": "OK",
+      "note": "M/notes/view-format.md: res_image_view() takes mali_rtfmt_lookup(v->vk.view_format) for a colour target; check.sh view_format v10/v11/v13 ok; merged in #346."
+    },
+    {
+      "consumer": "dxvk",
+      "requirement": "dxvk-shaderCullDistance",
+      "check": "ours",
+      "expect": "false",
+      "note": "M/notes/route-decision-2.md §C row 2: ours false (x8 caps :925/:937), bridge true (:954); maxCullDistances = 0 in vk/src/mali_physical_device.c:140."
+    },
+    {
+      "consumer": "dxvk",
+      "requirement": "dxvk-geometryShader",
+      "check": "ours",
+      "expect": "false",
+      "note": "M/notes/route-decision-2.md §C row 1: ours false (x8 caps :891, cmf :879), bridge true (:920); Mali pipeline rejects any GS/tess stage (vk/src/mali_pipeline.c:145)."
+    },
+    {
+      "consumer": "zink",
+      "requirement": "zink-ARB_compute_shader-max-threads",
+      "check": "ours",
+      "expect": "128",
+      "note": "M/notes/feature-level.md row 10: ours 128 (x8 caps :414, cmf :402, vk/src/mali_physical_device.c:105), the gate in st_extensions.c:1750 wants >= 1024, PanVK reports 1024."
+    }
+  ]
+}
