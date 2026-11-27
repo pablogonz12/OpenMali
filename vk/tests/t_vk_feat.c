@@ -3135,6 +3135,26 @@ test_clip8(void)
  *   C (x > 2W/3):    cull[0] = +1, clip[0] = ndc.x-0.5  -> ordinary clipping keeps x >= 3W/4
  * Both distances are in one shader (one merged VARYING_SLOT_CLIP_DIST0 array), so a FS that reads the clip half as
  * "interpolated < 0" and the cull half as "interpolated == 0" has to be right for both at once. */
+/* Make render-target writes available and visible before mapped pixel reads. */
+static void
+cull_host_barrier(VkCommandBuffer cb)
+{
+   VkMemoryBarrier mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                         .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                         .dstAccessMask = VK_ACCESS_HOST_READ_BIT};
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+                      0, 1, &mb, 0, NULL, 0, NULL);
+}
+
+static int
+cull_host_invalidate(struct tgt *t)
+{
+   VkMappedMemoryRange range = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+                                .memory = t->mem, .offset = 0, .size = VK_WHOLE_SIZE};
+   CHECK(InvalidateMappedMemoryRanges(dev, 1, &range) == VK_SUCCESS, "invalidate render target");
+   return 1;
+}
+
 static int
 test_cull(void)
 {
@@ -3159,7 +3179,8 @@ test_cull(void)
    begin_pass(cb, &t, pipe);
    CmdDraw(cb, 18, 1, 0, 0);
    CmdEndRenderPass(cb);
-   if (!cb_submit(&t, cb)) return 0;
+   cull_host_barrier(cb);
+   if (!cb_submit(&t, cb) || !cull_host_invalidate(&t)) return 0;
    if (!g_fake) {
       int bad = 0, n = 0;
       const int b1 = W / 3, b2 = 2 * W / 3, bclip = 3 * W / 4;
@@ -3187,8 +3208,7 @@ test_cull(void)
    return 1;
 }
 
-/* shaderCullDistance declared but not fully written (cull_unw.vert: gl_CullDistance[2], only [0] stored, +1): nothing may be culled.
- * Hardware: the whole target is solid red. (rot.vert, glslang's default gl_PerVertex, is the declared-and-never-written case: t_vk_draw.) */
+/* Partially unwritten enabled cull distances have undefined results: this is a compile/submit probe only. */
 static int
 test_cull_unwritten(void)
 {
@@ -3207,17 +3227,7 @@ test_cull_unwritten(void)
    CmdDraw(cb, 6, 1, 0, 0);
    CmdEndRenderPass(cb);
    if (!cb_submit(&t, cb)) return 0;
-   if (!g_fake) {
-      int bad = 0, n = 0;
-      for (int y = 2; y < H - 2; y++)
-         for (int x = 2; x < W - 2; x++) {
-            if (abs(x - y * W / H) <= 3) continue;   /* the quad's diagonal */
-            n++;
-            bad += !near(pix(&t, x, y), 255, 0, 0, 255, 2);
-         }
-      CHECK(bad == 0, "%d of %d pixels not solid red (a declared-but-unwritten cull distance culled them)", bad, n);
-      printf("{\"test\":\"cull_unwritten\",\"pixels\":%d,\"bad\":%d,\"ok\":true}\n", n, bad);
-   } else printf("{\"test\":\"cull_unwritten\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   printf("{\"test\":\"cull_unwritten\",\"ok\":true}\n");
    DestroyPipeline(dev, pipe, NULL);
    DestroyPipelineLayout(dev, lay, NULL);
    tgt_destroy(&t);
@@ -3230,10 +3240,11 @@ test_cull_unwritten(void)
 static int
 test_cull_dynpoly(void)
 {
-   if (!g_feat.shaderCullDistance || !g_eds3_poly || !CmdSetPolygonModeEXT) {
+   if (!g_feat.shaderCullDistance || !g_eds3_poly) {
       printf("{\"test\":\"cull_dynpoly\",\"skipped\":\"extendedDynamicState3PolygonMode or shaderCullDistance not advertised\",\"ok\":true}\n");
       return 1;
    }
+   CHECK(CmdSetPolygonModeEXT, "enabled polygon-mode command missing");
    static const VkPolygonMode modes[3] = {VK_POLYGON_MODE_FILL, VK_POLYGON_MODE_POINT, VK_POLYGON_MODE_LINE};
    for (int k = 0; k < 3; k++) {
       struct tgt t;
@@ -3251,7 +3262,7 @@ test_cull_dynpoly(void)
       CmdDraw(cb, 18, 1, 0, 0);
       CmdEndRenderPass(cb);
       VkResult r = EndCommandBuffer(cb);
-      CHECK(k == 0 ? r == VK_SUCCESS : r != VK_SUCCESS, "polygonMode %d + cull distances: EndCommandBuffer = %d (FILL must succeed, POINT/LINE must be refused)", (int)modes[k], (int)r);
+      CHECK(k == 0 ? r == VK_SUCCESS : r == VK_ERROR_FEATURE_NOT_PRESENT, "polygonMode %d + cull distances: EndCommandBuffer = %d (FILL must succeed, POINT/LINE must be refused)", (int)modes[k], (int)r);
       DestroyPipeline(dev, pipe, NULL);
       DestroyPipelineLayout(dev, lay, NULL);
       tgt_destroy(&t);
@@ -3280,7 +3291,8 @@ test_cull2(void)
    begin_pass(cb, &t, pipe);
    CmdDraw(cb, 18, 1, 0, 0);
    CmdEndRenderPass(cb);
-   if (!cb_submit(&t, cb)) return 0;
+   cull_host_barrier(cb);
+   if (!cb_submit(&t, cb) || !cull_host_invalidate(&t)) return 0;
    if (!g_fake) {
       int bad = 0, n = 0;
       for (int y = 2; y < H - 2; y++)
@@ -3314,7 +3326,8 @@ test_spill(void)
    begin_pass(cb, &t, pipe);
    CmdDraw(cb, 18, 1, 0, 0);
    CmdEndRenderPass(cb);
-   if (!cb_submit(&t, cb)) return 0;
+   cull_host_barrier(cb);
+   if (!cb_submit(&t, cb) || !cull_host_invalidate(&t)) return 0;
    if (!g_fake) {
       int bad = 0, n = 0;
       for (int y = 2; y < H - 2; y++)
