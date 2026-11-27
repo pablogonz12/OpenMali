@@ -71,7 +71,7 @@ static void t_host(void)
       bool part = fl & MALI_QF_PARTIAL;
       /* shader writes values of unavailable queries only with PARTIAL, as the host path; availability identical */
       CHECK(!memcmp(h, s, 256), "host vs copy-shader differ for flags %u", fl);
-      CHECK(hr == (part ? 0 : 1), "NOT_READY expectation flags %u: %d", fl, hr);
+      CHECK(hr == ((fl & MALI_QF_WAIT) || !part ? 1 : 0), "NOT_READY expectation flags %u: %d", fl, hr);
    }
    uint64_t v64[2] = { 0, 0 };
    CHECK(mali_qpool_get_results(&p, 2, 1, 8, v64, 8, MALI_QF_64BIT) == 0 && v64[0] == 0x100000009ull, "64-bit value");
