@@ -134,8 +134,13 @@ hbuf_create(struct hbuf *h, VkDeviceSize size, VkBufferUsageFlags usage)
    CHECK(CreateBuffer(dev, &bi, NULL, &h->b) == VK_SUCCESS, "buffer");
    VkMemoryRequirements mr;
    GetBufferMemoryRequirements(dev, h->b, &mr);
+   /* Host reads after a fence wait see device writes only if the mapping is coherent, so ask for coherent memory
+    * instead of taking whatever host-visible type the driver happens to list first (type 0 here, but that is the
+    * driver's choice, not ours). Non-coherent memory would need InvalidateMappedMemoryRanges before every read. */
+   int mt = memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+   CHECK(mt >= 0, "no host-visible coherent memory type for buffer (bits %u)", mr.memoryTypeBits);
    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size,
-                              .memoryTypeIndex = memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)};
+                              .memoryTypeIndex = (uint32_t)mt};
    CHECK(AllocateMemory(dev, &ai, NULL, &h->m) == VK_SUCCESS, "buffer memory");
    CHECK(BindBufferMemory(dev, h->b, h->m, 0) == VK_SUCCESS, "bind buffer");
    CHECK(MapMemory(dev, h->m, 0, VK_WHOLE_SIZE, 0, (void **)&h->p) == VK_SUCCESS, "map buffer");
@@ -168,8 +173,13 @@ tgt_create(struct tgt *t)
    CHECK(CreateImage(dev, &ii, NULL, &t->img) == VK_SUCCESS, "colour image");
    VkMemoryRequirements mr;
    GetImageMemoryRequirements(dev, t->img, &mr);
+   /* Host readback below (pix()) happens after cb_submit's fence wait, which makes device writes available to the
+    * host; visibility then needs the memory to be coherent. Request it explicitly: a non-coherent type would
+    * require InvalidateMappedMemoryRanges after the fence, and memtype() alone does not promise coherence. */
+   int mt = memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+   CHECK(mt >= 0, "no host-visible coherent memory type for colour image (bits %u)", mr.memoryTypeBits);
    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size,
-                              .memoryTypeIndex = memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)};
+                              .memoryTypeIndex = (uint32_t)mt};
    CHECK(AllocateMemory(dev, &ai, NULL, &t->mem) == VK_SUCCESS, "colour mem");
    CHECK(BindImageMemory(dev, t->img, t->mem, 0) == VK_SUCCESS, "bind colour");
    CHECK(MapMemory(dev, t->mem, 0, VK_WHOLE_SIZE, 0, (void **)&t->px) == VK_SUCCESS, "map colour");
