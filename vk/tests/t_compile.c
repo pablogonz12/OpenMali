@@ -661,6 +661,16 @@ t_xfb_key(void)
       if (st.bin)
          CHECK(pl2.bin_size != st.bin_size || memcmp(pl2.bin, st.bin, st.bin_size), "the cached PLAIN binary is the STORES binary");
    }
+   /* A diagnostic compile must not reuse the normal cache entry, nor replace it. */
+   struct mali_compiled diag = {0}, normal = {0};
+   setenv("MALI_NO_VS_SIDEFX", "1", 1);
+   CHECK(!mali_compile(&o, &diag, err, sizeof err), "sidefx-disabled compile: %s", err);
+   CHECK(!diag.cache_hit, "sidefx-disabled compile reused the normal cache");
+   unsetenv("MALI_NO_VS_SIDEFX");
+   CHECK(!mali_compile(&o, &normal, err, sizeof err), "normal compile after diagnostic: %s", err);
+   CHECK(normal.cache_hit, "diagnostic compile replaced or removed the normal cache entry");
+   mali_compiled_free(&diag);
+   mali_compiled_free(&normal);
    mali_compiled_free(&st);
    mali_compiled_free(&pl);
    mali_compiled_free(&st2);

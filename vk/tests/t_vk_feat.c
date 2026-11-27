@@ -3486,7 +3486,7 @@ test_vsstore(void)
             n5 += b[18 + i] == 5;
             CHECK(b[18 + i] == 3 || b[18 + i] == 5, "vsstore: atomicMax returned %u for vertex %u, expected 3 (first) or 5", b[18 + i], i);
          }
-         CHECK(n3 >= 1 && n3 + n5 == 6, "vsstore: atomicMax returns %u x 3 and %u x 5 for 6 vertices", n3, n5);
+         CHECK(n3 == 1 && n5 == 5, "vsstore: atomicMax returns %u x 3 and %u x 5 for 6 vertices", n3, n5);
       }
       for (uint32_t i = 0; i < 6; i++) CHECK(b[2 + i] == i + 1, "vsstore: data[%u] = %u expected %u", i, b[2 + i], i + 1);
       uint32_t seen = 0;
