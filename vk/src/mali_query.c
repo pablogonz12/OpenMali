@@ -1,3 +1,4 @@
+#include "mali_wait_debug.h"
 /* SPDX-License-Identifier: MIT */
 /* M13, Vulkan layer of query pools (occlusion + timestamp) over vk_query_pool and mali_query_core.c.
  *   Create/Destroy/Reset/GetQueryPoolResults     host side, pool memory from the mali_meta device seam (zeroed, CPU-mapped, cached BO: the
@@ -100,7 +101,7 @@ mali_GetQueryPoolResults(VkDevice _dev, VkQueryPool h, uint32_t first, uint32_t 
    struct qwait w = { dev, qnow_ns() + 10ull * 1000000000ull };
    int r = mali_qpool_get_results_wait(&mali_query_pool_from_handle(h)->q, first, count, size, data, stride, flags, qwait_poll, &w);
    if (r == MALI_QWAIT_LOST)
-      return VK_ERROR_DEVICE_LOST;
+      return (mali_wait_event("device_lost site=mali_query.c:104"), VK_ERROR_DEVICE_LOST);
    return r == 0 ? VK_SUCCESS : (r == 1 || r == MALI_QWAIT_TIMEOUT) ? VK_NOT_READY : VK_ERROR_UNKNOWN;
 }
 

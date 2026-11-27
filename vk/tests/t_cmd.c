@@ -933,6 +933,8 @@ int main(int argc, char **argv)
       CHECK(EndCommandBuffer(a) == VK_ERROR_FEATURE_NOT_PRESENT, "first refusal not sticky");
       CHECK(EndCommandBuffer(b) == VK_ERROR_FEATURE_NOT_PRESENT, "second refusal not sticky");
    }
+   if (extra)
+      test_stencil_store_recording(pool);
    struct vk_buffer *vb = make_buffer(F.vb.gpu_va, sizeof k_pos);
    VkBuffer vbh = vk_buffer_to_handle(vb);
 

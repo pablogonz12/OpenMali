@@ -18,6 +18,7 @@
 #include "kbase.h"
 #include "kbase_cs.h"
 #include "kbase_uapi.h"
+#include "mali_wait_debug.h"
 
 extern uint64_t kb_bo_extra_flags; /* libkbase bo.c: OR'd into plain GPU allocations */
 
@@ -126,6 +127,13 @@ kbase_device_create(const struct mali_gpu_info *gpu, struct mali_kdev **out)
       free(k);
       return r < 0 ? r : -ENODEV;
    }
+   if (getenv("MALI_WSI_DEBUG") || mali_wait_debug()) {
+      unsigned major, minor;
+      kb_uapi_version(k->ctx, &major, &minor);
+      if (getenv("MALI_WSI_DEBUG"))
+         fprintf(stderr, "mali_vk: negotiated kbase uAPI %u.%u\n", major, minor);
+      mali_wait_event("negotiated kbase uAPI %u.%u", major, minor);
+   }
 
    const char *dbg = getenv("MALI_SUBMIT_DBG");
    k->dbg = dbg ? (unsigned)strtoul(dbg, NULL, 0) : 0;
@@ -147,6 +155,9 @@ kbase_device_create(const struct mali_gpu_info *gpu, struct mali_kdev **out)
    k_int_nocoh_default = gpu->arch_major == 11;
    if (cl ? cl[0] == '1' : gpu->arch_major == 10 || gpu->arch_major == 11 || gpu->arch_major == 13)
       kb_bo_extra_flags |= 0x800;
+   mali_wait_event("bo_flags backend=kbase extra=0x%llx coherent_local=%s override=%s",
+                   (unsigned long long)kb_bo_extra_flags, kb_bo_extra_flags & 0x800 ? "yes" : "no",
+                   cl ? cl : "unset");
    if (getenv("MALI_WSI_DEBUG") || getenv("MALI_SUBMIT_DBG"))
       fprintf(stderr, "mali_vk: kbase bo flags 0x%llx (%s): COHERENT_LOCAL applies to native and imported BOs; "
               "internal BOs %s\n", (unsigned long long)kb_bo_extra_flags,
@@ -527,6 +538,17 @@ wait_ring_space(struct mali_kdev *k, size_t bytes)
    return -ETIMEDOUT;
 }
 
+static bool
+kbase_debug_seqnos(struct mali_kdev *k, uint64_t *submitted, uint64_t *done)
+{
+   if (!k || pthread_mutex_trylock(&k->submit_lock))
+      return false;
+   *submitted = k->target;
+   *done = *(volatile uint64_t *)k->cqs.cpu;
+   pthread_mutex_unlock(&k->submit_lock);
+   return true;
+}
+
 static int
 kbase_submit_signal(struct mali_kdev *k, int *fence_fd)
 {
@@ -840,6 +862,7 @@ const struct mali_backend_ops mali_backend_kbase = {
    .bo_cache = kbase_bo_cache,
    .bo_export = kbase_bo_export,
    .submit_signal = kbase_submit_signal,
+   .debug_seqnos = kbase_debug_seqnos,
    .fence_wait = kbase_fence_wait,
    .device_lost = kbase_device_lost,
    .gpu_timestamp = kbase_gpu_timestamp,

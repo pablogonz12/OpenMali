@@ -3,6 +3,7 @@
  * buffers arrive with M8. vk_queue runs in DEFERRED mode (emulated timeline semaphores), so this is
  * called from the runtime's submit thread, one submission at a time. */
 #include "mali_queue.h"
+#include "mali_wait_debug.h"
 #include "mali_fprof.h"
 #include <time.h>
 static double prof_now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec * 1e3 + t.tv_nsec / 1e6; }
@@ -41,8 +42,8 @@ struct mali_hwctx {
    struct { uint64_t expected; size_t start; } fl[MALI_MAX_INFLIGHT];
    unsigned nfl;
    size_t cur_start;
-   struct mali_bo old_tls[8];     /* replaced TLS BOs: freed at teardown (in-flight / current frame may still use them) */
-   unsigned n_old_tls;
+   struct mali_bo *old_tls;       /* replaced TLS BOs: freed at teardown, never earlier (in-flight frames AND frames built but not yet submitted, e.g. two direct-draw frames of one command buffer, still hold their VA) */
+   unsigned n_old_tls, cap_old_tls;
    /* overflow descriptor memory: a frame that does not fit the rolling arena (even with every frame retired) takes extra BOs, freed once the
     * submission that used them has retired (tag = retire counter value, 0 = not yet submitted) */
    struct { struct mali_bo bo; uint64_t tag; } ovf[MALI_MAX_OVF];
@@ -329,16 +330,22 @@ hw_tls(void *u, size_t size, uint64_t *va)
    const struct mali_backend_ops *be = mali_device_pdev(h->dev)->backend;
    if (!h->tls_live || h->tls.size < size) {
       struct mali_bo nb;
+      /* A replaced buffer is kept until teardown: a frame built earlier (not submitted yet, so hw_retire cannot wait for it) records its VA.
+       * Growing to at least twice the current size bounds the list to log2(max size) entries. */
+      if (h->tls_live && size < (size_t)h->tls.size * 2)
+         size = (size_t)h->tls.size * 2;
+      if (h->tls_live && h->n_old_tls == h->cap_old_tls) {
+         unsigned nc = h->cap_old_tls ? h->cap_old_tls * 2 : 8;
+         struct mali_bo *no = realloc(h->old_tls, nc * sizeof *no);
+         if (!no)
+            return NULL;
+         h->old_tls = no;
+         h->cap_old_tls = nc;
+      }
       if (be->bo_alloc(h->dev->kdev, size, 0, &nb))
          return NULL;
-      if (h->tls_live) {
-         if (h->n_old_tls < 8)
-            h->old_tls[h->n_old_tls++] = h->tls;   /* may still be in use by in-flight frames or earlier draws of this one */
-         else {
-            hw_retire(h, 0);
-            be->bo_free(h->dev->kdev, &h->tls);
-         }
-      }
+      if (h->tls_live)
+         h->old_tls[h->n_old_tls++] = h->tls;
       h->tls = nb;
       h->tls_live = true;
    }
@@ -458,6 +465,9 @@ mali_hw_finish(struct mali_device *dev)
       hw_wait(h, h->expected);
    for (unsigned i = 0; i < h->n_old_tls; i++)
       be->bo_free(dev->kdev, &h->old_tls[i]);
+   free(h->old_tls);
+   h->old_tls = NULL;
+   h->n_old_tls = h->cap_old_tls = 0;
    for (unsigned i = 0; i < h->n_ovf; i++)
       be->bo_free(dev->kdev, &h->ovf[i].bo);
    h->n_ovf = 0;
@@ -629,6 +639,8 @@ static VkResult mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_subm
 static VkResult
 mali_queue_submit(struct vk_queue *vq, struct vk_queue_submit *submit)
 {
+   struct mali_device *dev = container_of(vq->base.device, struct mali_device, vk);
+   mali_wait_heartbeat(dev, 1, 0);
    uint32_t imported = 0;
    VkResult res = mali_queue_submit_impl(vq, submit, &imported);
    if (res != VK_SUCCESS && vk_queue_is_lost(vq)) {
@@ -648,7 +660,7 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
    const struct mali_backend_ops *be = mali_device_pdev(dev)->backend;
 
    if (vk_queue_is_lost(vq))
-      return VK_ERROR_DEVICE_LOST;
+      return (mali_wait_event("device_lost site=mali_queue.c:663"), VK_ERROR_DEVICE_LOST);
    if (vk_queue_submit_has_bind(submit))
       return vk_error(vq, VK_ERROR_FEATURE_NOT_PRESENT); /* sparse: not supported */
 
@@ -671,7 +683,7 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
       }
       VkResult r = vk_sync_wait(&dev->vk, w->sync, w->wait_value, VK_SYNC_WAIT_COMPLETE, UINT64_MAX);
       if (r != VK_SUCCESS)
-         return vk_queue_set_lost(vq, "queue wait failed: %d", r);
+         return (mali_wait_event("device_lost site=mali_queue.c:686"), vk_queue_set_lost(vq, "queue wait failed: %d", r));
    }
 
    double p1 = prof_now();
@@ -682,7 +694,7 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
       VkResult cr = mali_cmd_submit(submit->command_buffers[i]);
       if (cr == VK_ERROR_DEVICE_LOST && getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: frame submit lost\n");
       if (cr == VK_ERROR_DEVICE_LOST)
-         return vk_queue_set_lost(vq, "frame submit failed");
+         return (mali_wait_event("device_lost site=mali_queue.c:697"), vk_queue_set_lost(vq, "frame submit failed"));
       if (cr != VK_SUCCESS)
          return vk_error(vq, cr);
    }
@@ -701,7 +713,7 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
       r = be->submit_signal(dev->kdev, &fd);
    if (r != 0) {
       if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: submit_signal failed: %d\n", r);
-      return vk_queue_set_lost(vq, "queue submit failed: %d", r);
+      return (mali_wait_event("device_lost site=mali_queue.c:716"), vk_queue_set_lost(vq, "queue submit failed: %d", r));
    }
 
    VkResult res = VK_SUCCESS;
@@ -734,7 +746,7 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
    if (dev->hw && dev->hw->fp.on && submit->command_buffer_count == 0 && submit->wait_count > 0 && submit->signal_count > 0)
       mali_fprof_present(&dev->hw->fp);
    if (res != VK_SUCCESS)
-      return vk_queue_set_lost(vq, "queue signal import failed: %d", res); /* GPU work is in flight, its fence is lost */
+      return (mali_wait_event("device_lost site=mali_queue.c:749"), vk_queue_set_lost(vq, "queue signal import failed: %d", res)); /* GPU work is in flight, its fence is lost */
    if (getenv("MALI_PROF")) {
       double p3 = prof_now();
       prof_acc[0] += p1 - p0; prof_acc[1] += p2 - p1; prof_acc[2] += p3 - p2;
@@ -751,7 +763,7 @@ mali_device_check_status(struct vk_device *vk)
    struct mali_device *dev = container_of(vk, struct mali_device, vk);
 
    if (mali_device_pdev(dev)->backend->device_lost(dev->kdev))
-      return VK_ERROR_DEVICE_LOST;
+      return (mali_wait_event("device_lost site=mali_queue.c:766"), VK_ERROR_DEVICE_LOST);
    return VK_SUCCESS;
 }
 
