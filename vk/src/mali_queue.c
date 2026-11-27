@@ -400,6 +400,14 @@ hw_submit_multi(void *u, const uint64_t *cs, unsigned n, unsigned nframes)
    }
    double q0 = prof_now();
    int r = be->submit_cs(h->dev->kdev, cs, n);
+   if (r) {
+      /* MALI_WAIT_DBG: the backend already logged the step that failed; this line ties it to the queue accounting
+       * and the frame batch, so the app's VK_ERROR_DEVICE_LOST has a cause in the same file. */
+      uint64_t done = *(volatile uint64_t *)h->sync.cpu;
+      mali_wait_event("hw_submit_multi failed backend=%s rc=%d errno=%d (%s) instrs=%u frames=%u expected=%llu done=%llu inflight=%u",
+                      be->name ? be->name : "?", r, errno, strerror(errno), n, nframes,
+                      (unsigned long long)h->expected, (unsigned long long)done, h->nfl);
+   }
    if (h->fp.on && r == 0)
       mali_fprof_kicked(&h->fp, prof_now() - q0);
    if (getenv("MALI_PROF")) {

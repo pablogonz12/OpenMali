@@ -5,6 +5,7 @@
 
 #include <errno.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
@@ -41,6 +42,7 @@ struct mali_kdev {
    unsigned long fault_at;      /* MALI_FAULT_INJECT=n: the n-th submit carries an invalid instruction */
    bool lost;
    unsigned dbg;                /* MALI_SUBMIT_DBG bit mask (DBG_*) */
+   struct kb_tiler_heap *heap;  /* the live tiler heap (kbase_log_fault): its state decides "no free chunk" faults */
 
    /* M9: every BO handed out by bo_alloc (MEM_SYNC list for COHERENT_LOCAL on arch 13) */
    pthread_mutex_t bo_lock;
@@ -65,6 +67,48 @@ struct mali_kdev {
 /* MALI_SUBMIT_DBG bits (hardware diagnosis, default 0). */
 #define DBG_PAD128  0x20u /* 128-byte submissions (ring accounting with another size) */
 #define DBG_VERBOSE 0x80u /* on a failed submit print queue state and the ring around CS_EXTRACT */
+
+/* One diagnostic line: stderr (as the debug prints always did) and, when MALI_WAIT_DBG names a sink, the same line in
+ * that process's log file, where the submit failure and the app's fate sit together. */
+static void
+kbase_dbg(const char *fmt, ...)
+{
+   char line[512];
+   va_list ap;
+   va_start(ap, fmt);
+   vsnprintf(line, sizeof line, fmt, ap);
+   va_end(ap);
+   fprintf(stderr, "mali_vk: %s\n", line);
+   mali_wait_event("%s", line);
+}
+
+/* MALI_WAIT_DBG: after a failed step, everything the ring, the group, the tiler heap and the CS notifications say
+ * about it. Called only on the failure path. */
+static void
+kbase_log_fault(struct mali_kdev *k, const char *step, int r)
+{
+   const struct kb_event *f = kb_last_fatal(k->ctx);
+   mali_wait_event("kbase submit failed step=%s rc=%d errno=%d (%s)", step, r, errno, strerror(errno));
+   mali_wait_event("kbase state lost=%d faulted=%d group=%u uid=%u live=%d insert=%llu extract=%llu ring=%u kicks=%llu doorbells=%llu active=%u target=%llu cqs=%llu submits=%lu",
+                   (int)k->lost, (int)kb_queue_faulted(&k->queue), (unsigned)k->queue.group_handle,
+                   k->queue.group_uid, (int)k->queue.group_live, (unsigned long long)k->queue.insert,
+                   (unsigned long long)kb_queue_extract(&k->queue), k->queue.ring_size,
+                   (unsigned long long)k->queue.kicks, (unsigned long long)k->queue.doorbells,
+                   (unsigned)*k->queue.cs_active, (unsigned long long)k->target,
+                   (unsigned long long)*(volatile uint64_t *)k->cqs.cpu, k->submits);
+   if (k->heap)
+      mali_wait_event("kbase tiler heap ctx_va=0x%llx first_chunk=0x%llx chunk=%u live=%d",
+                      (unsigned long long)k->heap->ctx_va, (unsigned long long)k->heap->first_chunk_va,
+                      k->heap->chunk_size, (int)k->heap->live);
+   else
+      mali_wait_event("kbase tiler heap none");
+   if (f)
+      mali_wait_event("kbase last fatal event type=%d group=%d error_type=%d csi=%d status=0x%x sideband=0x%llx fatal=%d text=%s",
+                      f->type, f->group, f->error_type, f->csi_index, f->status,
+                      (unsigned long long)f->sideband, (int)f->fatal, f->text);
+   else
+      mali_wait_event("kbase last fatal event none");
+}
 
 static bool k_int_nocoh_default;   /* arch 11: driver-internal BOs without COHERENT_LOCAL/MEM_SYNC */
 static int int_nocoh = -1;
@@ -525,8 +569,14 @@ wait_ring_space(struct mali_kdev *k, size_t bytes)
       if (pthread_mutex_trylock(&k->wait_lock) == 0) {
          struct kb_event ev;
          while (kb_event_read(k->ctx, &ev, 0) > 0)
-            if (ev.fatal || getenv("MALI_PIPE_DBG"))
+            if (ev.fatal || getenv("MALI_PIPE_DBG")) {
                fprintf(stderr, "mali_vk: %sevent: %s\n", ev.fatal ? "FATAL " : "", ev.text);
+               /* The notification that made wait_ring_space give up is the fault itself: keep its fields. */
+               if (ev.fatal)
+                  mali_wait_event("kbase fatal event type=%d group=%d error_type=%d csi=%d status=0x%x sideband=0x%llx text=%s",
+                                  ev.type, ev.group, ev.error_type, ev.csi_index, ev.status,
+                                  (unsigned long long)ev.sideband, ev.text);
+            }
          pthread_mutex_unlock(&k->wait_lock);
       }
       if (kb_queue_faulted(&k->queue))
@@ -554,6 +604,7 @@ kbase_submit_signal(struct mali_kdev *k, int *fence_fd)
 {
    pthread_mutex_lock(&k->submit_lock);
    int r = 0, fd = -1;
+   const char *step = "lost_flag";
 
    if (k->lost || kb_queue_faulted(&k->queue)) {
       r = -EIO;
@@ -574,13 +625,18 @@ kbase_submit_signal(struct mali_kdev *k, int *fence_fd)
       while ((k->dbg & DBG_PAD128) && b.n < 16)
          kb_cs_emit(&b, kb_cs_nop());
    }
+   step = "ring_space";
    if ((r = wait_ring_space(k, ((size_t)b.n * 8 + 63) & ~(size_t)63)))
       goto out;
 
    /* KCPU first (as t_submit): fence signals once the counter exceeds target - 1. */
-   if ((r = kb_kcpu_cqs_wait_gt64(k->ctx, k->cqs.gpu_va, target - 1)) ||
-       (r = kb_kcpu_fence_signal(k->ctx, &fd)))
+   step = "kcpu_cqs_wait";
+   if ((r = kb_kcpu_cqs_wait_gt64(k->ctx, k->cqs.gpu_va, target - 1)))
       goto out;
+   step = "kcpu_fence_signal";
+   if ((r = kb_kcpu_fence_signal(k->ctx, &fd)))
+      goto out;
+   step = "kick_ioctl";
    if ((r = kb_queue_submit(&k->queue, b.ins, b.n, KB_KICK_IOCTL))) {
       close(fd);
       fd = -1;
@@ -591,19 +647,20 @@ kbase_submit_signal(struct mali_kdev *k, int *fence_fd)
    *fence_fd = fd;
 out:
    if (r) {
-      fprintf(stderr, "mali_vk: submit #%llu failed: %d (extract=%llu insert=%llu faulted=%d)\n",
-              (unsigned long long)k->submits + 1, r, (unsigned long long)kb_queue_extract(&k->queue),
-              (unsigned long long)k->queue.insert, (int)kb_queue_faulted(&k->queue));
+      kbase_log_fault(k, step, r);
+      kbase_dbg("submit #%llu failed: %d (extract=%llu insert=%llu faulted=%d)",
+                (unsigned long long)k->submits + 1, r, (unsigned long long)kb_queue_extract(&k->queue),
+                (unsigned long long)k->queue.insert, (int)kb_queue_faulted(&k->queue));
       if (k->dbg & DBG_VERBOSE) {
          uint64_t ext = kb_queue_extract(&k->queue);
          const uint64_t *ring = k->queue.ring.cpu;
-         fprintf(stderr, "mali_vk: dbg=0x%x active=%u kicks=%llu doorbells=%llu cqs=%llu target=%llu\n", k->dbg,
-                 (unsigned)*k->queue.cs_active, (unsigned long long)k->queue.kicks,
-                 (unsigned long long)k->queue.doorbells,
-                 (unsigned long long)*(volatile uint64_t *)k->cqs.cpu, (unsigned long long)k->target);
+         kbase_dbg("dbg=0x%x active=%u kicks=%llu doorbells=%llu cqs=%llu target=%llu", k->dbg,
+                   (unsigned)*k->queue.cs_active, (unsigned long long)k->queue.kicks,
+                   (unsigned long long)k->queue.doorbells,
+                   (unsigned long long)*(volatile uint64_t *)k->cqs.cpu, (unsigned long long)k->target);
          for (uint64_t o = ext >= 64 ? (ext & ~63ull) - 64 : 0; o < (ext & ~63ull) + 128 && o < k->queue.insert; o += 8)
-            fprintf(stderr, "mali_vk: ring[%4llu]%s %016llx\n", (unsigned long long)o, o == ext ? "*" : " ",
-                    (unsigned long long)ring[(o & (k->queue.ring_size - 1)) / 8]);
+            kbase_dbg("ring[%4llu]%s %016llx", (unsigned long long)o, o == ext ? "*" : " ",
+                      (unsigned long long)ring[(o & (k->queue.ring_size - 1)) / 8]);
       }
       k->lost = true;
    }
@@ -765,6 +822,7 @@ kbase_submit_cs(struct mali_kdev *k, const uint64_t *cs, unsigned n)
 
    if (k->lost || kb_queue_faulted(&k->queue)) {
       r = -EIO;
+      kbase_log_fault(k, k->lost ? "lost_flag" : "queue_faulted", r);
       goto out;
    }
    mem_sync_bos(k, 1, SYNC_HOT);   /* the other BOs were synced by host_sync at the start of the queue submit */
@@ -774,13 +832,16 @@ kbase_submit_cs(struct mali_kdev *k, const uint64_t *cs, unsigned n)
    const unsigned piece = kb_queue_piece_instrs(k->queue.ring_size);
    for (unsigned i = 0; i < n && !r; i += piece) {
       unsigned m = n - i < piece ? n - i : piece;
-      if ((r = wait_ring_space(k, ((size_t)m * 8 + 63) & ~(size_t)63)))
+      if ((r = wait_ring_space(k, ((size_t)m * 8 + 63) & ~(size_t)63))) {
+         kbase_log_fault(k, "ring_space", r);
          break;
-      r = kb_queue_submit(&k->queue, cs + i, m, KB_KICK_IOCTL);
+      }
+      if ((r = kb_queue_submit(&k->queue, cs + i, m, KB_KICK_IOCTL)))
+         kbase_log_fault(k, "kick_ioctl", r);
    }
    if (r) {
-      fprintf(stderr, "mali_vk: CS submit failed: %d (extract=%llu insert=%llu)\n", r,
-              (unsigned long long)kb_queue_extract(&k->queue), (unsigned long long)k->queue.insert);
+      kbase_dbg("CS submit failed: %d (extract=%llu insert=%llu)", r,
+                (unsigned long long)kb_queue_extract(&k->queue), (unsigned long long)k->queue.insert);
       k->lost = true;
    }
 out:
@@ -825,6 +886,8 @@ kbase_heap_create(struct mali_kdev *k, uint32_t chunk, uint32_t initial, uint32_
    if (!h)
       return -ENOMEM;
    int r = kb_tiler_heap_create(k->ctx, chunk, initial, max, h);
+   if (!r)
+      k->heap = h;
    if (r) {
       free(h);
       return r < 0 ? r : -EIO;
@@ -839,6 +902,8 @@ kbase_heap_destroy(struct mali_kdev *k, struct mali_heap *heap)
    if (!heap->priv)
       return;
    kb_tiler_heap_destroy(heap->priv);
+   if (k->heap == heap->priv)
+      k->heap = NULL;
    free(heap->priv);
    heap->priv = NULL;
 }

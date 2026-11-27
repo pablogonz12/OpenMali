@@ -1861,6 +1861,43 @@ mali_CmdClearDepthStencilImage(VkCommandBuffer h, VkImage image, VkImageLayout l
 }
 
 /* ---- submit ---- */
+/* MALI_WAIT_DBG: a lost-device line has to say what the command buffer recorded, because the app (ANGLE) only shows
+ * VK_ERROR_DEVICE_LOST. Called from the failure paths only, so the normal submit never walks the frames again. */
+static const char *
+cmd_op_name(unsigned kind)
+{
+   switch (kind) {
+   case MALI_OP_FLUSH: return "flush";
+   case MALI_OP_TIMESTAMP: return "timestamp";
+   case MALI_OP_AVAIL: return "avail";
+   case MALI_OP_EVENT_WAIT: return "event_wait";
+   default: return "unknown";
+   }
+}
+
+static void
+cmd_log_records(const struct mali_cmd_buffer *cmd)
+{
+   unsigned nops = 0;
+   for (unsigned i = 0; i < cmd->nframes; i++)
+      nops += cmd->frames[i].nops;
+   unsigned seen = 0;
+   for (unsigned i = 0; i < cmd->nframes; i++) {
+      const struct mali_frame *f = &cmd->frames[i];
+      mali_wait_event("cmd frame %u/%u %s draws=%u area=%d,%d,%dx%d samples=%u ops=%u", i + 1, cmd->nframes,
+                      f->compute ? "compute" : (f->ndraws ? "draws" : "ops"), f->ndraws,
+                      f->area[0], f->area[1], f->area[2], f->area[3], f->samples, f->nops);
+      /* The last 30 ops, oldest first: an ops frame per event/timestamp makes ANGLE's stream readable at the tail. */
+      for (unsigned j = 0; j < f->nops; j++, seen++) {
+         if (seen + 30 < nops)
+            continue;
+         const struct mali_op *o = &f->ops[j];
+         mali_wait_event("cmd op %u/%u %s va=0x%llx va2=0x%llx val=%u", seen, nops, cmd_op_name(o->kind),
+                         (unsigned long long)o->va, (unsigned long long)o->va2, o->val);
+      }
+   }
+}
+
 VkResult
 mali_cmd_submit(struct vk_command_buffer *vk)
 {
@@ -1890,8 +1927,12 @@ mali_cmd_submit(struct vk_command_buffer *vk)
           * exactly the GPU-driven case this exists for. */
          if (nall) {
             kb_wmb();
-            if (g_hw.submit_multi(g_hw.user, all, nall, counted)) {
-               res = (mali_wait_event("device_lost site=mali_cmd.c:1894"), VK_ERROR_DEVICE_LOST);
+            int sres = g_hw.submit_multi(g_hw.user, all, nall, counted);
+            if (sres) {
+               mali_wait_event("device_lost site=mali_cmd.c:1894 rc=%d errno=%d (%s) frames=%u instrs=%u drain=1",
+                               sres, errno, strerror(errno), counted, nall);
+               cmd_log_records(cmd);
+               res = VK_ERROR_DEVICE_LOST;
                break;
             }
             nall = counted = 0;
@@ -1944,9 +1985,13 @@ mali_cmd_submit(struct vk_command_buffer *vk)
    }
    if (res == VK_SUCCESS && nall) {
       kb_wmb();
-      int rc = g_hw.submit_multi(g_hw.user, all, nall, counted);
-      if (rc)
-         res = (mali_wait_event("device_lost site=mali_cmd.c:1949"), VK_ERROR_DEVICE_LOST);
+      int sres = g_hw.submit_multi(g_hw.user, all, nall, counted);
+      if (sres) {
+         mali_wait_event("device_lost site=mali_cmd.c:1949 rc=%d errno=%d (%s) frames=%u instrs=%u",
+                         sres, errno, strerror(errno), counted, nall);
+         cmd_log_records(cmd);
+         res = VK_ERROR_DEVICE_LOST;
+      }
    } else if (res != VK_SUCCESS && counted) {
       /* frames of this command buffer were built (arena consumed) but never submitted: nothing to retire */
    }
