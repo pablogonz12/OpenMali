@@ -155,6 +155,9 @@ kbase_device_create(const struct mali_gpu_info *gpu, struct mali_kdev **out)
    k_int_nocoh_default = gpu->arch_major == 11;
    if (cl ? cl[0] == '1' : gpu->arch_major == 10 || gpu->arch_major == 11 || gpu->arch_major == 13)
       kb_bo_extra_flags |= 0x800;
+   mali_wait_event("bo_flags backend=kbase extra=0x%llx coherent_local=%s override=%s",
+                   (unsigned long long)kb_bo_extra_flags, kb_bo_extra_flags & 0x800 ? "yes" : "no",
+                   cl ? cl : "unset");
    if (getenv("MALI_WSI_DEBUG") || getenv("MALI_SUBMIT_DBG"))
       fprintf(stderr, "mali_vk: kbase bo flags 0x%llx (%s): COHERENT_LOCAL applies to native and imported BOs; "
               "internal BOs %s\n", (unsigned long long)kb_bo_extra_flags,

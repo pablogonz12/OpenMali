@@ -681,7 +681,7 @@ test_wait_debug(void)
    }
    rewind(capture);
    char line[512];
-   int entries = 0, done = 0, startup = 0;
+   int entries = 0, done = 0, startup = 0, flags = 0;
    while (fgets(line, sizeof(line), capture)) {
       if (strstr(line, "mali_wait: sync_wait ") && strstr(line, "not submitted for"))
          entries++;
@@ -689,13 +689,15 @@ test_wait_debug(void)
          done++;
       if (strstr(line, "mali_wait: startup ") && strstr(line, "mali-open "))
          startup++;
+      if (strstr(line, "mali_wait: bo_flags backend=fake extra=unavailable coherent_local=unavailable override="))
+         flags++;
    }
    fclose(capture);
    DestroyFence(dev, f, NULL);
    int expected = e && (!strcmp(e, "1") || e[0] == '/');
    CHECK(r == VK_TIMEOUT && entries == expected && done == expected &&
-         (!(e && e[0] == '/') || startup == 1),
-         "wait result=%d entries=%d done=%d startup=%d expected=%d", r, entries, done, startup, expected);
+         (!(e && e[0] == '/') || (startup == 1 && flags >= 1)),
+         "wait result=%d entries=%d done=%d startup=%d flags=%d expected=%d", r, entries, done, startup, flags, expected);
    return 1;
 }
 
