@@ -444,6 +444,8 @@ kbase_bo_wrote(struct mali_kdev *k, struct mali_bo *b)
  * before the loop reads the flags or after it cleared them (and leaves the BO dirty for the next submit).
  * The buffer path passes a NULL kdev (mali_buffer.c bo_host_touch after a rebind, before any submit of that buffer), so
  * there is no lock to take there; kdev is what carries it. */
+static bool mem_sync_one_locked(struct mali_kdev *k, struct kb_bo *b, unsigned op);
+
 static void
 kbase_bo_host_touch(struct mali_kdev *k, struct mali_bo *b)
 {
@@ -453,6 +455,19 @@ kbase_bo_host_touch(struct mali_kdev *k, struct mali_bo *b)
    if (k) pthread_mutex_lock(&k->bo_lock);
    bo->host_lazy = false;
    mali_prof_add(MALI_PROF_WAITS_MAP, 1);
+   /* MALI_SYNC_READ: freshness for the CPU is delivered here, when it takes a mapping, and no longer by sweeping every
+    * BO at every fence wait (below, mem_sync_bos). A mapped BO is covered by the per-wait sweep as before, so a BO the
+    * GPU writes while it stays mapped is still refreshed at the next wait; an unmapped one is not, because the CPU
+    * cannot read it. The invalidation has to happen now: the read follows the map immediately. */
+   {
+      const char *rd = getenv("MALI_SYNC_READ");
+      bool lazy = !rd || rd[0] != '0';
+      uint64_t wrote = __atomic_load_n(&bo->gpu_writes, __ATOMIC_RELAXED);
+      bool pending = wrote != bo->synced_writes ||
+                     __atomic_load_n(&k->sync_all_pending, __ATOMIC_RELAXED);
+      if (lazy && pending)
+         mem_sync_one_locked(k, bo, 2);
+   }
    /* MALI_SYNC_DIRTY: the CPU may write through this mapping at any time, so the BO is dirty until it is unmapped and
     * a sync has covered it (mem_sync_bos keeps it dirty while cpu_mapped is set). */
    bo->cpu_dirty = true;
@@ -748,6 +763,33 @@ mem_sync_all(struct mali_kdev *k, unsigned op)
    mem_sync_bos(k, op, SYNC_ALL);
 }
 
+/* One BO, one MEM_SYNC: the device->CPU half of the switch above, run when the CPU takes a mapping (bo_lock held). */
+static bool
+mem_sync_one_locked(struct mali_kdev *k, struct kb_bo *b, unsigned op)
+{
+   struct {
+      uint64_t handle, user_addr, size;
+      uint8_t type, pad[7];
+   } ms = {b->gpu_va, (uint64_t)(uintptr_t)b->cpu, b->size, (uint8_t)op, {0}};
+   uint64_t start = mali_prof_enabled() ? mali_wait_now() : 0;
+   int sr = kb_ioctl_fd(kb_fd(k->ctx), _IOW(KBASE_IOCTL_TYPE, 15, ms), &ms);
+   uint64_t wrote = __atomic_load_n(&b->gpu_writes, __ATOMIC_RELAXED);
+   if (sr >= 0) {
+      b->synced_writes = wrote;
+      __atomic_store_n(&k->sync_all_pending, false, __ATOMIC_RELAXED);
+   }
+   if (start) {
+      mali_prof_add(MALI_PROF_D2C_COUNT, 1);
+      mali_prof_add(MALI_PROF_D2C_BOS, 1);
+      mali_prof_add(MALI_PROF_D2C_BYTES, b->size);
+      mali_prof_add(MALI_PROF_D2C_NS, mali_wait_now() - start);
+      mali_prof_add(b->imported ? MALI_PROF_D2C_IMP_BOS : MALI_PROF_D2C_NAT_BOS, 1);
+      mali_prof_add(b->imported ? MALI_PROF_D2C_IMP_BYTES : MALI_PROF_D2C_NAT_BYTES, b->size);
+      mali_prof_add(b->cpu_mapped ? MALI_PROF_D2C_MAPPED_BOS : MALI_PROF_D2C_UNMAPPED_BOS, 1);
+   }
+   return sr >= 0;
+}
+
 static void
 mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
 {
@@ -793,6 +835,17 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
          if (!dd || dd[0] != '0')
             if (!b->cpu_dirty && !b->cpu_mapped)
                continue;
+      }
+      /* MALI_SYNC_READ: a device->CPU MEM_SYNC only helps a BO the CPU can read *now*. An unmapped BO cannot be read:
+       * a client BO or a foreign import is refreshed when it is mapped (kbase_bo_host_touch, above) or, for a dma-buf,
+       * through its own DMA_BUF_IOCTL_SYNC (kbase_bo_cache) at the read. This is what the CMF's Xwayland was paying for:
+       * 1314 unmapped imports (2.9 GB) on every fence wait, 105 times a second, all of it invisible to the process. The
+       * driver's own BOs (arena, heap, geo, sync, TLS, CS) keep the old sweep: how they are read is not knowable here.
+       * MALI_SYNC_READ=0 restores the old behaviour for an A/B. */
+      if (dev2cpu && (b->imported || b->user_mem)) {
+         const char *rd = getenv("MALI_SYNC_READ");
+         if ((!rd || rd[0] != '0') && !b->cpu_mapped)
+            continue;
       }
       uint64_t wrote = 0;
       /* Imports are not marked per submission (the front end marks BOs it renders into), so a write-counter
