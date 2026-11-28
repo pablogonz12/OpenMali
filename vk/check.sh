@@ -208,6 +208,17 @@ for g in v11 v13; do run "resources $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$O
 # variant is accepted, recorded and submitted; pixels need a phone (smoke --guest-bin). Copy-plan arithmetic is checked by t_meta.
 for g in v10 v11; do run "texupload matrix (no pixels) $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_texupload" --direct "$OUT/libvulkan_mali.so" --quiet; done
 
+# A 4x pass with colour STORE + a resolve attachment must plan a real resolve: the region used to be rebuilt from the wiped
+# frame (0x0), so the resolve image was never written (Chromium's path-atlas icons: stale memory or blank).
+for g in v10 v11 v13; do
+   out=$(MALI_META_DBG=1 MALI_BACKEND=fake MALI_FAKE_GPU=$g timeout -k 5 120 "$OUT/t_texupload" --direct "$OUT/libvulkan_mali.so" --only msaa --quiet 2>&1); rc=$?
+   empty=$(grep -c "CmdResolveImage2: emit 0 jobs" <<<"$out"); real=$(grep -c "CmdResolveImage2: emit [1-9]" <<<"$out")
+   # 4 formats x 8 sizes x 8 resolves: 6 in-pass STORE ones (pattern, edge, load x2 passes, stencil, subarea) + 2 explicit
+   # vkCmdResolveImage = 192 + 64 = 256
+   if [ $rc -eq 0 ] && [ "$empty" -eq 0 ] && [ "$real" -ge 256 ]; then echo "ok    msaa store+resolve plans a non-empty resolve $g ($real)"
+   else echo "FAIL  msaa store+resolve plans a non-empty resolve $g (exit $rc, empty $empty, real $real)"; fail=1; fi
+done
+
 # M9: client draws through the ICD (fake backend: API sequence, compile, CS build and submit; pixels only on hardware).
 for g in v11 v13; do
    run "vk_draw $g"       0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --loop 200

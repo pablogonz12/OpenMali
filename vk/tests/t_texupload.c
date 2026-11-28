@@ -2,7 +2,7 @@
 /* Small-texture diagnostic matrix for the Chromium footer-icon corruption: every path by which a small narrow-texel
  * texture gets its content and is then sampled by a fragment shader. Loader-free (dlopens the ICD).
  *
- *   t_texupload [--direct [icd.so]] [--only upload|param|atlas|reupload|recycle|rt|i2i|i2b|mip|deriv] [--full] [--quiet]
+ *   t_texupload [--direct [icd.so]] [--only upload|param|atlas|reupload|recycle|rt|i2i|i2b|mip|deriv|msaa] [--full] [--quiet]
  *
  * --direct without a path (or no --direct) uses the single dev-so manifest in VK_DRIVER_FILES (smoke --guest-bin):
  * <manifest dir>/libvulkan_mali.so. One "PASS|FAIL <variant>" line each, then "SUMMARY ..."; exit 1 on any FAIL.
@@ -21,6 +21,7 @@
 #include "texupload_spv.h"
 
 #define INST_FNS(X) X(EnumeratePhysicalDevices) X(GetPhysicalDeviceMemoryProperties) X(GetPhysicalDeviceProperties) \
+   X(GetPhysicalDeviceFormatProperties) \
    X(CreateDevice) X(GetDeviceProcAddr)
 #define DEV_FNS(X) X(GetDeviceQueue) X(AllocateMemory) X(FreeMemory) X(MapMemory) X(FlushMappedMemoryRanges) \
    X(InvalidateMappedMemoryRanges) X(CreateFence) X(ResetFences) X(WaitForFences) X(QueueSubmit) X(CreateBuffer) \
@@ -29,7 +30,7 @@
    X(CreateDescriptorSetLayout) X(CreatePipelineLayout) X(CreateDescriptorPool) X(AllocateDescriptorSets) \
    X(UpdateDescriptorSets) X(CreateGraphicsPipelines) X(CreateCommandPool) X(AllocateCommandBuffers) \
    X(BeginCommandBuffer) X(EndCommandBuffer) X(CmdPipelineBarrier) X(CmdCopyBufferToImage) X(CmdCopyImageToBuffer) \
-   X(CmdCopyImage) X(CmdBeginRendering) X(CmdEndRendering) X(CmdBindPipeline) X(CmdBindDescriptorSets) \
+   X(CmdCopyImage) X(CmdResolveImage) X(CmdBeginRendering) X(CmdEndRendering) X(CmdBindPipeline) X(CmdBindDescriptorSets) \
    X(CmdPushConstants) X(CmdSetViewport) X(CmdSetScissor) X(CmdDraw) X(CmdClearAttachments) X(DeviceWaitIdle)
 #define DECL(n) static PFN_vk##n n;
 INST_FNS(DECL) DEV_FNS(DECL)
@@ -89,13 +90,12 @@ make_view(const struct img *im, uint32_t level, bool alpha_swz)
 }
 
 static struct img
-make_img(VkFormat f, uint32_t w, uint32_t h, uint32_t levels, bool color_att)
+make_img_s(VkFormat f, uint32_t w, uint32_t h, uint32_t levels, VkSampleCountFlagBits samples, VkImageUsageFlags usage, VkImageAspectFlags aspect)
 {
    struct img im = { .w = w, .h = h, .levels = levels, .f = f };
    VkImageCreateInfo ci = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = f,
-      .extent = { w, h, 1 }, .mipLevels = levels, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
-      .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-               (color_att ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT : 0) };
+      .extent = { w, h, 1 }, .mipLevels = levels, .arrayLayers = 1, .samples = samples, .tiling = VK_IMAGE_TILING_OPTIMAL,
+      .usage = usage };
    VKC(CreateImage(dev, &ci, NULL, &im.i));
    VkMemoryRequirements rq;
    GetImageMemoryRequirements(dev, im.i, &rq);
@@ -103,8 +103,22 @@ make_img(VkFormat f, uint32_t w, uint32_t h, uint32_t levels, bool color_att)
                                .memoryTypeIndex = mem_type(rq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) };
    VKC(AllocateMemory(dev, &ai, NULL, &im.m));
    VKC(BindImageMemory(dev, im.i, im.m, 0));
-   im.v = make_view(&im, 0, false);
+   if (aspect == VK_IMAGE_ASPECT_COLOR_BIT) {
+      im.v = make_view(&im, 0, false);
+   } else {
+      VkImageViewCreateInfo vi = { .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = im.i, .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                   .format = f, .subresourceRange = { aspect, 0, 1, 0, 1 } };
+      VKC(CreateImageView(dev, &vi, NULL, &im.v));
+   }
    return im;
+}
+
+static struct img
+make_img(VkFormat f, uint32_t w, uint32_t h, uint32_t levels, bool color_att)
+{
+   return make_img_s(f, w, h, levels, VK_SAMPLE_COUNT_1_BIT,
+                     VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                     (color_att ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT : 0), VK_IMAGE_ASPECT_COLOR_BIT);
 }
 
 static void
@@ -179,8 +193,9 @@ module(const uint32_t *code, size_t bytes)
    return m;
 }
 
+/* stencil: 0 none, 1 "stencil" pass (INVERT, colour writes off), 2 "cover" pass (NOT_EQUAL 0, zero it, write colour) */
 static VkPipeline
-make_pipe(VkShaderModule vs, VkShaderModule fs, VkFormat fmt, bool blend)
+make_pipe_s(VkShaderModule vs, VkShaderModule fs, VkFormat fmt, bool blend, VkSampleCountFlagBits samples, int stencil, VkFormat sfmt)
 {
    VkPipelineShaderStageCreateInfo st[2] = {
       { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vs, .pName = "main" },
@@ -189,20 +204,32 @@ make_pipe(VkShaderModule vs, VkShaderModule fs, VkFormat fmt, bool blend)
    VkPipelineInputAssemblyStateCreateInfo ia = { .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP };
    VkPipelineViewportStateCreateInfo vp = { .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1 };
    VkPipelineRasterizationStateCreateInfo rs = { .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, .lineWidth = 1.0f };
-   VkPipelineMultisampleStateCreateInfo ms = { .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT };
-   VkPipelineColorBlendAttachmentState ba = { .colorWriteMask = 0xf, .blendEnable = blend,
+   VkPipelineMultisampleStateCreateInfo ms = { .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, .rasterizationSamples = samples };
+   VkPipelineColorBlendAttachmentState ba = { .colorWriteMask = stencil == 1 ? 0 : 0xf, .blendEnable = blend,
       .srcColorBlendFactor = VK_BLEND_FACTOR_ONE, .dstColorBlendFactor = VK_BLEND_FACTOR_ONE, .colorBlendOp = VK_BLEND_OP_ADD,
       .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE, .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE, .alphaBlendOp = VK_BLEND_OP_ADD };
    VkPipelineColorBlendStateCreateInfo bs = { .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, .attachmentCount = 1, .pAttachments = &ba };
    VkDynamicState dy[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
    VkPipelineDynamicStateCreateInfo ds = { .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = 2, .pDynamicStates = dy };
-   VkPipelineRenderingCreateInfo ri = { .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO, .colorAttachmentCount = 1, .pColorAttachmentFormats = &fmt };
+   VkPipelineRenderingCreateInfo ri = { .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO, .colorAttachmentCount = 1, .pColorAttachmentFormats = &fmt,
+      .depthAttachmentFormat = sfmt == VK_FORMAT_S8_UINT ? VK_FORMAT_UNDEFINED : sfmt, .stencilAttachmentFormat = sfmt };
+   VkStencilOpState so = { .failOp = VK_STENCIL_OP_KEEP, .passOp = stencil == 1 ? VK_STENCIL_OP_INVERT : VK_STENCIL_OP_ZERO,
+      .depthFailOp = VK_STENCIL_OP_KEEP, .compareOp = stencil == 1 ? VK_COMPARE_OP_ALWAYS : VK_COMPARE_OP_NOT_EQUAL,
+      .compareMask = 0xff, .writeMask = 0xff, .reference = 0 };
+   VkPipelineDepthStencilStateCreateInfo dss = { .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+      .stencilTestEnable = stencil != 0, .front = so, .back = so };
    VkGraphicsPipelineCreateInfo ci = { .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &ri, .stageCount = 2, .pStages = st,
       .pVertexInputState = &vin, .pInputAssemblyState = &ia, .pViewportState = &vp, .pRasterizationState = &rs, .pMultisampleState = &ms,
-      .pColorBlendState = &bs, .pDynamicState = &ds, .layout = layout };
+      .pColorBlendState = &bs, .pDynamicState = &ds, .pDepthStencilState = &dss, .layout = layout };
    VkPipeline p;
    VKC(CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &ci, NULL, &p));
    return p;
+}
+
+static VkPipeline
+make_pipe(VkShaderModule vs, VkShaderModule fs, VkFormat fmt, bool blend)
+{
+   return make_pipe_s(vs, fs, fmt, blend, VK_SAMPLE_COUNT_1_BIT, 0, VK_FORMAT_UNDEFINED);
 }
 
 /* ---- formats ---- */
@@ -731,6 +758,180 @@ t_deriv(void)
    }
 }
 
+/* ---- 4x MSAA: what Skia's atlas / tessellation path renderers and "dynamic MSAA" do when the driver advertises 4x ---- */
+static VkPhysicalDevice g_pd;
+static VkShaderModule m_vs, m_gen;
+
+/* Samples (standard 4x locations) of pixel (x,y) inside the half-open rectangle r = {x0,y0,x1,y1}; bit per sample.
+ * Rectangle edges sit on multiples of 0.5, where no sample does. */
+static unsigned
+cover_mask(uint32_t x, uint32_t y, const float r[4])
+{
+   static const float sp[4][2] = { { .375f, .125f }, { .875f, .375f }, { .125f, .625f }, { .625f, .875f } };
+   unsigned m = 0;
+   for (unsigned s = 0; s < 4; s++) {
+      const float px = x + sp[s][0], py = y + sp[s][1];
+      if (px >= r[0] && px < r[2] && py >= r[1] && py < r[3]) m |= 1u << s;
+   }
+   return m;
+}
+
+static void
+rect_push(struct push *p, const float r[4], uint32_t w, uint32_t h)
+{
+   p->rect[0] = 2.0f * r[0] / w - 1; p->rect[1] = 2.0f * r[1] / h - 1;
+   p->rect[2] = 2.0f * r[2] / w - 1; p->rect[3] = 2.0f * r[3] / h - 1;
+}
+
+enum { MS_PATTERN, MS_PATTERN_CMD, MS_EDGE, MS_EDGE_CMD, MS_LOAD, MS_STENCIL, MS_AREA, MS_DISCARD, MS_NMODES };
+static const char *const ms_names[] = { "pattern-resolve", "pattern-cmdresolve", "edge-resolve", "edge-cmdresolve", "load-resolve",
+                                        "stencil-cover", "subarea-resolve", "pattern-resolve-discard" };
+
+static void
+t_msaa(void)
+{
+   static const uint32_t sz[][2] = { { 5, 7 }, { 17, 17 }, { 33, 31 }, { 64, 64 }, { 65, 67 }, { 128, 32 }, { 256, 256 }, { 512, 512 } };
+   VkFormat sfmt = VK_FORMAT_UNDEFINED;
+   const VkFormat cand[] = { VK_FORMAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D32_SFLOAT_S8_UINT };
+   for (unsigned i = 0; i < 3 && !sfmt; i++) {
+      VkFormatProperties fp;
+      GetPhysicalDeviceFormatProperties(g_pd, cand[i], &fp);
+      if (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) sfmt = cand[i];
+   }
+   VkPhysicalDeviceProperties pp;
+   GetPhysicalDeviceProperties(g_pd, &pp);
+   if (!(pp.limits.framebufferColorSampleCounts & VK_SAMPLE_COUNT_4_BIT)) {
+      printf("SKIP msaa: 4x not advertised\n");
+      return;
+   }
+   for (unsigned fi = 0; fi < 4; fi++) {
+      const struct fmt *f = &fmts[fi];
+      const VkSampleCountFlagBits S4 = VK_SAMPLE_COUNT_4_BIT;
+      VkPipeline p_draw = make_pipe_s(m_vs, m_gen, f->f, false, S4, 0, VK_FORMAT_UNDEFINED);
+      VkPipeline p_blend = make_pipe_s(m_vs, m_gen, f->f, true, S4, 0, VK_FORMAT_UNDEFINED);
+      VkPipeline p_st = sfmt ? make_pipe_s(m_vs, m_gen, f->f, false, S4, 1, sfmt) : VK_NULL_HANDLE;
+      VkPipeline p_cv = sfmt ? make_pipe_s(m_vs, m_gen, f->f, false, S4, 2, sfmt) : VK_NULL_HANDLE;
+      for (unsigned s = 0; s < sizeof sz / sizeof sz[0]; s++)
+         for (int mode = 0; mode < MS_NMODES; mode++) {
+            if (mode == MS_STENCIL && !sfmt) continue;
+            const uint32_t w = sz[s][0], h = sz[s][1];
+            struct img ms = make_img_s(f->f, w, h, 1, S4, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+            struct img one = make_img(f->f, w, h, 1, true), st = { 0 };
+            const VkImageAspectFlags saspect = sfmt == VK_FORMAT_S8_UINT ? VK_IMAGE_ASPECT_STENCIL_BIT : VK_IMAGE_ASPECT_STENCIL_BIT | VK_IMAGE_ASPECT_DEPTH_BIT;
+            if (mode == MS_STENCIL)
+               st = make_img_s(sfmt, w, h, 1, S4, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, saspect);
+            uint8_t *m = model_new(f, w, h, 77);
+            begin();
+            to_layout(&one, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            upload(f, &one, 0, 0, 0, 0, 0, w, h, 77, NULL, w);   /* sentinel: what the resolve must overwrite (or keep) */
+            to_layout(&one, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+            to_layout(&ms, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+            if (st.i) {
+               VkImageMemoryBarrier b = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                  .dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, .newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                  .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = st.i,
+                  .subresourceRange = { saspect, 0, 1, 0, 1 } };
+               CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+            }
+            const bool cmdres = mode == MS_PATTERN_CMD || mode == MS_EDGE_CMD;
+            VkRect2D area = { { 0, 0 }, { w, h } };
+            if (mode == MS_AREA) area = (VkRect2D){ { (int)(w / 4) + 1, (int)(h / 4) + 1 }, { (w + 1) / 2, (h + 1) / 2 } };
+            VkRenderingAttachmentInfo att = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = ms.v,
+               .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+               /* STORE + resolve: separate resolve pass after the frame; DONT_CARE + resolve: tile-buffer average writeback */
+               .storeOp = mode == MS_DISCARD ? VK_ATTACHMENT_STORE_OP_DONT_CARE : VK_ATTACHMENT_STORE_OP_STORE };
+            if (!cmdres) {
+               att.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+               att.resolveImageView = one.v;
+               att.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            }
+            VkRenderingAttachmentInfo satt = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = st.v,
+               .imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+               .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE };
+            VkRenderingInfo ri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = area, .layerCount = 1,
+                                   .colorAttachmentCount = 1, .pColorAttachments = &att, .pStencilAttachment = st.i ? &satt : NULL,
+                                   .pDepthAttachment = st.i && sfmt != VK_FORMAT_S8_UINT ? &satt : NULL };
+            VkViewport vp = { 0, 0, (float)w, (float)h, 0, 1 };
+            CmdBeginRendering(cb, &ri);
+            CmdSetViewport(cb, 0, 1, &vp);
+            CmdSetScissor(cb, 0, 1, &area);
+            /* outer / inner rectangles on half pixels: the "disc with a knocked-out letter" of a footer glyph */
+            const float outer[4] = { (float)(w / 8) + .5f, (float)(h / 8) + .5f, (float)(w - w / 8) - .5f, (float)(h - h / 8) - .5f };
+            const float inner[4] = { (float)(w / 3) + .5f, (float)(h / 3), (float)(w - w / 3), (float)(h - h / 3) - .5f };
+            struct push pc = { .a = { 255, 1, 127, 0 }, .rect = { -1, -1, 1, 1 } };
+            if (mode == MS_PATTERN || mode == MS_PATTERN_CMD || mode == MS_LOAD || mode == MS_AREA || mode == MS_DISCARD) {
+               pc = (struct push){ .a = { (int)s, 0, 127, 0 }, .rect = { -1, -1, 1, 1 } };
+               draw(p_draw, pc);
+            } else if (mode == MS_EDGE || mode == MS_EDGE_CMD) {
+               rect_push(&pc, outer, w, h);
+               draw(p_draw, pc);
+            } else {
+               rect_push(&pc, outer, w, h);
+               draw(p_st, pc);
+               rect_push(&pc, inner, w, h);
+               draw(p_st, pc);
+               pc.rect[0] = pc.rect[1] = -1; pc.rect[2] = pc.rect[3] = 1;
+               draw(p_cv, pc);
+            }
+            CmdEndRendering(cb);
+            if (mode == MS_LOAD) {
+               /* second pass: LOAD the 4x contents, add 64 on the right half, resolve again */
+               barrier_all();
+               att.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+               CmdBeginRendering(cb, &ri);
+               CmdSetViewport(cb, 0, 1, &vp);
+               VkRect2D sc = { { (int)(w / 2), 0 }, { w - w / 2, h } };
+               CmdSetScissor(cb, 0, 1, &sc);
+               draw(p_blend, (struct push){ .a = { 64, 1, 0, 0 }, .rect = { -1, -1, 1, 1 } });
+               CmdEndRendering(cb);
+            }
+            VkImageLayout one_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            if (cmdres) {
+               to_layout(&ms, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+               to_layout(&one, one_layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+               VkImageResolve rr = { { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, { 0, 0, 0 }, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, { 0, 0, 0 }, { w, h, 1 } };
+               CmdResolveImage(cb, ms.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, one.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &rr);
+               one_layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            }
+            to_layout(&one, one_layout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            struct img rt = sample_to_rb(one.v, w, h, 0, 0);
+            submit();
+            /* expected 1x contents, channel c of memory byte order */
+            for (uint32_t y = 0; y < h; y++)
+               for (uint32_t x = 0; x < w; x++) {
+                  if (mode == MS_AREA && !((int)x >= area.offset.x && x < area.offset.x + area.extent.width && (int)y >= area.offset.y &&
+                                           y < area.offset.y + area.extent.height))
+                     continue;   /* outside the render area the resolve target keeps the sentinel */
+                  unsigned cov = 0;
+                  if (mode == MS_EDGE || mode == MS_EDGE_CMD) cov = __builtin_popcount(cover_mask(x, y, outer));
+                  if (mode == MS_STENCIL) cov = __builtin_popcount(cover_mask(x, y, outer) ^ cover_mask(x, y, inner));
+                  for (unsigned c = 0; c < f->nc; c++) {
+                     unsigned byte = f->f == VK_FORMAT_B8G8R8A8_UNORM && c != 1 && c != 3 ? 2 - c : c;
+                     unsigned v = (x * 7 + y * 13 + c * 61 + s * 29) & 127;
+                     if (mode == MS_LOAD && x >= w / 2) v += 64;
+                     if (mode == MS_EDGE || mode == MS_EDGE_CMD || mode == MS_STENCIL) v = (cov * 255 + 2) / 4;
+                     m[((size_t)y * w + x) * f->bs + byte] = (uint8_t)v;
+                  }
+               }
+            struct diff d = { 0 };
+            for (uint32_t y = 0; y < h; y++)
+               for (uint32_t x = 0; x < w; x++) {
+                  uint8_t want[4];
+                  expect_sample(f, m + ((size_t)y * w + x) * f->bs, false, want);
+                  cmp_px(&d, x, y, rb.p + ((size_t)y * w + x) * 4, want, 4, 1);
+               }
+            char name[96];
+            snprintf(name, sizeof name, "msaa fmt=%s w=%u h=%u %s", f->name, w, h, ms_names[mode]);
+            report(name, d.bad, d.total, d.detail);
+            free_img(&rt);
+            free_img(&ms);
+            free_img(&one);
+            if (st.i) free_img(&st);
+            free(m);
+         }
+   }
+}
+
 int
 main(int argc, char **argv)
 {
@@ -780,6 +981,7 @@ main(int argc, char **argv)
    VkPhysicalDeviceDynamicRenderingFeatures dr = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES, .dynamicRendering = VK_TRUE };
    VkDeviceCreateInfo dci = { .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &dr, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi };
    VKC(CreateDevice(pd, &dci, NULL, &dev));
+   g_pd = pd;
 #define DLOAD(n) n = (PFN_vk##n)GetDeviceProcAddr(dev, "vk" #n); if (!n) { printf("FAIL missing vk" #n "\nSUMMARY pass=0 fail=1\n"); return 2; }
    DEV_FNS(DLOAD)
    GetDeviceQueue(dev, 0, 0, &queue);
@@ -807,6 +1009,8 @@ main(int argc, char **argv)
    VkShaderModule fs_sample = module(texupload_sample_spv, sizeof texupload_sample_spv);
    VkShaderModule fs_gen = module(texupload_gen_spv, sizeof texupload_gen_spv);
    VkShaderModule fs_deriv = module(texupload_deriv_spv, sizeof texupload_deriv_spv);
+   m_vs = vs;
+   m_gen = fs_gen;
    pipe_sample = make_pipe(vs, fs_sample, VK_FORMAT_R8G8B8A8_UNORM, false);
    pipe_deriv = make_pipe(vs, fs_deriv, VK_FORMAT_R8G8B8A8_UNORM, false);
    for (unsigned i = 0; i < 4; i++) {
@@ -832,6 +1036,7 @@ main(int argc, char **argv)
    if (GROUP("mip")) t_mip();
    if (GROUP("i2i") || GROUP("i2b")) t_i2i_i2b();
    t_upload(full);
+   if (GROUP("msaa")) t_msaa();   /* last: a refusal or fault here must not hide the 1x results */
    DeviceWaitIdle(dev);
    printf("SUMMARY pass=%u fail=%u%s\n", n_pass, n_fail, fake ? " (fake backend: pixels NOT verified)" : "");
    return n_fail || !n_pass ? 1 : 0;
