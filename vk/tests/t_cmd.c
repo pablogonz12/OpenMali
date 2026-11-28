@@ -742,7 +742,7 @@ audit_regs(const struct mali_draw *d, uint32_t *r)
    f.area[3] = 720;
    f.has_colour = true;
    f.colour.va = 0x100000;
-   f.colour.row_stride = 1558 * 4;
+   f.colour.row_stride = 6272;   /* the X8 surface pitch (notes/x8-cef-fault.md): 1558 * 4 rounded up to 64 */
    f.colour.clear = f.colour.store = true;
    if (mali_frame_add_draw(&f, d))
       return -1;
@@ -803,7 +803,8 @@ test_v13_audit(void)
    audit_draw(&d);
    g_fs.fs_can_fpk = 1;
    g_fs.writes_global = 0;
-   CHECK(audit_regs(&d, r) == 0 && (r[AR_DCD0] & 3u) == 3u, "audit: opaque can_fpk FS: DCD0 %08x wants FPK kill + killed", r[AR_DCD0]);
+   int arc = audit_regs(&d, r);
+   CHECK(arc == 0 && (r[AR_DCD0] & 3u) == 3u, "audit: opaque can_fpk FS: rc %d, DCD0 %08x wants FPK kill + killed", arc, r[AR_DCD0]);
    g_fs.fs_can_fpk = 0;
    CHECK(audit_regs(&d, r) == 0 && !(r[AR_DCD0] & 1u), "audit: FS that cannot FPK (discard): DCD0 %08x allows forward pixel kill", r[AR_DCD0]);
    g_fs.fs_can_fpk = 1;
