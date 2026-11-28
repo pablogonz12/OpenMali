@@ -41,7 +41,6 @@ struct mali_qstats {
    unsigned depth_max;
    uint64_t blk_n[QS_N], blk_ns[QS_N];
 };
-uint64_t mali_qstat_ring_n, mali_qstat_ring_ns;   /* mali_backend.h: the kbase backend's waits for CS ring space */
 
 struct mali_hwctx {
    struct mali_device *dev;

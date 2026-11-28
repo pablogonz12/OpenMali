@@ -557,6 +557,8 @@ kbase_bo_export(struct mali_kdev *k, const struct mali_bo *bo)
  * with CS_INSERT - CS_EXTRACT == size the firmware raises CS_CONFIG_FAULT (status 0x40, sideband 0)
  * as soon as it looks at the queue (CMF, arch 11; R3-PLAN.md M4). A 4096-byte ring therefore holds
  * 63 empty submissions. */
+uint64_t mali_qstat_ring_n, mali_qstat_ring_ns;   /* mali_backend.h (MALI_QUEUE_STATS): defined by their writer */
+
 static void
 ring_wait_done(struct timespec t0)
 {
