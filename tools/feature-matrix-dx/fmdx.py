@@ -240,6 +240,10 @@ def _val(s):
     s = s.strip()
     if s in ("true", "false"):
         return s == "true"
+    if re.match(r"^0x[0-9a-fA-F]+$", s):
+        return int(s, 16)
+    if re.match(r"^-?\d+\.\d+$", s):
+        return float(s)
     m = re.match(r"^(-?\d+)\b", s)
     if m and not re.match(r"^\d+\.\d+\.\d+", s):
         return int(m.group(1))
@@ -302,9 +306,10 @@ def parse_text(txt, path):
                 v = _val(v)
             cur[k] = v
             continue
-        m = re.match(r"^\s+([A-Z][A-Z0-9_]+)\s*$", line)
+        m = re.match(r"^\s+([A-Z][A-Z0-9_]+|-?[\d.]+)\s*$", line)
         if m and listkey:
-            cur[listkey].append("VK_" + m.group(1))
+            t = m.group(1)
+            cur[listkey].append(_val(t) if t[0] in "-0123456789" else "VK_" + t)
     return dict(ext=ext, feat=feat, prop=prop, fmt={}, queues=queues, src=path, has_formats=False)
 
 
@@ -380,6 +385,8 @@ def atom(cap, a):
         w = True if want == "True" else False if want == "False" else int(want) if re.match(r"^-?\d+$", want) else want
         if isinstance(w, bool) or isinstance(w, str):
             v = bool(v) if isinstance(w, bool) else v
+        if isinstance(w, int) and not isinstance(w, bool) and not isinstance(v, (int, float)):
+            return None
         return {">=": lambda: v >= w, "<=": lambda: v <= w, "==": lambda: v == w, "!=": lambda: v != w}[op]()
     raise ValueError("bad atom " + a)
 
@@ -473,7 +480,9 @@ def cmd_check(args):
                 expect[k] = int(v)
             i += 2
         else:
-            caps.append(args[i]); i += 1
+            if args[i] != "-v":
+                caps.append(args[i])
+            i += 1
     reqs, rc = requirements(), 0
     for c in caps:
         cap = load_capture(c)
@@ -741,6 +750,18 @@ def cmd_markdown(args):
         P("| %s | %s | %s | %s | %s | %d |" % (e["dxgi"][12:], vk, cells[0], cells[1], cells[2], e["line"]))
     P()
     P("D3D9 formats (`src/d3d9/d3d9_format.cpp`) are not extracted row by row; their fallbacks (D24S8 -> D32S8, D16S8) are rows in section 2.")
+    if len(args) > 3:
+        P()
+        P("## 4. Cross-check against real-phone vulkaninfo text (no format section; driver layers loaded)")
+        P()
+        P("| capture | " + " | ".join("%s:%s" % (c, l) for c, l, t, n, f, h in sums[1] if h) + " |")
+        P("|---|" + "---|" * sum(1 for x in sums[1] if x[5]))
+        for a in args[3:]:
+            s = summary_lines(load_capture(a), reqs)
+            P("| %s | " % "/".join(a.split("/")[-2:]) + " | ".join(
+                ("PASS" if t == "PASS" else "%s %d" % (t, len(f))) for c, l, t, n, f, h in s if h) + " |")
+        P()
+        P("Fake v11 for comparison: " + ", ".join("%s:%s=%d" % (c, l, len(f)) for c, l, t, n, f, h in sums[1] if h) + ".")
     return 0
 
 
