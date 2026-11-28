@@ -46,7 +46,7 @@ static const char *g_only;
 
 #define DEV_FNS(X)                                                                                 \
    X(DestroyDevice) X(GetDeviceQueue) X(AllocateMemory) X(FreeMemory) X(MapMemory) X(UnmapMemory)  \
-   X(CreateFence) X(DestroyFence) X(WaitForFences) X(ResetFences) X(QueueSubmit) X(DeviceWaitIdle)  \
+   X(CreateFence) X(DestroyFence) X(WaitForFences) X(ResetFences) X(GetFenceStatus) X(QueueSubmit) X(DeviceWaitIdle)  \
    X(CreateBuffer) X(DestroyBuffer) X(GetBufferMemoryRequirements) X(BindBufferMemory)            \
    X(CreateImage) X(DestroyImage) X(GetImageMemoryRequirements) X(BindImageMemory)                 \
    X(CreateCommandPool) X(DestroyCommandPool) X(AllocateCommandBuffers) X(FreeCommandBuffers)      \
@@ -249,6 +249,160 @@ parallel_meta(void *arg)
    if (fence) DestroyFence(dev, fence, NULL);
    if (pool) DestroyCommandPool(dev, pool, NULL);
    return NULL;
+}
+
+/* ---- interleaved two-device recording (ANGLE GPU process: two live VkDevices, one thread) ----
+ * A colour pass that LOADs its attachment needs the preload meta draw; a CLEAR pass with an in-pass fill takes the
+ * deferred compute path. Each device records one, B is submitted before A, A is destroyed while B's fence is still
+ * pending (MALI_FAKE_SLOW_US), and B is submitted again afterwards. tests/check_two_device_interleave.py walks the
+ * fake dump: every kick, arena, descriptor and attachment address must belong to the kicking device. */
+struct dev_ctx { VkDevice d; VkQueue q; VkCommandPool p; VkFence f; };
+static void report(const char *name, const char *skip);
+
+static void
+use_ctx(const struct dev_ctx *c)
+{
+   dev = c->d; queue = c->q; pool = c->p; fence = c->f;
+}
+
+struct pass_objs { struct img at; VkImageView view; VkRenderPass rp; VkFramebuffer fb; struct buf b; };
+
+static int
+mk_pass(struct pass_objs *o, VkAttachmentLoadOp load)
+{
+   TRY(mkimg(&o->at, VK_FORMAT_R8G8B8A8_UNORM, W, H,
+             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+             VK_SAMPLE_COUNT_1_BIT));
+   VkImageViewCreateInfo vci = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = o->at.i,
+                                .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = VK_FORMAT_R8G8B8A8_UNORM,
+                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+   CHECK(CreateImageView(dev, &vci, NULL, &o->view) == VK_SUCCESS, "attachment view");
+   VkAttachmentDescription ad = {.format = VK_FORMAT_R8G8B8A8_UNORM, .samples = VK_SAMPLE_COUNT_1_BIT,
+                                 .loadOp = load, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                 .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                                 .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                                 .initialLayout = load == VK_ATTACHMENT_LOAD_OP_LOAD ? VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+                                                                                     : VK_IMAGE_LAYOUT_UNDEFINED,
+                                 .finalLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL};
+   VkAttachmentReference ar = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+   VkSubpassDescription sp = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 1,
+                              .pColorAttachments = &ar};
+   VkRenderPassCreateInfo rpci = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = 1,
+                                  .pAttachments = &ad, .subpassCount = 1, .pSubpasses = &sp};
+   CHECK(CreateRenderPass(dev, &rpci, NULL, &o->rp) == VK_SUCCESS, "render pass");
+   VkFramebufferCreateInfo fci = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = o->rp,
+                                  .attachmentCount = 1, .pAttachments = &o->view, .width = W, .height = H, .layers = 1};
+   CHECK(CreateFramebuffer(dev, &fci, NULL, &o->fb) == VK_SUCCESS, "framebuffer");
+   TRY(mkbuf(&o->b, 1024, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT));
+   memset(o->b.p, 0, 1024);
+   return 1;
+}
+
+static void
+rm_pass(struct pass_objs *o)
+{
+   if (o->fb) DestroyFramebuffer(dev, o->fb, NULL);
+   if (o->rp) DestroyRenderPass(dev, o->rp, NULL);
+   if (o->view) DestroyImageView(dev, o->view, NULL);
+   rmimg(&o->at);
+   rmbuf(&o->b);
+}
+
+/* Records (does not submit) a pass on the current device. LOAD: clear the image first, then a pass that preloads it. */
+static VkCommandBuffer
+rec_pass(struct pass_objs *o, VkAttachmentLoadOp load, uint32_t fill)
+{
+   VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = pool,
+                                     .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+   VkCommandBuffer cb;
+   if (AllocateCommandBuffers(dev, &ai, &cb) != VK_SUCCESS) return NULL;
+   VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};   /* re-submittable */
+   BeginCommandBuffer(cb, &bi);
+   VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+   if (load == VK_ATTACHMENT_LOAD_OP_LOAD) {
+      layout_tr(cb, o->at.i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+      VkClearColorValue colour = {.float32 = {0.25f, 0.5f, 0.75f, 1}};
+      CmdClearColorImage(cb, o->at.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &colour, 1, &range);
+      barrier_all(cb);
+   }
+   VkClearValue cv = {.color = {{0, 1, 0, 1}}};
+   VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = o->rp, .framebuffer = o->fb,
+                               .renderArea = {{0, 0}, {W, H}}, .clearValueCount = 1, .pClearValues = &cv};
+   CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+   CmdFillBuffer(cb, o->b.b, 0, 256, fill);   /* deferred compute meta job inside the pass */
+   CmdEndRenderPass(cb);
+   if (EndCommandBuffer(cb) != VK_SUCCESS) return NULL;
+   return cb;
+}
+
+static int
+submit_cb(VkCommandBuffer cb)
+{
+   VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+   CHECK(ResetFences(dev, 1, &fence) == VK_SUCCESS, "reset fence");
+   CHECK(QueueSubmit(queue, 1, &si, fence) == VK_SUCCESS, "submit");
+   return 1;
+}
+
+static int
+wait_fence(const char *what)
+{
+   CHECK(WaitForFences(dev, 1, &fence, VK_TRUE, 20ull * 1000000000ull) == VK_SUCCESS, "%s fence", what);
+   return 1;
+}
+
+static int
+fill_ok(const struct pass_objs *o, uint32_t fill)
+{
+   if (g_fake)
+      return 1;
+   for (int i = 0; i < 256; i += 4) {
+      uint32_t v;
+      memcpy(&v, (const uint8_t *)o->b.p + i, sizeof v);
+      CHECK(v == fill, "fill at %d = 0x%08x, want 0x%08x", i, v, fill);
+   }
+   return 1;
+}
+
+/* Destroys A (a->d) itself; on return the caller owns only B. */
+static int
+case_interleave(struct dev_ctx *a, struct dev_ctx *b)
+{
+   struct pass_objs pa = {0}, pb = {0};
+   use_ctx(a);
+   TRY(mk_pass(&pa, VK_ATTACHMENT_LOAD_OP_CLEAR));
+   VkCommandBuffer cba = rec_pass(&pa, VK_ATTACHMENT_LOAD_OP_CLEAR, 0xa0a0a0a0u);
+   CHECK(cba, "record on A");
+   use_ctx(b);
+   TRY(mk_pass(&pb, VK_ATTACHMENT_LOAD_OP_LOAD));
+   VkCommandBuffer cbb = rec_pass(&pb, VK_ATTACHMENT_LOAD_OP_LOAD, 0xb0b0b0b0u);
+   CHECK(cbb, "record on B (LOAD pass: preload meta)");
+   TRY(submit_cb(cbb));
+   use_ctx(a);
+   TRY(submit_cb(cba));
+   TRY(wait_fence("A"));
+   TRY(fill_ok(&pa, 0xa0a0a0a0u));
+   use_ctx(b);
+   VkResult st = GetFenceStatus(dev, fence);
+   printf("{\"interleave\":\"B fence %s when A is destroyed\"}\n", st == VK_NOT_READY ? "pending" : "signalled");
+   use_ctx(a);
+   FreeCommandBuffers(dev, pool, 1, &cba);
+   rm_pass(&pa);
+   DestroyFence(dev, fence, NULL);
+   DestroyCommandPool(dev, pool, NULL);
+   DestroyDevice(dev, NULL);
+   *a = (struct dev_ctx){0};
+   use_ctx(b);
+   TRY(wait_fence("B first"));
+   TRY(fill_ok(&pb, 0xb0b0b0b0u));
+   memset(pb.b.p, 0, 1024);
+   TRY(submit_cb(cbb));   /* again, with A gone: B's meta context must not reference A's freed state */
+   TRY(wait_fence("B second"));
+   TRY(fill_ok(&pb, 0xb0b0b0b0u));
+   FreeCommandBuffers(dev, pool, 1, &cbb);
+   rm_pass(&pb);
+   report("interleave", g_fake ? "pixels: fake backend" : NULL);
+   return 1;
 }
 
 static void
@@ -1170,7 +1324,7 @@ main(int argc, char **argv)
       else if (!strcmp(argv[i], "--second-device")) second_device = 1;
       else if (!strcmp(argv[i], "--second-first")) second_first = 1;
       else if (!strcmp(argv[i], "--parallel-devices")) parallel = second_device = 1;
-      else { fprintf(stderr, "usage: t_vk_meta --direct icd.so [--loop N] [--only case]\n"); return 2; }
+      else { fprintf(stderr, "usage: t_vk_meta --direct icd.so [--loop N] [--only case] [--second-device [--second-first] | --parallel-devices]\n"); return 2; }
    }
    if (!icd) { fprintf(stderr, "--direct required\n"); return 2; }
    const char *be = getenv("MALI_BACKEND");
@@ -1241,6 +1395,27 @@ main(int argc, char **argv)
       ok = cases[0].ok && cases[1].ok;
    }
    if (!parallel && g_only && CASE_ON("two_device")) ok &= case_two_device();
+   if (g_only && !strcmp(g_only, "interleave")) {
+      /* explicit only, needs --second-device: destroys A inside the case */
+      if (!other) { printf("{\"fail\":\"interleave needs --second-device\"}\n"); return 1; }
+      struct dev_ctx a = {dev, queue, pool, fence}, b = {other, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
+      GetDeviceQueue(b.d, 0, 0, &b.q);
+      if (CreateCommandPool(b.d, &pci, NULL, &b.p) != VK_SUCCESS || CreateFence(b.d, &fci, NULL, &b.f) != VK_SUCCESS) {
+         printf("{\"fail\":\"pool/fence B\"}\n");
+         return 1;
+      }
+      ok = case_interleave(&a, &b);
+      if (a.d) { use_ctx(&a); DeviceWaitIdle(dev); DestroyFence(dev, fence, NULL); DestroyCommandPool(dev, pool, NULL); DestroyDevice(dev, NULL); }
+      use_ctx(&b);
+      DeviceWaitIdle(dev);
+      DestroyFence(dev, fence, NULL);
+      DestroyCommandPool(dev, pool, NULL);
+      DestroyDevice(dev, NULL);
+      DestroyInstance(inst, NULL);
+      dlclose(lib);
+      printf("{\"pass\":%s}\n", (ok && !g_fail) ? "true" : "false");
+      return (ok && !g_fail) ? 0 : 1;
+   }
    if (CASE_ON("buf")) ok &= case_buf();
    if (ok && CASE_ON("fill")) ok &= case_fill();
    if (ok && CASE_ON("img")) ok &= case_img(0);

@@ -208,6 +208,9 @@ for g in v11 v13; do run "resources $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$O
 
 # M9: client draws through the ICD (fake backend: API sequence, compile, CS build and submit; pixels only on hardware).
 run "two-device draw submits on A" 0 python3 "$V/tests/check_two_device_submit.py" "$OUT/t_vk_draw" "$OUT/libvulkan_mali.so" "$V/shader"
+# Interleaved record/submit on two devices with a LOAD (preload) pass, A destroyed while B is in flight: every
+# reachable address of every kick is walked per device (golden.py R-VA) and a lost submit names its device.
+run "two-device interleave" 0 python3 "$V/tests/check_two_device_interleave.py" "$OUT/t_vk_meta" "$OUT/libvulkan_mali.so"
 run "two-device meta A destroyed first" 0 MALI_BACKEND=fake MALI_FAKE_DISJOINT_VA=1 MALI_FAKE_CHECK_CS_VA=1 "$OUT/t_vk_meta" --direct "$OUT/libvulkan_mali.so" --second-device --only two_device
 run "two-device meta B destroyed first" 0 MALI_BACKEND=fake MALI_FAKE_DISJOINT_VA=1 MALI_FAKE_CHECK_CS_VA=1 "$OUT/t_vk_meta" --direct "$OUT/libvulkan_mali.so" --second-device --second-first --only two_device
 run "two-device concurrent meta" 0 MALI_BACKEND=fake MALI_FAKE_DISJOINT_VA=1 MALI_FAKE_CHECK_CS_VA=1 "$OUT/t_vk_meta" --direct "$OUT/libvulkan_mali.so" --parallel-devices --only two_device
