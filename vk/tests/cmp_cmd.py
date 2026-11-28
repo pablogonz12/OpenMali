@@ -224,6 +224,11 @@ for arch in (11, 13):
     else:
         print(' '.join(x for x in l.stdout.splitlines() if 'ui_like' in x))
 
+    # render-pass merging + MALI_PASS_STATS counters (t_cmd --passmerge: merge / must-not-merge / suspend-resume / fold / MALI_PASS_MERGE=0)
+    pm = run(['%s/t_cmd%d' % (out, arch), '--passmerge'], {'KB_FAKE_ARCH': str(arch)})
+    if pm.returncode or '"passmerge":true,"pass":true' not in pm.stdout:
+        fails.append('v%d passmerge: %s' % (arch, (pm.stdout + pm.stderr).strip()[-600:]))
+
     # M13: occlusion draw + deferred op + ops frame (t_cmd --m13), our dump only: static rules, and the decoded stream must contain what was recorded
     md = '%s/m%d.jsonl' % (out, arch)
     if os.path.exists(md):

@@ -110,7 +110,60 @@ struct mali_cmd_buffer {
    struct mali_memory *wrote[MALI_CMD_WROTE_MAX];
    unsigned nwrote;
    bool wrote_full;
+   /* Deferred render-pass end (mali_cmd.c "pass merge", MALI_PASS_MERGE): EndRendering parks the finished pass in `pm`
+    * instead of pushing it; the next BeginRendering on the same attachments continues it (one tiler + fragment pass, no
+    * store/preload pair), anything else pushes it first (pass_close). pm_keep: per colour/depth/stencil, a storeOp STORE
+    * of the chain that a later pass may not drop (suspend-forced stores excluded). pass_*: the same facts of the open pass. */
+   struct mali_frame pm;
+   bool pm_open, pm_suspended, pm_keep[3];
+   bool pass_suspending, pass_nomerge, pass_keep[3];
+   unsigned pass_draws0, pass_clear_quads;   /* cur.ndraws once the pass' own preload draws are in; ClearAttachments quads */
+   /* MALI_PASS_STATS: why the next BeginRendering cannot continue a parked pass (enum mali_pass_why, the boundary that
+    * closed it or MALI_PW_FIRST), and the BeginRendering count of this recording (passes per submit). */
+   unsigned pass_why, npasses;
 };
+
+/* Reason a pass is not mergeable with the previous pass of its command buffer (MALI_PASS_STATS nm_* counters). */
+enum mali_pass_why {
+   MALI_PW_FIRST,      /* no earlier pass in this command buffer */
+   MALI_PW_UNPARKED,   /* the previous pass could not be parked: resolve, ops/meta recorded inside it, transform feedback */
+   MALI_PW_FRAME,      /* a frame between them: copy, blit, clear, dispatch, query/event/timestamp op */
+   MALI_PW_BARRIER,    /* a barrier that orders more than attachment access */
+   MALI_PW_QUERY,      /* vkCmdBeginQuery / vkCmdEndQuery between them */
+   MALI_PW_SECONDARY,  /* vkCmdExecuteCommands between them */
+   MALI_PW_FLAGS,      /* the new pass resolves, is layered or multiview */
+   MALI_PW_SIZE,       /* framebuffer size or sample count differ */
+   MALI_PW_AREA,       /* render area differs */
+   MALI_PW_ATTACH,     /* attachment set or views differ */
+   MALI_PW_CLEAR,      /* the new pass clears an attachment the previous one drew */
+   MALI_PW_N
+};
+
+/* MALI_PASS_STATS counters (cumulative per process). MALI_PASS_STATS=1 prints one "mali_pass:" line of the deltas every
+ * MALI_PASS_STATS_EVERY submits (default 300) and "mali_pass_total:" at vkDestroyDevice, both on stderr. */
+enum mali_pass_stat {
+   MALI_PS_PASSES, MALI_PS_LOAD_C, MALI_PS_LOAD_Z, MALI_PS_LOAD_S, MALI_PS_MERGEABLE, MALI_PS_MERGED, MALI_PS_FOLDED,
+   MALI_PS_EMPTY, MALI_PS_PRELOADS, MALI_PS_PRELOAD_PX, MALI_PS_STORE_PX, MALI_PS_PARTIAL, MALI_PS_FRAMES, MALI_PS_RESUMED,
+   /* loadOp CLEAR and DONT_CARE/NONE per colour/depth/stencil (LOAD is MALI_PS_LOAD_*) */
+   MALI_PS_CLEAR_C, MALI_PS_CLEAR_Z, MALI_PS_CLEAR_S, MALI_PS_DC_C, MALI_PS_DC_Z, MALI_PS_DC_S,
+   /* nominal 16x16 tiles of the render area, and of the union of the pass' draw boxes (viewport & scissor & area) */
+   MALI_PS_AREA_TILES, MALI_PS_TOUCHED_TILES,
+   /* predicted pixel traffic a merge removes over the mergeable joins: the new pass' preloads + the previous pass' stores */
+   MALI_PS_SAVE_PX,
+   /* submits (mali_pass_stats_submit), passes and render frames in submitted command buffers, most passes in one submit */
+   MALI_PS_SUBMITS, MALI_PS_SUB_PASSES, MALI_PS_SUB_FRAMES, MALI_PS_SUB_MAXPASSES,
+   MALI_PS_NM0,   /* MALI_PS_NM0 + enum mali_pass_why: passes not mergeable with the previous one, by reason */
+   MALI_PS_N = MALI_PS_NM0 + MALI_PW_N
+};
+void mali_pass_stats_read(uint64_t out[MALI_PS_N], bool reset);
+/* One vkQueueSubmit has run its command buffers (mali_queue.c): counts it and prints the summary line every
+ * MALI_PASS_STATS_EVERY submits (default 300). mali_pass_stats_print_total: the process totals (vkDestroyDevice). */
+void mali_pass_stats_submit(void);
+void mali_pass_stats_print_total(void);
+const char *mali_pass_stat_name(unsigned i);   /* the key printed for counter i */
+/* vkCmdPipelineBarrier2 hook (mali_pipeline.c): a barrier that makes attachment writes visible to anything but attachment
+ * access closes a parked pass (it cannot merge with the next one). */
+void mali_cmd_barrier(VkCommandBuffer h, const VkDependencyInfo *info);
 
 static inline struct mali_cmd_buffer *
 mali_cmd_buffer_from_vk(struct vk_command_buffer *cmd)
@@ -175,6 +228,7 @@ VKAPI_ATTR void VKAPI_CALL mali_CmdDrawIndexedIndirectCount(VkCommandBuffer, VkB
 VKAPI_ATTR void VKAPI_CALL mali_CmdDraw(VkCommandBuffer, uint32_t, uint32_t, uint32_t, uint32_t);
 VKAPI_ATTR void VKAPI_CALL mali_CmdDrawIndexed(VkCommandBuffer, uint32_t, uint32_t, uint32_t, int32_t, uint32_t);
 VKAPI_ATTR void VKAPI_CALL mali_CmdBeginRendering(VkCommandBuffer, const VkRenderingInfo *);
+VKAPI_ATTR void VKAPI_CALL mali_CmdExecuteCommands(VkCommandBuffer, uint32_t, const VkCommandBuffer *);
 VKAPI_ATTR void VKAPI_CALL mali_CmdEndRendering(VkCommandBuffer);
 VKAPI_ATTR void VKAPI_CALL mali_CmdClearColorImage(VkCommandBuffer, VkImage, VkImageLayout, const VkClearColorValue *, uint32_t,
                                                    const VkImageSubresourceRange *);

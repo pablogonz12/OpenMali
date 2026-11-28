@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "mali_cmd.h"
 #include "kbase.h"
@@ -27,6 +28,7 @@
 #include "util/u_math.h"
 #include "util/format/u_format.h"
 #include "vk_format.h"
+#include "vk_common_entrypoints.h"
 
 static struct mali_cmd_res_ops g_res;
 static struct mali_hw g_hw;
@@ -78,6 +80,9 @@ mali_cmd_unsupported(struct mali_cmd_buffer *cmd, const char *what)
 }
 
 #define unsupported mali_cmd_unsupported
+
+static void pass_close(struct mali_cmd_buffer *cmd);
+static void pass_close_why(struct mali_cmd_buffer *cmd, enum mali_pass_why why);
 
 /* Legal-but-unimplemented state: render the closest legal thing, log ONE line, do not poison the command buffer.
  * PanVK's only vk_command_buffer_set_error is OOM (panvk_vX_cmd_desc_state.c:82); illegal state is UNREACHABLE and
@@ -158,6 +163,11 @@ reset_state(struct mali_cmd_buffer *cmd)
    cmd->ndef_frames = cmd->capdef_frames = 0;
    mali_frame_finish(&cmd->cur);
    memset(&cmd->cur, 0, sizeof cmd->cur);
+   mali_frame_finish(&cmd->pm);
+   memset(&cmd->pm, 0, sizeof cmd->pm);
+   cmd->pm_open = false;
+   cmd->pass_why = MALI_PW_FIRST;
+   cmd->npasses = 0;
    cmd->in_render = false;
    memset(&cmd->gfx, 0, sizeof cmd->gfx);
    cmd->have_gfx = false;
@@ -238,6 +248,7 @@ mali_EndCommandBuffer(VkCommandBuffer h)
    CMD(h);
    if (cmd->in_render)
       unsupported(cmd, "command buffer ended inside a rendering");
+   pass_close(cmd);   /* a parked pass (pass merge) is the last frame; a RESUMING pass in another buffer LOADs it */
    return vk_command_buffer_end(&cmd->vk);   /* returns the sticky error set by unsupported() */
 }
 
@@ -1084,10 +1095,197 @@ mali_CmdEndTransformFeedbackEXT(VkCommandBuffer h, uint32_t first_counter_buffer
    cmd->tf.active = false;
 }
 
-/* ---- rendering ---- */
-void
-mali_cmd_push_frame(struct mali_cmd_buffer *cmd, const struct mali_frame *f)
+/* ---- render-pass statistics (MALI_PASS_STATS=1) ---- */
+static uint64_t g_ps[MALI_PS_N], g_ps_shown[MALI_PS_N];
+static pthread_mutex_t g_ps_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static bool
+pass_stats_on(void)
 {
+   const char *e = getenv("MALI_PASS_STATS");
+   return e && e[0] == '1';
+}
+
+/* opt-in: MALI_PASS_MERGE=1 merges; unset or anything else keeps one frame per render pass. Off by default until a phone
+ * run confirms it (host-verified only); MALI_PASS_STATS=1 predicts what it would save without changing the frames. */
+static bool
+pass_merge_on(void)
+{
+   const char *e = getenv("MALI_PASS_MERGE");
+   return e && e[0] == '1';
+}
+
+static inline void
+ps_add(enum mali_pass_stat i, uint64_t v)
+{
+   __atomic_fetch_add(&g_ps[i], v, __ATOMIC_RELAXED);
+}
+
+static const char *const g_ps_name[MALI_PS_N] = {
+   "passes", "load_c", "load_z", "load_s", "mergeable", "merged", "folded", "empty", "preloads", "preload_px", "store_px",
+   "partial", "frames", "resumed", "clear_c", "clear_z", "clear_s", "dc_c", "dc_z", "dc_s", "area_tiles", "touched_tiles",
+   "save_px", "submits", "sub_passes", "sub_frames", "max_passes_per_submit", "nm_first", "nm_unparked", "nm_frame",
+   "nm_barrier", "nm_query", "nm_secondary", "nm_flags", "nm_size", "nm_area", "nm_attach", "nm_clear",
+};
+_Static_assert(MALI_PS_NM0 + MALI_PW_N == 38, "g_ps_name lists every MALI_PS_* counter");
+
+const char *
+mali_pass_stat_name(unsigned i)
+{
+   return i < MALI_PS_N ? g_ps_name[i] : "?";
+}
+
+static uint64_t g_ps_sub_cur, g_ps_win_max;   /* passes of the submit being counted; most passes per submit since the last line */
+
+/* one line, every counter as name=value plus passes per submit; the grep key is "mali_pass:" / "mali_pass_total:" */
+static void
+ps_print(const char *tag, const uint64_t *d)
+{
+   char line[1400];
+   int n = snprintf(line, sizeof line, "mali_pass%s:", tag);
+   for (unsigned i = 0; i < MALI_PS_N && n > 0 && (size_t)n < sizeof line; i++)
+      n += snprintf(line + n, sizeof line - (size_t)n, " %s=%" PRIu64, g_ps_name[i], d[i]);
+   const uint64_t sub = d[MALI_PS_SUBMITS];
+   if (n > 0 && (size_t)n < sizeof line)
+      snprintf(line + n, sizeof line - (size_t)n, " passes_per_submit=%.2f merge=%d", sub ? (double)d[MALI_PS_SUB_PASSES] / (double)sub : 0.0,
+               pass_merge_on());
+   fprintf(stderr, "%s\n", line);
+}
+
+void
+mali_pass_stats_print_total(void)
+{
+   if (!pass_stats_on())
+      return;
+   uint64_t d[MALI_PS_N];
+   pthread_mutex_lock(&g_ps_lock);
+   for (unsigned i = 0; i < MALI_PS_N; i++)
+      d[i] = __atomic_load_n(&g_ps[i], __ATOMIC_RELAXED);
+   pthread_mutex_unlock(&g_ps_lock);
+   ps_print("_total", d);
+}
+
+/* MALI_PASS_STATS_EVERY=N (default 300): one line of the deltas since the previous line every N submits */
+void
+mali_pass_stats_submit(void)
+{
+   if (!pass_stats_on())
+      return;
+   const char *e = getenv("MALI_PASS_STATS_EVERY");
+   const long every = e ? strtol(e, NULL, 10) : 300;
+   pthread_mutex_lock(&g_ps_lock);
+   const uint64_t n = __atomic_exchange_n(&g_ps_sub_cur, 0, __ATOMIC_RELAXED);
+   if (n > g_ps[MALI_PS_SUB_MAXPASSES])
+      g_ps[MALI_PS_SUB_MAXPASSES] = n;
+   if (n > g_ps_win_max)
+      g_ps_win_max = n;
+   const uint64_t subs = __atomic_add_fetch(&g_ps[MALI_PS_SUBMITS], 1, __ATOMIC_RELAXED);
+   if (every > 0 && subs % (uint64_t)every == 0) {
+      uint64_t d[MALI_PS_N];
+      for (unsigned i = 0; i < MALI_PS_N; i++) {
+         uint64_t v = __atomic_load_n(&g_ps[i], __ATOMIC_RELAXED);
+         d[i] = v - g_ps_shown[i];
+         g_ps_shown[i] = v;
+      }
+      d[MALI_PS_SUB_MAXPASSES] = g_ps_win_max;   /* a maximum has no delta: the window's own */
+      g_ps_win_max = 0;
+      ps_print("", d);
+   }
+   pthread_mutex_unlock(&g_ps_lock);
+}
+
+void
+mali_pass_stats_read(uint64_t out[MALI_PS_N], bool reset)
+{
+   for (unsigned i = 0; i < MALI_PS_N; i++)
+      out[i] = reset ? __atomic_exchange_n(&g_ps[i], 0, __ATOMIC_RELAXED) : __atomic_load_n(&g_ps[i], __ATOMIC_RELAXED);
+   if (reset) {
+      memset(g_ps_shown, 0, sizeof g_ps_shown);
+      g_ps_sub_cur = g_ps_win_max = 0;
+   }
+}
+
+/* render area as x0, y0, x1, y1 (area_px's convention: a zero extent is the whole framebuffer) */
+static void
+area_rect(const struct mali_frame *f, int64_t r[4])
+{
+   r[0] = f->area[0];
+   r[1] = f->area[1];
+   r[2] = r[0] + (f->area[2] ? f->area[2] : (int64_t)f->width);
+   r[3] = r[1] + (f->area[3] ? f->area[3] : (int64_t)f->height);
+}
+
+/* nominal 16 x 16 tiles covering a rectangle (x1/y1 exclusive); the hardware tile size varies with the format, the
+ * counter is for ratios (touched / area) */
+static uint64_t
+tiles_of(const int64_t r[4])
+{
+   const int64_t x0 = r[0] < 0 ? 0 : r[0], y0 = r[1] < 0 ? 0 : r[1];
+   if (r[2] <= x0 || r[3] <= y0)
+      return 0;
+   return (uint64_t)((r[2] + 15) / 16 - x0 / 16) * (uint64_t)((r[3] + 15) / 16 - y0 / 16);
+}
+
+static int64_t ifloor(float v) { int64_t i = (int64_t)v; return i - (v < (float)i); }
+static int64_t iceil(float v) { int64_t i = (int64_t)v; return i + (v > (float)i); }
+
+/* tiles of the union of the pass' draw boxes (viewport & scissor & render area), draws from index d0 of the frame */
+static uint64_t
+touched_tiles(const struct mali_frame *f, unsigned d0)
+{
+   int64_t a[4], u[4] = {INT64_MAX, INT64_MAX, INT64_MIN, INT64_MIN};
+   area_rect(f, a);
+   const struct mali_bpipe *bp = NULL;
+   for (unsigned i = 0; i < d0 && i < f->ndraws; i++)
+      if (f->draws[i].pipe)
+         bp = f->draws[i].pipe;
+   for (unsigned i = d0; i < f->ndraws; i++) {
+      if (f->draws[i].pipe)
+         bp = f->draws[i].pipe;
+      int64_t b[4];
+      memcpy(b, a, sizeof b);
+      if (bp) {
+         const float vy0 = bp->vp[3] < 0 ? bp->vp[1] + bp->vp[3] : bp->vp[1], vy1 = bp->vp[3] < 0 ? bp->vp[1] : bp->vp[1] + bp->vp[3];
+         const int64_t v[4] = {ifloor(bp->vp[0]), ifloor(vy0), iceil(bp->vp[0] + bp->vp[2]), iceil(vy1)};
+         const int64_t c[4] = {bp->sc[0], bp->sc[1], (int64_t)bp->sc[0] + bp->sc[2], (int64_t)bp->sc[1] + bp->sc[3]};
+         for (int k = 0; k < 2; k++) {
+            b[k] = MAX3(b[k], v[k], c[k]);
+            b[k + 2] = MIN3(b[k + 2], v[k + 2], c[k + 2]);
+         }
+      }
+      if (b[2] <= b[0] || b[3] <= b[1])
+         continue;
+      for (int k = 0; k < 2; k++) {
+         u[k] = MIN2(u[k], b[k]);
+         u[k + 2] = MAX2(u[k + 2], b[k + 2]);
+      }
+   }
+   return u[2] > u[0] ? tiles_of(u) : 0;
+}
+
+static unsigned
+stores_of(const struct mali_frame *p)
+{
+   return (p->has_colour && p->colour.store) + (p->has_zs && p->zs.store) + (p->has_st && p->st.store);
+}
+
+static uint64_t
+area_px(const struct mali_frame *f)
+{
+   uint64_t w = f->area[2] ? (uint64_t)f->area[2] : f->width, h = f->area[3] ? (uint64_t)f->area[3] : f->height;
+   return w * h;
+}
+
+/* ---- rendering ---- */
+static void
+frames_append(struct mali_cmd_buffer *cmd, const struct mali_frame *f)
+{
+   if (!f->compute && !f->nops && (f->has_colour || f->has_zs || f->has_st) && pass_stats_on()) {
+      ps_add(MALI_PS_FRAMES, 1);
+      unsigned n = (f->has_colour && (f->colour.store || f->colour.resolve_va)) + (f->has_zs && f->zs.store) +
+                   (f->has_st && f->st.store);
+      ps_add(MALI_PS_STORE_PX, n * area_px(f));
+   }
    if (cmd->nframes == cmd->capframes) {
       unsigned nc = cmd->capframes ? cmd->capframes * 2 : 4;
       struct mali_frame *nf = realloc(cmd->frames, nc * sizeof *nf);
@@ -1099,6 +1297,38 @@ mali_cmd_push_frame(struct mali_cmd_buffer *cmd, const struct mali_frame *f)
       cmd->capframes = nc;
    }
    cmd->frames[cmd->nframes++] = *f;
+}
+
+/* Pass merge, part 1 (deferred end). mali_CmdEndRendering parks a finished pass in cmd->pm instead of pushing it. The
+ * next vkCmdBeginRendering may continue it (pass_try_merge); every other command that records GPU work or orders
+ * against the pass closes it first, which pushes it exactly where today's eager push would have put it:
+ *   - every frame push (mali_cmd_push_frame: copies, blits, clears, dispatches, meta, query/event ops),
+ *   - vkCmdPipelineBarrier2 unless it is attachment-to-attachment only (mali_cmd_barrier),
+ *   - vkCmdBeginQuery/EndQuery (mali_cmd_set_occlusion), vkCmdExecuteCommands, vkEndCommandBuffer.
+ * Binding state, push constants and dynamic state do not close it: they record no work and the resumed pass' draws
+ * snapshot them as before. When in doubt a path pushes through the funnel, which closes. */
+static void
+pass_close_why(struct mali_cmd_buffer *cmd, enum mali_pass_why why)
+{
+   if (!cmd->pm_open)
+      return;
+   cmd->pass_why = why;   /* MALI_PASS_STATS: what kept the next pass from continuing this one */
+   cmd->pm_open = false;
+   frames_append(cmd, &cmd->pm);   /* the draw list now belongs to the frame list */
+   memset(&cmd->pm, 0, sizeof cmd->pm);
+}
+
+static void
+pass_close(struct mali_cmd_buffer *cmd)
+{
+   pass_close_why(cmd, MALI_PW_FRAME);
+}
+
+void
+mali_cmd_push_frame(struct mali_cmd_buffer *cmd, const struct mali_frame *f)
+{
+   pass_close(cmd);
+   frames_append(cmd, f);
 }
 
 /* A meta frame recorded while cmd->in_render is set: keep it until the pass' own frame is pushed, then run it after
@@ -1152,6 +1382,113 @@ raw_preload_kind(int fmt, unsigned *kind, unsigned *bpp, unsigned *nc)
    return false;
 }
 
+/* Pass merge, part 2: the next BeginRendering against the parked pass (cmd->pm). f is the new pass, fully resolved but
+ * without its preload draws yet; load, zload and sload point to its colour/depth/stencil LOADs.
+ *  Rule A (merge): same attachments (address, format, strides, samples), same render area and framebuffer size, no
+ *   resolve/layers/multiview, and the new pass clears nothing: the parked frame continues as the open pass, so the two
+ *   passes run as one tiler + fragment pass and the parked pass' write-back plus the new pass' preload disappear. A
+ *   DONT_CARE load is accepted too (its contents are undefined, the tile contents are a legal value). Store ops: the new
+ *   pass' (suspend-forced STORE included), OR'd with every non-suspended STORE of the chain (pm_keep), so nothing a pass
+ *   asked to keep is lost. VK_RENDERING_SUSPENDING/RESUMING pairs are exactly this case.
+ *  Rule B (fold, deferred clear): the parked pass drew nothing (no draw, no preload: only loadOp/ClearAttachments clears)
+ *   and every attachment it clears and stores is LOADed or CLEARed by the new pass over the same area: the parked pass
+ *   does not run, its clear values become the new pass' loadOp CLEAR. Its other attachments were LOAD/DONT_CARE with no
+ *   draw, i.e. unchanged or undefined, so dropping them is legal.
+ * Anything else: PASS_SEPARATE, the caller pushes the parked pass first (today's behaviour). */
+enum pass_join { PASS_SEPARATE, PASS_MERGED, PASS_FOLDED };
+
+static bool
+att_same(const struct mali_att *a, const struct mali_att *b, bool ms)
+{
+   return a->va == b->va && a->row_stride == b->row_stride && a->rt == b->rt && a->zs_format == b->zs_format &&
+          (!ms || a->surface_stride == b->surface_stride);
+}
+
+static enum pass_join
+pass_try_merge(struct mali_cmd_buffer *cmd, struct mali_frame *f, const VkRenderingInfo *ri, bool *load, bool *zload, bool *sload,
+               unsigned *why)
+{
+   struct mali_frame *p = &cmd->pm;
+   const bool merge = pass_merge_on(), stats = pass_stats_on();
+   const unsigned psm = p->samples > 1 ? p->samples : 1, fsm = f->samples > 1 ? f->samples : 1;
+   const bool ms = fsm > 1;
+   *why = MALI_PW_N;   /* mergeable or foldable (MALI_PASS_STATS reason codes, enum mali_pass_why) */
+   if (cmd->pass_nomerge || psm != fsm || p->width != f->width || p->height != f->height ||
+       memcmp(p->area, f->area, sizeof f->area)) {
+      *why = cmd->pass_nomerge ? MALI_PW_FLAGS : memcmp(p->area, f->area, sizeof f->area) && psm == fsm &&
+             p->width == f->width && p->height == f->height ? MALI_PW_AREA : MALI_PW_SIZE;
+      return PASS_SEPARATE;
+   }
+   const bool col = f->has_colour && p->has_colour && p->colour_slot == f->colour_slot && att_same(&p->colour, &f->colour, ms);
+   const bool dep = f->has_zs && p->has_zs && att_same(&p->zs, &f->zs, ms);
+   const bool ste = f->has_st && p->has_st && att_same(&p->st, &f->st, ms);
+   const bool exact = p->has_colour == f->has_colour && p->has_zs == f->has_zs && p->has_st == f->has_st &&
+                      (!f->has_colour || col) && (!f->has_zs || dep) && (!f->has_st || ste);
+   const bool clears = (f->has_colour && f->colour.clear) || (f->has_zs && f->zs.clear) || (f->has_st && f->st.clear);
+   if (exact && !clears) {
+      if (stats) {
+         ps_add(MALI_PS_MERGEABLE, 1);   /* a merge drops the new pass' preloads and the parked pass' stores */
+         ps_add(MALI_PS_SAVE_PX, area_px(f) * (unsigned)(*load + *zload + *sload) + area_px(p) * stores_of(p));
+      }
+      if (!merge)
+         return PASS_SEPARATE;
+      struct mali_frame m = *p;
+      m.colour.store = f->colour.store || cmd->pm_keep[0];
+      m.zs.store = f->zs.store || cmd->pm_keep[1];
+      m.st.store = f->st.store || cmd->pm_keep[2];
+      for (int i = 0; i < 3; i++)
+         cmd->pass_keep[i] |= cmd->pm_keep[i];
+      mali_frame_finish(f);   /* the new pass recorded nothing yet */
+      *f = m;
+      memset(p, 0, sizeof *p);
+      cmd->pm_open = false;
+      cmd->pass_draws0 = f->ndraws;
+      cmd->pass_clear_quads = 0;
+      cmd->dirty = MALI_D_ALL;   /* records are deltas: the first draw of the resumed pass renews everything */
+      cmd->in_render = true;
+      if (stats)
+         ps_add(MALI_PS_MERGED, 1);
+      return PASS_MERGED;
+   }
+   *why = exact ? MALI_PW_CLEAR : MALI_PW_ATTACH;
+   if (p->ndraws)
+      return PASS_SEPARATE;
+   /* Rule B: every attachment the parked pass clears and stores must be taken over by the new pass */
+   const bool pc = p->has_colour && p->colour.clear && p->colour.store, pz = p->has_zs && p->zs.clear && p->zs.store,
+              pst = p->has_st && p->st.clear && p->st.store;
+   if ((pc && !(col && (*load || f->colour.clear))) || (pz && !(dep && (*zload || f->zs.clear))) ||
+       (pst && !(ste && (*sload || f->st.clear))))
+      return PASS_SEPARATE;
+   *why = MALI_PW_N;
+   if (stats) {
+      ps_add(MALI_PS_FOLDED, 1);   /* the clear frame (its stores) does not run, its clears replace the new pass' loads */
+      ps_add(MALI_PS_SAVE_PX, area_px(p) * stores_of(p) +
+                              area_px(f) * (unsigned)((pc && *load) + (pz && *zload) + (pst && *sload)));
+   }
+   if (!merge)
+      return PASS_SEPARATE;
+   if (pc && *load) {
+      *load = false;
+      f->colour.clear = true;
+      memcpy(f->colour.clear_color, p->colour.clear_color, sizeof f->colour.clear_color);
+   }
+   if (pz && *zload) {
+      *zload = false;
+      f->zs.clear = true;
+      f->zs.clear_depth = p->zs.clear_depth;
+   }
+   if (pst && *sload) {
+      *sload = false;
+      f->st.clear = true;
+      f->st.clear_stencil = p->st.clear_stencil;
+   }
+   mali_frame_finish(p);
+   memset(p, 0, sizeof *p);
+   cmd->pm_open = false;
+   (void)ri;
+   return PASS_FOLDED;
+}
+
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
 {
@@ -1164,6 +1501,19 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       unsupported(cmd, "nested rendering / no image resolver");
       return;
    }
+   /* VK_RENDERING_RESUMING_BIT: the attachments are not loaded, the suspended instance's contents continue (merged
+    * below, or LOAD when it cannot be); SUSPENDING_BIT: the store ops are not performed yet, the contents must survive
+    * until the resuming instance (STORE when the pass is closed before it resumes). */
+   const bool resuming = ri->flags & VK_RENDERING_RESUMING_BIT, suspending = ri->flags & VK_RENDERING_SUSPENDING_BIT;
+   const VkAttachmentLoadOp LOADOP = VK_ATTACHMENT_LOAD_OP_LOAD;
+   const bool stats = pass_stats_on();
+   if (stats) {
+      ps_add(MALI_PS_PASSES, 1);
+      ps_add(MALI_PS_RESUMED, resuming);
+   }
+   cmd->pass_suspending = suspending;
+   cmd->pass_nomerge = false;
+   memset(cmd->pass_keep, 0, sizeof cmd->pass_keep);
    memset(f, 0, sizeof *f);
    f->area[0] = ri->renderArea.offset.x;
    f->area[1] = ri->renderArea.offset.y;
@@ -1204,8 +1554,11 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    /* M15: the colour target is GPU-written in this frame */
    if (!no_col && g_res.image_view_mem)
       mali_cmd_mark_written(cmd, g_res.image_view_mem(ca->imageView));
-   if (!no_col)
-      load = is_load_op(ca->loadOp);
+   if (!no_col) {
+      load = is_load_op(resuming ? LOADOP : ca->loadOp);
+      cmd->pass_nomerge = ca->resolveMode != VK_RESOLVE_MODE_NONE;
+      cmd->pass_keep[0] = !suspending && ca->storeOp == VK_ATTACHMENT_STORE_OP_STORE;
+   }
    if (load) {
       /* LOAD = a preload draw reading the old contents (linear image) through a storage buffer; any render-target format */
       int fmt = t.rt ? t.rt->vk_format : VK_FORMAT_R8G8B8A8_UNORM;
@@ -1266,8 +1619,8 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    f->colour.surface_stride = t.surface_stride;
    f->colour.rt = t.rt;
    f->colour.row_stride = t.row_stride;
-   f->colour.clear = ca->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR;
-   f->colour.store = ca->storeOp == VK_ATTACHMENT_STORE_OP_STORE;
+   f->colour.clear = !resuming && ca->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR;
+   f->colour.store = suspending || ca->storeOp == VK_ATTACHMENT_STORE_OP_STORE;
    if (f->colour.clear)
       memcpy(f->colour.clear_color, ca->clearValue.color.float32, sizeof f->colour.clear_color);
    if (f->samples == 4) {
@@ -1348,7 +1701,9 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          unsupported(cmd, "depth attachment view");
          return;
       }
-      if (is_load_op(da->loadOp)) {
+      cmd->pass_nomerge |= da->resolveMode != VK_RESOLVE_MODE_NONE;
+      cmd->pass_keep[1] = !suspending && da->storeOp == VK_ATTACHMENT_STORE_OP_STORE;
+      if (is_load_op(resuming ? LOADOP : da->loadOp)) {
          if (t.zs_format != 1 && t.zs_format != 2 && t.zs_format != 3) {
             char why[160];
             snprintf(why, sizeof why, "depth loadOp LOAD of %s (%u samples), supported: D32_SFLOAT, D24_UNORM_S8_UINT, "
@@ -1382,9 +1737,9 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       f->zs.surface_stride = t.surface_stride;
       f->zs.row_stride = t.row_stride;
       f->zs.zs_format = t.zs_format;
-      f->zs.clear = da->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR;
+      f->zs.clear = !resuming && da->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR;
       f->zs.clear_depth = da->clearValue.depthStencil.depth;
-      f->zs.store = da->storeOp == VK_ATTACHMENT_STORE_OP_STORE;
+      f->zs.store = suspending || da->storeOp == VK_ATTACHMENT_STORE_OP_STORE;
    }
    if (ri->pStencilAttachment && ri->pStencilAttachment->imageView) {
       if (g_res.image_view_mem)
@@ -1394,7 +1749,9 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          unsupported(cmd, "stencil attachment view");
          return;
       }
-      if (is_load_op(sa->loadOp)) {
+      cmd->pass_nomerge |= sa->resolveMode != VK_RESOLVE_MODE_NONE;
+      cmd->pass_keep[2] = !suspending && sa->storeOp == VK_ATTACHMENT_STORE_OP_STORE;
+      if (is_load_op(resuming ? LOADOP : sa->loadOp)) {
          sload = true;
          zsrc.va[1] = t.s_va;
          zsrc.row[1] = t.s_row_stride;
@@ -1418,9 +1775,40 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       f->st.va = t.s_va;
       f->st.row_stride = t.s_row_stride;
       f->st.surface_stride = t.s_surface_stride;
-      f->st.clear = sa->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR;
+      f->st.clear = !resuming && sa->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR;
       f->st.clear_stencil = (uint8_t)sa->clearValue.depthStencil.stencil;
-      f->st.store = sa->storeOp == VK_ATTACHMENT_STORE_OP_STORE;
+      f->st.store = suspending || sa->storeOp == VK_ATTACHMENT_STORE_OP_STORE;
+   }
+   if (stats) {
+      ps_add(MALI_PS_LOAD_C, load);
+      ps_add(MALI_PS_LOAD_Z, zload);
+      ps_add(MALI_PS_LOAD_S, sload);
+      ps_add(MALI_PS_PARTIAL, area_px(f) < (uint64_t)f->width * f->height);
+      ps_add(MALI_PS_CLEAR_C, f->has_colour && f->colour.clear);
+      ps_add(MALI_PS_CLEAR_Z, f->has_zs && f->zs.clear);
+      ps_add(MALI_PS_CLEAR_S, f->has_st && f->st.clear);
+      ps_add(MALI_PS_DC_C, f->has_colour && !f->colour.clear && !load);
+      ps_add(MALI_PS_DC_Z, f->has_zs && !f->zs.clear && !zload);
+      ps_add(MALI_PS_DC_S, f->has_st && !f->st.clear && !sload);
+      int64_t ar[4];
+      area_rect(f, ar);
+      ps_add(MALI_PS_AREA_TILES, tiles_of(ar));
+   }
+   for (uint32_t i = 0; i < ri->colorAttachmentCount; i++)   /* every slot, also the ones not rendered: a merge must not lose a resolve */
+      cmd->pass_nomerge |= ri->pColorAttachments[i].imageView && ri->pColorAttachments[i].resolveMode != VK_RESOLVE_MODE_NONE;
+   cmd->pass_nomerge |= ri->layerCount > 1 || ri->viewMask || f->resolve_src || f->resolve_dst || f->colour.resolve_va;
+   cmd->npasses++;
+   if (cmd->pm_open) {
+      unsigned why;
+      enum pass_join j = pass_try_merge(cmd, f, ri, &load, &zload, &sload, &why);
+      if (stats && why < MALI_PW_N)
+         ps_add(MALI_PS_NM0 + why, 1);
+      if (j == PASS_MERGED)
+         return;
+      if (j == PASS_SEPARATE)
+         pass_close(cmd);   /* the parked pass runs first, as its own frame */
+   } else if (stats) {
+      ps_add(MALI_PS_NM0 + cmd->pass_why, 1);
    }
    struct { bool on; enum mali_preload_kind kind; const struct mali_preload_src *src; const char *what; } pre[2] = {
       { load, MALI_PRELOAD_COLOUR, &psrc, "colour loadOp LOAD (preload shader)" },
@@ -1441,7 +1829,13 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       d.vp[0] = (float)f->area[0]; d.vp[1] = (float)f->area[1]; d.vp[2] = (float)f->area[2]; d.vp[3] = (float)f->area[3]; d.vp[5] = 1.0f;
       if (mali_frame_add_draw(f, &d))
          vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
+      if (stats) {
+         ps_add(MALI_PS_PRELOADS, 1);
+         ps_add(MALI_PS_PRELOAD_PX, area_px(f));
+      }
    }
+   cmd->pass_draws0 = f->ndraws;
+   cmd->pass_clear_quads = 0;
    cmd->dirty = MALI_D_ALL;   /* the preload draws above are not snapshots of the bound state */
    cmd->in_render = true;
 }
@@ -1511,9 +1905,29 @@ mali_CmdEndRendering(VkCommandBuffer h)
    mali_resolve_region(&cmd->cur, &rr);
    int32_t area[4];
    memcpy(area, cmd->cur.area, sizeof area);
+   const bool stats = pass_stats_on();
+   if (stats && cmd->cur.ndraws <= cmd->pass_draws0 + cmd->pass_clear_quads)
+      ps_add(MALI_PS_EMPTY, 1);
+   if (stats)
+      ps_add(MALI_PS_TOUCHED_TILES, touched_tiles(&cmd->cur, cmd->pass_draws0));   /* no draw of its own (clears only): the pass begun last, also when it resumed a merged frame */
+   /* Pass merge: park the pass (deferred end) when nothing has to run right after it: no resolve, no op or meta frame
+    * recorded inside it, no transform feedback. The next command decides (pass_try_merge / pass_close). With merging
+    * off it is still parked when MALI_PASS_STATS counts, which yields the same frame list (pushed before anything else). */
+   if (!cmd->pass_nomerge && !resolve_src && !resolve_dst && !cmd->cur.colour.resolve_va && !cmd->ndef && !cmd->ndef_frames &&
+       !cmd->tf.active && (pass_merge_on() || stats)) {
+      pass_close(cmd);   /* cannot be open while a pass is (BeginRendering closed or merged it); defensive */
+      cmd->pm = cmd->cur;
+      cmd->pm_open = true;
+      cmd->pm_suspended = cmd->pass_suspending;
+      memcpy(cmd->pm_keep, cmd->pass_keep, sizeof cmd->pm_keep);
+      memset(&cmd->cur, 0, sizeof cmd->cur);
+      cmd->in_render = false;
+      return;
+   }
    push_frame(cmd, &cmd->cur);
    memset(&cmd->cur, 0, sizeof cmd->cur);   /* the draw list now belongs to the finished frame */
    cmd->in_render = false;
+   cmd->pass_why = MALI_PW_UNPARKED;
    if (resolve_src && resolve_dst && resolve_1x) {
       struct mali_image *src = (struct mali_image *)(uintptr_t)resolve_src;
       struct mali_image *dst = (struct mali_image *)(uintptr_t)resolve_dst;
@@ -1616,8 +2030,87 @@ mali_cmd_push_ops(struct mali_cmd_buffer *cmd, const struct mali_op *ops, unsign
 void
 mali_cmd_set_occlusion(struct mali_cmd_buffer *cmd, uint64_t va, unsigned mode)
 {
+   if (!cmd->in_render)
+      pass_close_why(cmd, MALI_PW_QUERY);   /* a query boundary between two passes: they do not merge */
    cmd->occ_va = va;
    cmd->occ_mode = mode;
+}
+
+/* A secondary command buffer between two passes: replayed through the dispatch table like any recording, but closing
+ * the parked pass first keeps the rule simple (the brief's "when in doubt, close"). */
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdExecuteCommands(VkCommandBuffer h, uint32_t n, const VkCommandBuffer *cbs)
+{
+   CMD(h);
+   if (!cmd->in_render)
+      pass_close_why(cmd, MALI_PW_SECONDARY);
+   vk_common_CmdExecuteCommands(h, n, cbs);
+}
+
+/* Access a merged pass still satisfies: the attachments' own read/write. Anything else after a pass (a shader read of
+ * the attachment, a transfer, host access, a layout change to a sampling layout, an ownership transfer, any buffer)
+ * means the next pass depends on the parked pass' memory, which a merged frame has not written yet. */
+#define PASS_ATT_ACCESS (VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | \
+                         VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT)
+
+/* Stages a merged pass still orders: per-sample attachment work, which rasterization order keeps in submission order inside
+ * one pass. Any other stage in a barrier between two passes is an execution dependency between whole passes (a WAR on a
+ * buffer the first pass' fragment shader read and the second pass' vertex shader writes needs nothing more), which one
+ * tiler + fragment pass interleaves per tile. In the first scope TOP_OF_PIPE is no stage and in the second BOTTOM_OF_PIPE
+ * is none (synchronization2); the other way round each means ALL_COMMANDS. */
+#define PASS_ATT_STAGES (VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | \
+                         VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT)
+
+static bool
+att_stages(VkPipelineStageFlags2 src, VkPipelineStageFlags2 dst)
+{
+   return !(src & ~(VkPipelineStageFlags2)(PASS_ATT_STAGES | VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT)) &&
+          !(dst & ~(VkPipelineStageFlags2)(PASS_ATT_STAGES | VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT));
+}
+
+static bool
+att_layout(VkImageLayout l)
+{
+   switch (l) {
+   case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
+   case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
+   case VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL:
+   case VK_IMAGE_LAYOUT_STENCIL_ATTACHMENT_OPTIMAL:
+   case VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL:
+   case VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_STENCIL_READ_ONLY_OPTIMAL:
+   case VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL:
+      return true;
+   default:
+      return false;
+   }
+}
+
+void
+mali_cmd_barrier(VkCommandBuffer h, const VkDependencyInfo *info)
+{
+   CMD(h);
+   if (!cmd->pm_open || !info)
+      return;
+   /* A parked pass without draws (loadOp clears only, or a parked vkCmdClearColorImage) ran no shader, so only the
+    * access rule matters for it: the usual TRANSFER -> COLOR_ATTACHMENT_OUTPUT barrier after a clear still folds. */
+   const bool drew = cmd->pm.ndraws != 0;
+   bool keep = !info->bufferMemoryBarrierCount;
+   for (uint32_t i = 0; keep && i < info->memoryBarrierCount; i++) {
+      const VkMemoryBarrier2 *b = &info->pMemoryBarriers[i];
+      /* Access masks can be empty while stage masks still impose an execution
+       * dependency. Do not erase that boundary by combining the passes. */
+      keep = b->srcAccessMask && b->dstAccessMask && !(b->dstAccessMask & ~(VkAccessFlags2)PASS_ATT_ACCESS) &&
+             (!drew || att_stages(b->srcStageMask, b->dstStageMask));
+   }
+   for (uint32_t i = 0; keep && i < info->imageMemoryBarrierCount; i++) {
+      const VkImageMemoryBarrier2 *b = &info->pImageMemoryBarriers[i];
+      keep = b->srcAccessMask && b->dstAccessMask && !(b->dstAccessMask & ~(VkAccessFlags2)PASS_ATT_ACCESS) &&
+             (!drew || att_stages(b->srcStageMask, b->dstStageMask)) &&
+             b->srcQueueFamilyIndex == b->dstQueueFamilyIndex &&
+             (b->oldLayout == b->newLayout || att_layout(b->newLayout));
+   }
+   if (!keep)
+      pass_close_why(cmd, MALI_PW_BARRIER);
 }
 
 /* ---- clears ---- */
@@ -1693,6 +2186,7 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
                vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
                return;
             }
+            cmd->pass_clear_quads++;
          }
       }
       bool has_c = false;
@@ -1746,6 +2240,7 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
                vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
                return;
             }
+            cmd->pass_clear_quads++;
          }
       }
       cmd->dirty = MALI_D_ALL;   /* the quads are not snapshots of the bound state */
@@ -1807,6 +2302,18 @@ mali_CmdClearColorImage(VkCommandBuffer h, VkImage image, VkImageLayout layout, 
    f.colour.clear = true;
    f.colour.store = true;
    memcpy(f.colour.clear_color, c->float32, sizeof f.colour.clear_color);
+   if (pass_merge_on() || pass_stats_on()) {
+      /* parked like a finished pass: a following pass that LOADs the whole image takes the clear as its loadOp CLEAR
+       * (pass_try_merge rule B) and this frame never runs; anything else pushes it first. Parked under MALI_PASS_STATS
+       * too (merging off: the same frame list), so the counters see the fold. */
+      pass_close(cmd);
+      cmd->pm = f;
+      cmd->pm_open = true;
+      cmd->pm_suspended = false;
+      cmd->pm_keep[0] = true;
+      cmd->pm_keep[1] = cmd->pm_keep[2] = false;
+      return;
+   }
    push_frame(cmd, &f);
 }
 
@@ -1824,6 +2331,15 @@ mali_cmd_submit(struct vk_command_buffer *vk)
    struct mali_cmd_buffer *cmd = mali_cmd_buffer_from_vk(vk);
    if (!g_hw_set)
       return VK_ERROR_FEATURE_NOT_PRESENT;
+   if (pass_stats_on()) {   /* passes and render frames per submit (mali_pass_stats_submit closes the submit) */
+      uint64_t rf = 0;
+      for (unsigned i = 0; i < cmd->nframes; i++)
+         rf += !cmd->frames[i].compute && !cmd->frames[i].nops &&
+               (cmd->frames[i].has_colour || cmd->frames[i].has_zs || cmd->frames[i].has_st);
+      ps_add(MALI_PS_SUB_PASSES, cmd->npasses);
+      ps_add(MALI_PS_SUB_FRAMES, rf);
+      __atomic_fetch_add(&g_ps_sub_cur, cmd->npasses, __ATOMIC_RELAXED);
+   }
    uint64_t *all = NULL;
    unsigned nall = 0, capall = 0, counted = 0;
    VkResult res = VK_SUCCESS;

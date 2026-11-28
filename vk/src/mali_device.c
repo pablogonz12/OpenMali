@@ -220,6 +220,7 @@ mali_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
 
    if (dev->has_queue)
       vk_queue_finish(&dev->queue.vk);
+   mali_pass_stats_print_total();   /* MALI_PASS_STATS=1: the process totals */
    struct mali_physical_device *pdev = container_of(dev->vk.physical, struct mali_physical_device, vk);
    mali_hw_finish(dev);
    pdev->backend->device_destroy(dev->kdev);

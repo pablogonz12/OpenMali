@@ -722,6 +722,7 @@ mali_DestroyPipeline(VkDevice d, VkPipeline pipeline, const VkAllocationCallback
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdPipelineBarrier2(VkCommandBuffer cb, const VkDependencyInfo *info)
 {
+   mali_cmd_barrier(cb, info);   /* only effect: a parked render pass that cannot merge past it is closed (mali_cmd.c) */
 }
 
 /* ---- resolvers for mali_cmd.c ---- */

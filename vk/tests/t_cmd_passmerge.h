@@ -1,0 +1,613 @@
+/* SPDX-License-Identifier: MIT */
+/* t_cmd --passmerge: render-pass merging (mali_cmd.c "pass merge": deferred end, rule A merge, rule B fold, suspend/resume)
+ * and the MALI_PASS_STATS counters. Included by t_cmd.c after its helpers (new_cmd, make_buffer, F, ls_preloads).
+ * Record-time checks on the command buffer's frame list, then a submit through the fake backend: F.nsubmit counts the
+ * frames that reach the CS ring, so "one frame in the dump" is F.nsubmit + 1. */
+
+struct pm_pass {
+   uintptr_t col, dep;                 /* view handles of res_view (0 = none): 1 RGBA8 colour, 2 D32F, 3 D32F + S8 */
+   VkAttachmentLoadOp lc, ld;          /* 0 = LOAD */
+   VkAttachmentStoreOp sc, sd;         /* 0 = STORE */
+   VkRenderingFlags fl;
+   int32_t x, y;
+   uint32_t w, h;                      /* 0 = the whole W x H attachment */
+   bool nodraw;
+   uint32_t layers, view_mask;         /* layerCount (0 = 1) and viewMask */
+   bool resolve1;                      /* a second colour slot (view 1) with an AVERAGE resolve: not rendered, still resolves */
+   int32_t sx, sy;                     /* the draw's scissor when sw != 0 (else the render area) */
+   uint32_t sw, sh;
+};
+
+/* vkCmdPipelineBarrier (1.0, the runtime turns it into CmdPipelineBarrier2) with one global memory barrier */
+static void
+pm_mbar(VkCommandBuffer cb, VkPipelineStageFlags src, VkPipelineStageFlags dst, VkAccessFlags sa, VkAccessFlags da)
+{
+   DFN(CmdPipelineBarrier);
+   VkMemoryBarrier mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = sa, .dstAccessMask = da};
+   CmdPipelineBarrier(cb, src, dst, 0, 1, &mb, 0, NULL, 0, NULL);
+}
+
+/* the same with one image barrier on the colour attachment */
+static void
+pm_ibar(VkCommandBuffer cb, VkPipelineStageFlags src, VkPipelineStageFlags dst, VkAccessFlags sa, VkAccessFlags da,
+        VkImageLayout from, VkImageLayout to)
+{
+   DFN(CmdPipelineBarrier);
+   VkImageMemoryBarrier ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .srcAccessMask = sa, .dstAccessMask = da,
+                              .oldLayout = from, .newLayout = to, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                              .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = (VkImage)(uintptr_t)1,
+                              .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+   CmdPipelineBarrier(cb, src, dst, 0, 0, NULL, 0, NULL, 1, &ib);
+}
+
+static void
+pm_rec(VkCommandBuffer cb, const struct pm_pass *p)
+{
+   DFN(CmdBindPipeline);
+   DFN(CmdSetViewport);
+   DFN(CmdSetScissor);
+   DFN(CmdDraw);
+   VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = (VkImageView)p->col,
+                                   .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, .loadOp = p->lc, .storeOp = p->sc};
+   ca.clearValue.color.float32[0] = 0.25f;
+   ca.clearValue.color.float32[3] = 1.0f;
+   VkRenderingAttachmentInfo da = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = (VkImageView)p->dep,
+                                   .imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, .loadOp = p->ld, .storeOp = p->sd};
+   da.clearValue.depthStencil.depth = 0.5f;
+   uint32_t w = p->w ? p->w : W, h = p->h ? p->h : H;
+   VkRenderingAttachmentInfo cas[2] = {ca, ca};
+   cas[1].imageView = (VkImageView)(uintptr_t)1;
+   cas[1].resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
+   cas[1].resolveImageView = (VkImageView)(uintptr_t)1;
+   VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .flags = p->fl, .renderArea = {{p->x, p->y}, {w, h}},
+                         .layerCount = p->layers ? p->layers : 1, .viewMask = p->view_mask,
+                         .colorAttachmentCount = p->col ? (p->resolve1 ? 2 : 1) : 0, .pColorAttachments = p->col ? cas : NULL,
+                         .pDepthAttachment = p->dep ? &da : NULL};
+   mali_CmdBeginRendering(cb, &ri);
+   if (!p->nodraw) {
+      CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipeline)(uintptr_t)1);
+      VkViewport vp = {(float)p->x, (float)p->y, (float)w, (float)h, 0.0f, 1.0f};
+      VkRect2D scr = p->sw ? (VkRect2D){{p->sx, p->sy}, {p->sw, p->sh}} : (VkRect2D){{p->x, p->y}, {w, h}};
+      CmdSetViewport(cb, 0, 1, &vp);
+      if (p->sw)   /* the test pipeline has no static scissor count (0 = render area): give it one so the scissor applies */
+         vk_command_buffer_from_handle(cb)->dynamic_graphics_state.vp.scissor_count = 1;
+      CmdSetScissor(cb, 0, 1, &scr);
+      CmdDraw(cb, 3, 1, 0, 0);
+   }
+   mali_CmdEndRendering(cb);
+}
+
+/* Ends and submits the command buffer, checks the frame count at record time and in the fake backend. */
+static struct mali_cmd_buffer *
+pm_finish(VkCommandBuffer cb, const char *name, unsigned want_frames)
+{
+   DFN(EndCommandBuffer);
+   VkResult r = EndCommandBuffer(cb);
+   CHECK(r == VK_SUCCESS, "%s: EndCommandBuffer %d", name, r);
+   struct mali_cmd_buffer *m = mali_cmd_buffer_from_vk(vk_command_buffer_from_handle(cb));
+   CHECK(!m->pm_open, "%s: a pass is still parked after vkEndCommandBuffer", name);
+   CHECK(m->nframes == want_frames, "%s: %u frames (want %u)", name, m->nframes, want_frames);
+   unsigned before = F.nsubmit;
+   r = mali_cmd_submit(&m->vk);
+   CHECK(r == VK_SUCCESS && F.nsubmit - before == want_frames, "%s: submit %d, %u frames on the ring (want %u)", name, r,
+         F.nsubmit - before, want_frames);
+   return m;
+}
+
+/* app draws of a frame: every rec whose fragment shader is the test pipeline's */
+static unsigned
+pm_app_draws(const struct mali_frame *f)
+{
+   unsigned n = 0;
+   for (unsigned i = 0; i < f->ndraws; i++)
+      n += f->draws[i].pipe && f->draws[i].pipe->gfx.fs == &g_fs;
+   return n;
+}
+
+static void
+pm_stats_expect(const char *name, const uint64_t *want, const int *idx, unsigned n)
+{
+   uint64_t s[MALI_PS_N];
+   mali_pass_stats_read(s, true);
+   for (unsigned i = 0; i < n; i++)
+      CHECK(s[idx[i]] == want[i], "%s: stat %s = %llu (want %llu)", name, mali_pass_stat_name(idx[i]), (unsigned long long)s[idx[i]],
+            (unsigned long long)want[i]);
+}
+
+/* MALI_PASS_STATS predictor counters with merging off (the default): one reason per pass that is not mergeable with
+ * the previous one, loadOps per attachment, render-area vs touched tiles, the predicted saving, passes per submit, and
+ * the summary lines (one per MALI_PASS_STATS_EVERY submits, the totals at vkDestroyDevice). */
+static void
+test_pass_counters(VkCommandPool pool, struct vk_buffer *b0)
+{
+   const VkAttachmentLoadOp CLR = VK_ATTACHMENT_LOAD_OP_CLEAR, DC = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+   const uint64_t px = (uint64_t)W * H, tiles = (uint64_t)(W / 16) * (H / 16);
+   VkCommandBuffer cb;
+   uint64_t s[MALI_PS_N];
+   unsetenv("MALI_PASS_MERGE");
+   mali_pass_stats_read(s, true);
+   /* three command buffers (the test ring holds about five frames per submit), one submit each */
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR, .sx = 8, .sy = 8, .sw = 16, .sh = 16});   /* A: first; 2 x 2 tiles */
+   pm_rec(cb, &(struct pm_pass){.col = 1});                                                    /* B: mergeable */
+   {
+      DFN(CmdCopyBuffer);
+      VkBufferCopy bc = {0, 2048, 256};
+      CmdCopyBuffer(cb, vk_buffer_to_handle(b0), vk_buffer_to_handle(b0), 1, &bc);
+   }
+   pm_rec(cb, &(struct pm_pass){.col = 1});                                                    /* C: a frame between */
+   pm_mbar(cb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+           VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+   pm_rec(cb, &(struct pm_pass){.col = 1});                                                    /* D: a barrier */
+   pm_finish(cb, "counters_a", 5);   /* 4 passes + the copy */
+   mali_pass_stats_submit();
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1});                                                    /* P: first */
+   pm_rec(cb, &(struct pm_pass){.col = 1, .dep = 2, .ld = DC});                               /* F: attachments */
+   pm_rec(cb, &(struct pm_pass){.col = 1, .dep = 2, .lc = CLR});                              /* G: clears */
+   pm_rec(cb, &(struct pm_pass){.col = 1, .x = 16, .y = 16, .w = 64, .h = 64});              /* E: area; 4 x 4 tiles */
+   pm_finish(cb, "counters_b", 4);
+   mali_pass_stats_submit();
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1});                                                    /* P2: first */
+   pm_rec(cb, &(struct pm_pass){.col = 1, .resolve1 = true});                                 /* H: flags (resolve) */
+   pm_rec(cb, &(struct pm_pass){.col = 1});                                                    /* I: H could not park */
+   mali_cmd_set_occlusion(mali_cmd_buffer_from_vk(vk_command_buffer_from_handle(cb)), F.vb.gpu_va + 512, MALI_OCC_MODE_COUNTER);
+   pm_rec(cb, &(struct pm_pass){.col = 1});                                                    /* J: a query */
+   mali_cmd_set_occlusion(mali_cmd_buffer_from_vk(vk_command_buffer_from_handle(cb)), 0, 0);
+   pm_finish(cb, "counters_c", 4);
+   mali_pass_stats_submit();
+   mali_pass_stats_read(s, false);
+   uint64_t sum = s[MALI_PS_MERGEABLE] + s[MALI_PS_FOLDED];
+   for (unsigned i = 0; i < MALI_PW_N; i++)
+      sum += s[MALI_PS_NM0 + i];
+   CHECK(sum == s[MALI_PS_PASSES], "counters: %llu passes but %llu classified", (unsigned long long)s[MALI_PS_PASSES],
+         (unsigned long long)sum);
+   {
+      static const int ix[] = {MALI_PS_PASSES, MALI_PS_MERGEABLE, MALI_PS_MERGED, MALI_PS_NM0 + MALI_PW_FIRST,
+                               MALI_PS_NM0 + MALI_PW_FRAME, MALI_PS_NM0 + MALI_PW_BARRIER, MALI_PS_NM0 + MALI_PW_AREA,
+                               MALI_PS_NM0 + MALI_PW_ATTACH, MALI_PS_NM0 + MALI_PW_CLEAR, MALI_PS_NM0 + MALI_PW_FLAGS,
+                               MALI_PS_NM0 + MALI_PW_UNPARKED, MALI_PS_NM0 + MALI_PW_QUERY, MALI_PS_NM0 + MALI_PW_SIZE,
+                               MALI_PS_CLEAR_C, MALI_PS_CLEAR_Z, MALI_PS_DC_Z, MALI_PS_SAVE_PX, MALI_PS_AREA_TILES,
+                               MALI_PS_TOUCHED_TILES, MALI_PS_SUBMITS, MALI_PS_SUB_PASSES, MALI_PS_SUB_FRAMES,
+                               MALI_PS_SUB_MAXPASSES};
+      /* G clears colour and LOADs depth; F's depth is DONT_CARE. Save for B: its colour preload + A's colour store.
+       * Area tiles: 11 full passes + E's 4 x 4. Touched: A's 2 x 2 scissor, 10 full draws, E's 4 x 4. */
+      const uint64_t want[] = {12, 1, 0, 3, 1, 1, 1, 1, 1, 1, 1, 1, 0, 2, 0, 1, 2 * px, 11 * tiles + 16, 4 + 10 * tiles + 16,
+                               3, 12, 12, 4};
+      pm_stats_expect("counters", want, ix, sizeof ix / sizeof ix[0]);
+   }
+   /* after the reset in pm_stats_expect: one more command buffer, its pass is "first" */
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR});
+   pm_finish(cb, "counters_2", 1);
+   /* the summary lines on stderr: one per MALI_PASS_STATS_EVERY=2 submits, the totals at device destroy */
+   setenv("MALI_PASS_STATS_EVERY", "2", 1);
+   fflush(stderr);
+   FILE *t = tmpfile();
+   const int save = dup(2);
+   CHECK(t && save >= 0 && dup2(fileno(t), 2) >= 0, "counters: stderr redirect");
+   mali_pass_stats_submit();   /* submit 1 since the reset above (counters_2) */
+   mali_pass_stats_submit();   /* submit 2: a line, the deltas since the reset */
+   mali_pass_stats_submit();   /* submit 3: none */
+   mali_pass_stats_submit();   /* submit 4: a line, nothing happened since the previous one */
+   mali_pass_stats_print_total();
+   fflush(stderr);
+   dup2(save, 2);
+   close(save);
+   unsetenv("MALI_PASS_STATS_EVERY");
+   char line[2048];
+   unsigned nper = 0, ntot = 0;
+   rewind(t);
+   while (fgets(line, sizeof line, t)) {
+      if (!strncmp(line, "mali_pass: ", 11)) {
+         if (nper++ == 0)
+            CHECK(strstr(line, " submits=2 ") && strstr(line, " passes=1 ") && strstr(line, " nm_first=1 ") &&
+                  strstr(line, " max_passes_per_submit=1 ") && strstr(line, " passes_per_submit=0.50 merge=0"),
+                  "counters: first per-N line: %s", line);
+         else
+            CHECK(strstr(line, " submits=2 ") && strstr(line, " passes=0 ") && strstr(line, " max_passes_per_submit=0 ") &&
+                  strstr(line, " passes_per_submit=0.00 "), "counters: the second per-N line is a delta: %s", line);
+      } else if (!strncmp(line, "mali_pass_total: ", 17)) {
+         ntot++;
+         CHECK(strstr(line, " submits=4 ") && strstr(line, " passes=1 ") && strstr(line, " max_passes_per_submit=1 ") &&
+               strstr(line, " nm_first=1 ") && strstr(line, " touched_tiles="), "counters: total line: %s", line);
+      }
+   }
+   fclose(t);
+   CHECK(nper == 2 && ntot == 1, "counters: %u per-N lines (want 2), %u total lines (want 1)", nper, ntot);
+}
+
+static void
+test_passmerge(VkCommandPool pool)
+{
+   const VkAttachmentLoadOp CLR = VK_ATTACHMENT_LOAD_OP_CLEAR, DC = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+   const VkAttachmentStoreOp SDC = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+   const uint64_t px = (uint64_t)W * H;
+   VkCommandBuffer cb;
+   struct mali_cmd_buffer *m;
+   uint64_t s[MALI_PS_N];
+   setenv("MALI_PASS_STATS", "1", 1);
+   unsetenv("MALI_PASS_MERGE");
+   mali_pass_stats_read(s, true);
+
+   /* ---- default: merging is off (opt-in MALI_PASS_MERGE=1); the counters still predict the merge ---- */
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR});
+   pm_rec(cb, &(struct pm_pass){.col = 1});
+   m = pm_finish(cb, "default_off", 2);
+   if (m->nframes == 2)
+      CHECK(ls_preloads(&m->frames[1]) == 1, "default_off: the second pass must preload");
+   {
+      static const int ix[] = {MALI_PS_PASSES, MALI_PS_MERGEABLE, MALI_PS_MERGED, MALI_PS_FRAMES};
+      const uint64_t want[] = {2, 1, 0, 2};
+      pm_stats_expect("default_off", want, ix, 4);
+   }
+   /* anything but "1" keeps it off */
+   setenv("MALI_PASS_MERGE", "yes", 1);
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR});
+   pm_rec(cb, &(struct pm_pass){.col = 1});
+   pm_finish(cb, "off_unless_1", 2);
+   setenv("MALI_PASS_MERGE", "1", 1);
+   mali_pass_stats_read(s, true);
+
+   /* ---- must merge ---- */
+   /* two passes: CLEAR+draw, then LOAD+draw on the same colour view: one frame, two app draws, no preload */
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR});
+   pm_rec(cb, &(struct pm_pass){.col = 1});
+   m = pm_finish(cb, "merge_two", 1);
+   if (m->nframes == 1) {
+      CHECK(m->frames[0].ndraws == 2 && pm_app_draws(&m->frames[0]) == 2 && ls_preloads(&m->frames[0]) == 0,
+            "merge_two: %u draws, %u preloads", m->frames[0].ndraws, ls_preloads(&m->frames[0]));
+      CHECK(m->frames[0].colour.clear && m->frames[0].colour.store, "merge_two: the first pass' CLEAR and the store survive");
+   }
+   {
+      static const int ix[] = {MALI_PS_PASSES, MALI_PS_LOAD_C, MALI_PS_MERGEABLE, MALI_PS_MERGED, MALI_PS_PRELOADS,
+                               MALI_PS_PRELOAD_PX, MALI_PS_STORE_PX, MALI_PS_FRAMES, MALI_PS_EMPTY, MALI_PS_PARTIAL};
+      const uint64_t want[] = {2, 1, 1, 1, 0, 0, px, 1, 0, 0};
+      pm_stats_expect("merge_two", want, ix, 10);
+   }
+
+   /* five passes (the 4-layer UI composite plus its clear): one frame, five draws */
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR});
+   for (int i = 0; i < 4; i++)
+      pm_rec(cb, &(struct pm_pass){.col = 1});
+   m = pm_finish(cb, "merge_five", 1);
+   if (m->nframes == 1)
+      CHECK(pm_app_draws(&m->frames[0]) == 5 && ls_preloads(&m->frames[0]) == 0, "merge_five: %u app draws %u preloads",
+            pm_app_draws(&m->frames[0]), ls_preloads(&m->frames[0]));
+
+   /* colour + depth, LOAD on both, an attachment-only barrier in between (still mergeable) */
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .dep = 2, .lc = CLR, .ld = CLR});
+   {
+      DFN(CmdPipelineBarrier);   /* the 1.0 entry point ANGLE calls; the runtime turns it into CmdPipelineBarrier2 */
+      VkMemoryBarrier mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT};
+      CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 1, &mb,
+                         0, NULL, 0, NULL);
+   }
+   pm_rec(cb, &(struct pm_pass){.col = 1, .dep = 2});
+   m = pm_finish(cb, "merge_zs_att_barrier", 1);
+   if (m->nframes == 1)
+      CHECK(m->frames[0].zs.clear && m->frames[0].zs.store && ls_preloads(&m->frames[0]) == 0, "merge_zs_att_barrier: zs");
+
+   /* the second pass stores nothing: the first pass' STORE is kept (a later pass may not drop it) */
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .dep = 2, .lc = CLR, .ld = CLR});
+   pm_rec(cb, &(struct pm_pass){.col = 1, .dep = 2, .sd = SDC});
+   m = pm_finish(cb, "merge_keep_store", 1);
+   if (m->nframes == 1)
+      CHECK(m->frames[0].zs.store && m->frames[0].colour.store, "merge_keep_store: the first pass' depth STORE was dropped");
+
+   /* ---- suspend / resume ---- */
+   /* the pair merges; the suspended pass' DONT_CARE store and the resumed pass' CLEAR are not performed */
+   mali_pass_stats_read(s, true);
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR, .sc = SDC, .fl = VK_RENDERING_SUSPENDING_BIT});
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR, .fl = VK_RENDERING_RESUMING_BIT});
+   m = pm_finish(cb, "suspend_resume", 1);
+   if (m->nframes == 1)
+      CHECK(m->frames[0].colour.store && pm_app_draws(&m->frames[0]) == 2 && ls_preloads(&m->frames[0]) == 0,
+            "suspend_resume: store %d, %u draws", m->frames[0].colour.store, m->frames[0].ndraws);
+   {
+      static const int ix[] = {MALI_PS_PASSES, MALI_PS_RESUMED, MALI_PS_MERGED, MALI_PS_FRAMES};
+      const uint64_t want[] = {2, 1, 1, 1};
+      pm_stats_expect("suspend_resume", want, ix, 4);
+   }
+   /* three-way chain: suspend, resume+suspend, resume */
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR, .fl = VK_RENDERING_SUSPENDING_BIT});
+   pm_rec(cb, &(struct pm_pass){.col = 1, .fl = VK_RENDERING_RESUMING_BIT | VK_RENDERING_SUSPENDING_BIT});
+   pm_rec(cb, &(struct pm_pass){.col = 1, .fl = VK_RENDERING_RESUMING_BIT});
+   m = pm_finish(cb, "suspend_resume_chain", 1);
+   /* suspended in one command buffer, resumed in the next: the suspended pass stores, the resumed one loads (no CLEAR) */
+   {
+      VkCommandBuffer c2;
+      new_cmd(pool, &cb);
+      pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR, .sc = SDC, .fl = VK_RENDERING_SUSPENDING_BIT});
+      m = pm_finish(cb, "suspend_cross_a", 1);
+      if (m->nframes == 1)
+         CHECK(m->frames[0].colour.store, "suspend_cross_a: a suspended pass closed at vkEndCommandBuffer must store");
+      new_cmd(pool, &c2);
+      pm_rec(c2, &(struct pm_pass){.col = 1, .lc = CLR, .fl = VK_RENDERING_RESUMING_BIT});
+      m = pm_finish(c2, "suspend_cross_b", 1);
+      if (m->nframes == 1)
+         CHECK(!m->frames[0].colour.clear && ls_preloads(&m->frames[0]) == 1, "suspend_cross_b: a resumed pass must load, not clear");
+   }
+
+   /* ---- must not merge ---- */
+   mali_pass_stats_read(s, true);
+   struct vk_buffer *b0 = make_buffer(F.geo.gpu_va, 4096), *b1 = make_buffer(F.geo.gpu_va + 4096, 4096);
+   /* a transfer between the passes (a copy reading back the attachment orders the same way: every pushed frame closes) */
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR});
+   {
+      DFN(CmdCopyBuffer);
+      VkBufferCopy bc = {0, 0, 256};
+      CmdCopyBuffer(cb, vk_buffer_to_handle(b0), vk_buffer_to_handle(b1), 1, &bc);
+   }
+   pm_rec(cb, &(struct pm_pass){.col = 1});
+   m = pm_finish(cb, "no_merge_copy", 3);
+   if (m->nframes == 3)
+      CHECK(!m->frames[0].compute && m->frames[1].compute && ls_preloads(&m->frames[2]) == 1, "no_merge_copy: order pass, copy, pass");
+   /* a layout change to a sampling layout (the next pass samples the attachment) */
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR});
+   {
+      DFN(CmdPipelineBarrier);
+      VkImageMemoryBarrier ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                                 .dstAccessMask = VK_ACCESS_SHADER_READ_BIT, .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                 .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                 .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                 .image = (VkImage)(uintptr_t)1, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+      CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL,
+                         1, &ib);
+   }
+   pm_rec(cb, &(struct pm_pass){.col = 1});
+   pm_finish(cb, "no_merge_sampling_barrier", 2);
+   /* A pure execution dependency still orders fragments across passes, even
+    * though neither access mask requests a memory dependency. */
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR});
+   {
+      DFN(CmdPipelineBarrier);
+      VkMemoryBarrier mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+      CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 1, &mb,
+                         0, NULL, 0, NULL);
+   }
+   pm_rec(cb, &(struct pm_pass){.col = 1});
+   m = pm_finish(cb, "no_merge_execution_barrier", 2);
+   if (m->nframes == 2)
+      CHECK(pm_app_draws(&m->frames[0]) == 1 && pm_app_draws(&m->frames[1]) == 1 && ls_preloads(&m->frames[1]) == 1,
+            "no_merge_execution_barrier: expected one draw per frame and a preload");
+   /* a different render area */
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR});
+   pm_rec(cb, &(struct pm_pass){.col = 1, .x = 16, .y = 16, .w = 64, .h = 64});
+   m = pm_finish(cb, "no_merge_area", 2);
+   if (m->nframes == 2)
+      CHECK(ls_preloads(&m->frames[1]) == 1, "no_merge_area: the second pass must preload");
+   /* different attachments: colour only, then colour + D32F depth, then colour + D24X8 depth */
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR});
+   pm_rec(cb, &(struct pm_pass){.col = 1, .dep = 2});
+   pm_rec(cb, &(struct pm_pass){.col = 1, .dep = 4, .ld = DC});   /* D24X8: another depth format at the same address */
+   pm_finish(cb, "no_merge_attachments", 3);
+   /* the second pass clears what the first stored */
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR});
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR});
+   pm_finish(cb, "no_merge_clear", 2);
+   /* a query boundary: occlusion begin (mali_cmd_set_occlusion), then an op (EndQuery / timestamp / availability) */
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR});
+   mali_cmd_set_occlusion(mali_cmd_buffer_from_vk(vk_command_buffer_from_handle(cb)), F.vb.gpu_va + 512, MALI_OCC_MODE_COUNTER);
+   pm_rec(cb, &(struct pm_pass){.col = 1});
+   mali_cmd_set_occlusion(mali_cmd_buffer_from_vk(vk_command_buffer_from_handle(cb)), 0, 0);
+   {
+      struct mali_op e = {.kind = MALI_OP_AVAIL, .va = F.vb.gpu_va + 448, .val = 1};
+      mali_cmd_push_ops(mali_cmd_buffer_from_vk(vk_command_buffer_from_handle(cb)), &e, 1);
+   }
+   pm_rec(cb, &(struct pm_pass){.col = 1});
+   m = pm_finish(cb, "no_merge_query", 4);
+   if (m->nframes == 4)
+      CHECK(m->frames[2].nops == 1 && !m->frames[3].nops, "no_merge_query: order pass, pass, op, pass");
+   /* a secondary command buffer executed between the passes */
+   {
+      DFN(AllocateCommandBuffers);
+      DFN(BeginCommandBuffer);
+      DFN(EndCommandBuffer);
+      DFN(CmdExecuteCommands);
+      VkCommandBuffer sec;
+      VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = pool,
+                                        .level = VK_COMMAND_BUFFER_LEVEL_SECONDARY, .commandBufferCount = 1};
+      CHECK(AllocateCommandBuffers(dev, &ai, &sec) == VK_SUCCESS, "secondary alloc");
+      VkCommandBufferInheritanceInfo inh = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO};
+      VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .pInheritanceInfo = &inh};
+      CHECK(BeginCommandBuffer(sec, &bi) == VK_SUCCESS && EndCommandBuffer(sec) == VK_SUCCESS, "secondary record");
+      new_cmd(pool, &cb);
+      pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR});
+      CmdExecuteCommands(cb, 1, &sec);
+      pm_rec(cb, &(struct pm_pass){.col = 1});
+      pm_finish(cb, "no_merge_secondary", 2);
+   }
+   /* barriers (audit of every boundary between two passes, Vulkan synchronization chapter): */
+   const VkPipelineStageFlags CAO = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+   const VkAccessFlags CW = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, CRW = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | CW;
+   /* attachment access, but the stages order the first pass' fragment shaders before the second pass' vertex shaders
+    * (a WAR on a buffer needs only that execution dependency): one merged pass would interleave them per tile */
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR});
+   pm_mbar(cb, CAO | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, CAO | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, CW, CRW);
+   pm_rec(cb, &(struct pm_pass){.col = 1});
+   pm_finish(cb, "no_merge_shader_stage_barrier", 2);
+   /* ALL_COMMANDS in either scope */
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR});
+   pm_mbar(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, CAO, CW, CRW);
+   pm_rec(cb, &(struct pm_pass){.col = 1});
+   pm_mbar(cb, CAO, VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT, CW, CRW);
+   pm_rec(cb, &(struct pm_pass){.col = 1});
+   pm_finish(cb, "no_merge_all_commands_barrier", 3);
+   /* the same stage rule on an image barrier */
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR});
+   pm_ibar(cb, CAO, CAO | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, CW, CRW, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+   pm_rec(cb, &(struct pm_pass){.col = 1});
+   pm_finish(cb, "no_merge_image_stage_barrier", 2);
+   /* a buffer barrier, even with attachment stages and access */
+   {
+      DFN(CmdPipelineBarrier);
+      new_cmd(pool, &cb);
+      pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR});
+      VkBufferMemoryBarrier bb = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, .srcAccessMask = CW, .dstAccessMask = CRW,
+                                  .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                  .buffer = vk_buffer_to_handle(b0), .size = VK_WHOLE_SIZE};
+      CmdPipelineBarrier(cb, CAO, CAO, 0, 0, NULL, 1, &bb, 0, NULL);
+      pm_rec(cb, &(struct pm_pass){.col = 1});
+      pm_finish(cb, "no_merge_buffer_barrier", 2);
+   }
+   /* feedback: the next pass reads the attachment as an input attachment in GENERAL (no layout change) */
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR});
+   pm_ibar(cb, CAO, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, CW, VK_ACCESS_INPUT_ATTACHMENT_READ_BIT, VK_IMAGE_LAYOUT_GENERAL,
+           VK_IMAGE_LAYOUT_GENERAL);
+   pm_rec(cb, &(struct pm_pass){.col = 1});
+   pm_finish(cb, "no_merge_input_attachment", 2);
+   /* an event wait between the passes (vkCmdWaitEvents2 records this op) */
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR});
+   {
+      struct mali_op e = {.kind = MALI_OP_EVENT_WAIT, .va = F.vb.gpu_va + 448};
+      mali_cmd_push_ops(mali_cmd_buffer_from_vk(vk_command_buffer_from_handle(cb)), &e, 1);
+   }
+   pm_rec(cb, &(struct pm_pass){.col = 1});
+   m = pm_finish(cb, "no_merge_event", 3);
+   if (m->nframes == 3)
+      CHECK(m->frames[1].nops == 1 && ls_preloads(&m->frames[2]) == 1, "no_merge_event: order pass, wait, pass");
+   /* a resolve in a slot the pass does not render (the merge must not lose it) */
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR});
+   pm_rec(cb, &(struct pm_pass){.col = 1, .resolve1 = true});
+   pm_finish(cb, "no_merge_resolve", 2);
+   /* a layered pass and a multiview pass */
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR});
+   pm_rec(cb, &(struct pm_pass){.col = 1, .layers = 2});
+   pm_rec(cb, &(struct pm_pass){.col = 1, .view_mask = 1});
+   pm_finish(cb, "no_merge_layers_multiview", 3);
+   {
+      /* only the area and attachment cases count as "mergeable = 0"; nothing merged anywhere in this block */
+      mali_pass_stats_read(s, false);
+      CHECK(s[MALI_PS_MERGED] == 0 && s[MALI_PS_MERGEABLE] == 0, "no_merge block: merged %llu mergeable %llu",
+            (unsigned long long)s[MALI_PS_MERGED], (unsigned long long)s[MALI_PS_MERGEABLE]);
+   }
+
+   /* a whole-image clear of the attachment between two drawing passes: the first pass runs, the clear folds into the
+    * second pass (rule A on the parked clear frame: its CLEAR replaces the first pass' contents, so the second pass must not see them) */
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR});
+   {
+      VkClearColorValue cv = {.float32 = {0.0f, 0.0f, 1.0f, 1.0f}};
+      VkImageSubresourceRange rg = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+      mali_CmdClearColorImage(cb, (VkImage)(uintptr_t)1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &cv, 1, &rg);
+   }
+   pm_rec(cb, &(struct pm_pass){.col = 1});
+   m = pm_finish(cb, "clear_image_between", 2);
+   if (m->nframes == 2)
+      CHECK(pm_app_draws(&m->frames[0]) == 1 && m->frames[1].colour.clear && m->frames[1].colour.clear_color[2] == 1.0f &&
+            ls_preloads(&m->frames[1]) == 0, "clear_image_between: pass, then the pass with the clear as its loadOp");
+   /* ---- rule B: an empty clear pass folds into the next pass' LOAD ---- */
+   mali_pass_stats_read(s, true);
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR, .nodraw = true});           /* colour-only clear, no draw */
+   pm_rec(cb, &(struct pm_pass){.col = 1, .dep = 2, .ld = DC});                  /* other attachment set: no merge, a fold */
+   m = pm_finish(cb, "fold_clear_pass", 1);
+   if (m->nframes == 1)
+      CHECK(m->frames[0].has_zs && m->frames[0].colour.clear && m->frames[0].colour.clear_color[0] == 0.25f &&
+            ls_preloads(&m->frames[0]) == 0, "fold_clear_pass: clear %d preloads %u", m->frames[0].colour.clear,
+            ls_preloads(&m->frames[0]));
+   {
+      static const int ix[] = {MALI_PS_PASSES, MALI_PS_EMPTY, MALI_PS_FOLDED, MALI_PS_MERGED, MALI_PS_FRAMES, MALI_PS_PRELOADS};
+      const uint64_t want[] = {2, 1, 1, 0, 1, 0};
+      pm_stats_expect("fold_clear_pass", want, ix, 6);
+   }
+   /* vkCmdClearColorImage of the whole image, then a pass that LOADs it */
+   new_cmd(pool, &cb);
+   {
+      VkClearColorValue cv = {.float32 = {0.0f, 1.0f, 0.0f, 1.0f}};
+      VkImageSubresourceRange rg = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+      mali_CmdClearColorImage(cb, (VkImage)(uintptr_t)1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &cv, 1, &rg);
+   }
+   pm_rec(cb, &(struct pm_pass){.col = 1});
+   m = pm_finish(cb, "fold_clear_image", 1);
+   if (m->nframes == 1)
+      CHECK(m->frames[0].colour.clear && m->frames[0].colour.clear_color[1] == 1.0f && ls_preloads(&m->frames[0]) == 0 &&
+            pm_app_draws(&m->frames[0]) == 1, "fold_clear_image: clear %d preloads %u", m->frames[0].colour.clear,
+            ls_preloads(&m->frames[0]));
+   /* the usual transfer -> attachment barrier after the clear: the clear ran no shader, it still folds */
+   new_cmd(pool, &cb);
+   {
+      VkClearColorValue cv = {.float32 = {0.0f, 1.0f, 0.0f, 1.0f}};
+      VkImageSubresourceRange rg = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+      mali_CmdClearColorImage(cb, (VkImage)(uintptr_t)1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &cv, 1, &rg);
+      pm_ibar(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+              VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+              VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+   }
+   pm_rec(cb, &(struct pm_pass){.col = 1});
+   pm_finish(cb, "fold_clear_image_barrier", 1);
+   /* not folded: the next pass covers less than the cleared area */
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR, .nodraw = true});
+   pm_rec(cb, &(struct pm_pass){.col = 1, .w = 128});
+   pm_finish(cb, "no_fold_area", 2);
+   /* not folded: the next pass does not have the cleared attachment */
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .dep = 2, .lc = CLR, .ld = CLR, .nodraw = true});
+   pm_rec(cb, &(struct pm_pass){.col = 1});
+   pm_finish(cb, "no_fold_missing_depth", 2);
+
+   /* ---- MALI_PASS_MERGE=0: today's one frame per pass, counters still count ---- */
+   setenv("MALI_PASS_MERGE", "0", 1);
+   mali_pass_stats_read(s, true);
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR});
+   pm_rec(cb, &(struct pm_pass){.col = 1});
+   m = pm_finish(cb, "merge_off", 2);
+   if (m->nframes == 2)
+      CHECK(ls_preloads(&m->frames[1]) == 1 && pm_app_draws(&m->frames[1]) == 1, "merge_off: the second pass preloads");
+   {
+      static const int ix[] = {MALI_PS_PASSES, MALI_PS_LOAD_C, MALI_PS_MERGEABLE, MALI_PS_MERGED, MALI_PS_PRELOADS,
+                               MALI_PS_PRELOAD_PX, MALI_PS_STORE_PX, MALI_PS_FRAMES};
+      const uint64_t want[] = {2, 1, 1, 0, 1, px, 2 * px, 2};
+      pm_stats_expect("merge_off", want, ix, 8);
+   }
+   /* a smaller render area counts as partial */
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR, .w = 64, .h = 32});
+   pm_finish(cb, "partial", 1);
+   mali_pass_stats_read(s, true);
+   CHECK(s[MALI_PS_PARTIAL] == 1 && s[MALI_PS_STORE_PX] == 64 * 32, "partial: %llu, store_px %llu",
+         (unsigned long long)s[MALI_PS_PARTIAL], (unsigned long long)s[MALI_PS_STORE_PX]);
+   /* the suspend/resume pair still renders correctly unmerged: suspended stores, resumed loads */
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR, .sc = SDC, .fl = VK_RENDERING_SUSPENDING_BIT});
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR, .fl = VK_RENDERING_RESUMING_BIT});
+   m = pm_finish(cb, "suspend_resume_off", 2);
+   if (m->nframes == 2)
+      CHECK(m->frames[0].colour.store && !m->frames[1].colour.clear && ls_preloads(&m->frames[1]) == 1,
+            "suspend_resume_off: store %d / clear %d preloads %u", m->frames[0].colour.store, m->frames[1].colour.clear,
+            ls_preloads(&m->frames[1]));
+   test_pass_counters(pool, b0);
+   unsetenv("MALI_PASS_MERGE");
+   unsetenv("MALI_PASS_STATS");
+   free(b0);
+   free(b1);
+   printf("{\"test\":\"t_cmd%d\",\"passmerge\":true,\"pass\":%s}\n", ARCH, g_fail ? "false" : "true");
+}
