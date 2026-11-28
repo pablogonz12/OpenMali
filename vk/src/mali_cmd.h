@@ -17,6 +17,7 @@
 #include "vk_command_pool.h"
 #include "vk_shader.h"
 #include "mali_cs_emit.h"
+#include "mali_meta.h"
 #include "mali_event.h"
 #include "mali_private.h"
 
@@ -63,6 +64,7 @@ void mali_cmd_set_res(const struct mali_cmd_res_ops *ops);
 
 struct mali_cmd_buffer {
    struct vk_command_buffer vk;
+   struct mali_meta_mem meta_mem;
 
    struct mali_frame *frames;   /* finished render pass instances (and clear-only frames) */
    unsigned nframes, capframes;

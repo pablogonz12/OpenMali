@@ -23,6 +23,26 @@ static void *d_alloc(void *u, size_t sz, size_t al, uint64_t *va)
 }
 static void d_free(void *u, void *cpu, uint64_t va, size_t sz) { free(cpu); }
 static int d_up(void *u, const uint8_t *b, uint32_t sz, uint64_t *va) { *va = 0x7f0000001000ull; return 0; }
+static int tagged_up(void *u, const uint8_t *b, uint32_t sz, uint64_t *va) { *va = (uintptr_t)u; return 0; }
+
+static void t_context_isolation(void)
+{
+   struct mali_meta_dev a = { (void *)(uintptr_t)0x1000, 11, d_alloc, d_free, tagged_up };
+   struct mali_meta_dev b = { (void *)(uintptr_t)0x2000, 11, d_alloc, d_free, tagged_up };
+   struct mali_meta_ctx *ca = mali_meta_ctx_create(&a), *cb = mali_meta_ctx_create(&b);
+   const struct mali_compiled *shader;
+   uint64_t va;
+   CHECK(ca && cb, "create separate contexts");
+   if (!ca || !cb) goto out;
+   CHECK(!mali_meta_shader_get(ca, MALI_META_COPY, &shader, &va) && va == 0x1000, "A shader VA");
+   CHECK(!mali_meta_shader_get(cb, MALI_META_COPY, &shader, &va) && va == 0x2000, "B shader VA");
+   mali_meta_ctx_destroy(ca);
+   ca = NULL;
+   CHECK(!mali_meta_shader_get(cb, MALI_META_COPY, &shader, &va) && va == 0x2000, "B survives A");
+out:
+   mali_meta_ctx_destroy(ca);
+   mali_meta_ctx_destroy(cb);
+}
 
 static struct mali_meta_surf S(void *p, uint64_t size, uint64_t off, uint32_t row, uint32_t slice)
 {
@@ -43,11 +63,11 @@ static uint8_t *mk(size_t n, int seed)
 static void t_compile(unsigned arch)
 {
    struct mali_meta_dev dev = { NULL, arch, d_alloc, d_free, d_up };
-   mali_meta_set_dev(&dev);
+   struct mali_meta_ctx *ctx = mali_meta_ctx_create(&dev);
    for (int s = 0; s < MALI_META_BC_FIRST; s++) {
       const struct mali_compiled *c = NULL;
       uint64_t va = 0;
-      int r = mali_meta_shader_get(s, &c, &va);
+       int r = mali_meta_shader_get(ctx, s, &c, &va);
       CHECK(r == 0, "arch %u shader %d compile r=%d", arch, s, r);
       if (!r) {
          CHECK(c->bin_size > 0 && c->stage == MALI_STAGE_COMPUTE, "arch %u shader %d bin", arch, s);
@@ -56,19 +76,20 @@ static void t_compile(unsigned arch)
          CHECK(c->push_const_bytes <= pmax[s], "shader %d push use %u > %u", s, c->push_const_bytes, pmax[s]);
       }
    }
+   mali_meta_ctx_destroy(ctx);
 }
 
 static void t_materialize(void)
 {
    struct mali_meta_dev dev = { NULL, 11, d_alloc, d_free, d_up };
-   mali_meta_set_dev(&dev);
+   struct mali_meta_ctx *ctx = mali_meta_ctx_create(&dev);
    uint8_t *a = mk(256, 1), *b = mk(256, 2);
    struct mali_meta_list l = { 0 };
    struct mali_meta_surf d = S(b, 256, 8, 0, 0), s = S(a, 256, 4, 0, 0);
    CHECK(mali_meta_plan_buffer_copy(&l, &d, &s, 100) == 0 && l.n >= 1, "plan");
    struct mali_meta_mem mem = { 0 };
    struct mali_dispatch disp;
-   CHECK(mali_meta_materialize(&l.j[0], &mem, &disp) == 0, "materialize");
+    CHECK(mali_meta_materialize(ctx, &l.j[0], &mem, &disp) == 0, "materialize");
    CHECK(disp.nsets == 1 && disp.set_bytes[0] == 64, "set bytes %u", disp.set_bytes[0]);
    const uint32_t *set = (const uint32_t *)(uintptr_t)disp.set_va[0];
    CHECK((set[0] == (9u | 16u)) && set[1] == l.j[0].bind[0].size, "desc0 w0 %x w1 %u", set[0], set[1]);
@@ -77,7 +98,8 @@ static void t_materialize(void)
    CHECK(set[8] == (9u | 16u) && (((uint64_t)set[11] << 32) | set[10]) == l.j[0].bind[1].va, "desc1");
    CHECK(!memcmp(disp.push, l.j[0].push, l.j[0].push_bytes), "push");
    CHECK(disp.groups[0] >= 1, "groups");
-   mali_meta_mem_release(&mem);
+    mali_meta_mem_release(&mem);
+    mali_meta_ctx_destroy(ctx);
    mali_meta_list_free(&l);
    free(a); free(b);
 }
@@ -336,6 +358,7 @@ int main(int argc, char **argv)
    t_compile(11);
    t_compile(13);
    t_materialize();
+   t_context_isolation();
    t_buffer_copy();
    t_fill_update();
    t_image_copy();
@@ -343,7 +366,6 @@ int main(int argc, char **argv)
    t_blit();
    t_qcopy();
    CHECK(mali_meta_ref_oob == 0, "reference ran %d out-of-bounds / short-grid accesses", mali_meta_ref_oob);
-   mali_meta_set_dev(NULL);
    clock_gettime(CLOCK_MONOTONIC, &t1);
    double dt = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) * 1e-9;
    printf("t_meta: %s (%.2fs)\n", g_fail ? "FAIL" : "ok", dt);

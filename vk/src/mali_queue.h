@@ -24,6 +24,10 @@ void mali_sync_init_physical(struct mali_physical_device *pdev);
 VkResult mali_hw_init(struct mali_device *dev);
 void mali_hw_finish(struct mali_device *dev);
 struct mali_hw *mali_device_hw(struct mali_device *dev);
+struct mali_meta_ctx;
+struct mali_meta_ctx *mali_device_meta(struct mali_device *dev);
+/* Test seam: swap the meta context while no commands are being recorded. */
+struct mali_meta_ctx *mali_device_swap_meta(struct mali_device *dev, struct mali_meta_ctx *ctx);
 /* Metadata BOs (events, query pools): allocated/freed through the NAMED device, independent of the global binding. */
 void *mali_hw_meta_alloc(struct mali_device *dev, size_t size, size_t align, uint64_t *va);
 void mali_hw_meta_free(struct mali_device *dev, void *cpu);

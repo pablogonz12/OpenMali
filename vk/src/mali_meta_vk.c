@@ -16,6 +16,7 @@
 #include "mali_image.h"
 #include "mali_meta.h"
 #include "mali_meta_vk.h"
+#include "mali_queue.h"
 #include "mali_bc.h"
 
 #include "util/format/u_format.h"
@@ -39,63 +40,24 @@ mark_dst_img(struct mali_cmd_buffer *cmd, struct mali_image *img)
    mali_cmd_mark_image_written(cmd, mali_image_to_handle(img));
 }
 
-/* ---- per command buffer persistent memory (descriptor sets, staged update data) ---- */
-static pthread_mutex_t g_tab_lock = PTHREAD_MUTEX_INITIALIZER;
-static struct tab_ent { const void *cmd; struct mali_meta_mem mem; } *g_tab;
-static unsigned g_ntab, g_captab;
-
-static struct mali_meta_mem *
-mem_of(const void *cmd)
+static struct mali_meta_ctx *
+meta_of(struct mali_cmd_buffer *cmd)
 {
-   struct mali_meta_mem *r = NULL;
-   pthread_mutex_lock(&g_tab_lock);
-   for (unsigned i = 0; i < g_ntab; i++)
-      if (g_tab[i].cmd == cmd)
-         r = &g_tab[i].mem;
-   if (!r) {
-      if (g_ntab == g_captab) {
-         unsigned nc = g_captab ? g_captab * 2 : 8;
-         struct tab_ent *n = realloc(g_tab, nc * sizeof *n);
-         if (!n) {
-            pthread_mutex_unlock(&g_tab_lock);
-            return NULL;
-         }
-         g_tab = n;
-         g_captab = nc;
-      }
-      g_tab[g_ntab].cmd = cmd;
-      memset(&g_tab[g_ntab].mem, 0, sizeof g_tab[g_ntab].mem);
-      r = &g_tab[g_ntab++].mem;
-   }
-   pthread_mutex_unlock(&g_tab_lock);
-   return r;
+   return mali_device_meta(container_of(cmd->vk.base.device, struct mali_device, vk));
 }
 
 /* R4: loadOp LOAD (see mali_meta_preload). */
 int
 mali_meta_vk_preload(struct mali_cmd_buffer *cmd, enum mali_preload_kind kind, const struct mali_preload_src *src, struct mali_draw *d)
 {
-   struct mali_meta_mem *m = mem_of(cmd);
-   return m ? mali_meta_preload(m, kind, src, d) : -ENOMEM;
+   return mali_meta_preload(meta_of(cmd), &cmd->meta_mem, kind, src, d);
 }
 
 /* Wiring: call from the command buffer reset and destroy paths (after the work was waited for). */
 void
 mali_meta_cmd_forget(const void *cmd)
 {
-   pthread_mutex_lock(&g_tab_lock);
-   for (unsigned i = 0; i < g_ntab; i++)
-      if (g_tab[i].cmd == cmd) {
-         mali_meta_mem_release(&g_tab[i].mem);
-         g_tab[i] = g_tab[--g_ntab];
-         break;
-      }
-   if (!g_ntab) {   /* last command buffer gone: drop the table too (it was the 192-byte LeakSanitizer finding in t_vk_draw) */
-      free(g_tab);
-      g_tab = NULL;
-      g_captab = 0;
-   }
-   pthread_mutex_unlock(&g_tab_lock);
+   mali_meta_mem_release(&((struct mali_cmd_buffer *)cmd)->meta_mem);
 }
 
 static void
@@ -129,13 +91,13 @@ emit(struct mali_cmd_buffer *cmd, struct mali_meta_list *l, int plan_err, const 
     * in-order CS ring. Legal Vulkan, no longer an error. */
    if (cmd->in_render && getenv("MALI_META_DBG"))
       fprintf(stderr, "mali_meta_vk: %s deferred to the end of the render pass\n", op);
-   struct mali_meta_mem *mem = mem_of(cmd);
+   struct mali_meta_mem *mem = &cmd->meta_mem;
    if (getenv("MALI_META_DBG")) fprintf(stderr, "mali_meta_vk: emit %u jobs\n", l->n);
    for (unsigned i = 0; i < l->n; i++) {
       struct mali_frame f;
       memset(&f, 0, sizeof f);
       f.compute = true;
-      int r = mem ? mali_meta_materialize(&l->j[i], mem, &f.disp) : -ENOMEM;
+       int r = mali_meta_materialize(meta_of(cmd), &l->j[i], mem, &f.disp);
       if (r) {
          fprintf(stderr, "mali_vk: %s: materialize failed (%d) -> %s\n", op, r,
                  r == -ENOMEM ? "VK_ERROR_OUT_OF_DEVICE_MEMORY" : "VK_ERROR_FEATURE_NOT_PRESENT");
