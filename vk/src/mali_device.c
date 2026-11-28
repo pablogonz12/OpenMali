@@ -155,6 +155,12 @@ mali_CreateDevice_impl(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo
    dev->vk.command_buffer_ops = &mali_cmd_ops;
    dev->vk.get_timestamp = mali_get_timestamp;                       /* VK_KHR_calibrated_timestamps: runtime does the rest */
    dev->vk.calibrate_time_domain = VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_KHR;
+   /* Identity for diagnostics only: a process with two live VkDevices (Chromium's ANGLE GPU process) must say which
+    * one a failed submit belonged to (mali_queue.c submit_lost_log). */
+   static unsigned serials;
+   dev->serial = __atomic_fetch_add(&serials, 1, __ATOMIC_RELAXED);
+   if (getenv("MALI_SUBMIT_DBG"))
+      fprintf(stderr, "mali_vk: device #%u VkDevice=%p kdev=%p created\n", dev->serial, (void *)dev, (void *)dev->kdev);
    result = mali_hw_init(dev);
    if (result != VK_SUCCESS) {
       pdev->backend->device_destroy(dev->kdev);
@@ -218,6 +224,8 @@ mali_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
    /* vk_device_init stored the effective allocator (pAllocator or the instance's). */
    const VkAllocationCallbacks alloc = dev->vk.alloc;
 
+   if (getenv("MALI_SUBMIT_DBG"))
+      fprintf(stderr, "mali_vk: device #%u VkDevice=%p kdev=%p destroyed\n", dev->serial, (void *)dev, (void *)dev->kdev);
    if (dev->has_queue)
       vk_queue_finish(&dev->queue.vk);
    struct mali_physical_device *pdev = container_of(dev->vk.physical, struct mali_physical_device, vk);

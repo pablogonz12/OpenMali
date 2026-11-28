@@ -8,7 +8,7 @@
  * (vk_common_CmdBeginRenderPass2 -> CmdBeginRendering) once the device advertises it. Viewport/scissor are taken from the runtime's
  * dynamic graphics state (vk_common_CmdSetViewport/Scissor).
  *
- * Seams (installed by wiring code, see R3-PLAN.md "M8"): mali_cmd_set_hw (descriptor memory + submit), mali_cmd_set_res (pipeline,
+ * Seams (installed by wiring code, see R3-PLAN.md "M8"): per-device hardware (descriptor memory + submit), mali_cmd_set_res (pipeline,
  * image and shader resolvers; M5/M6 own those objects). */
 #ifndef MALI_CMD_H
 #define MALI_CMD_H
@@ -17,6 +17,7 @@
 #include "vk_command_pool.h"
 #include "vk_shader.h"
 #include "mali_cs_emit.h"
+#include "mali_meta.h"
 #include "mali_event.h"
 #include "mali_private.h"
 
@@ -60,10 +61,10 @@ struct mali_cmd_res_ops {
    struct mali_memory *(*image_view_mem)(VkImageView v);
 };
 void mali_cmd_set_res(const struct mali_cmd_res_ops *ops);
-void mali_cmd_set_hw(const struct mali_hw *hw);   /* copied; NULL clears. Without it submit returns VK_ERROR_FEATURE_NOT_PRESENT */
 
 struct mali_cmd_buffer {
    struct vk_command_buffer vk;
+   struct mali_meta_mem meta_mem;
 
    struct mali_frame *frames;   /* finished render pass instances (and clear-only frames) */
    unsigned nframes, capframes;

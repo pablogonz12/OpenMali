@@ -30,6 +30,9 @@ MASK48 = (1 << 48) - 1
 GEOM_BYTES = 65536
 SET_BYTES = 17 * 32          # MALI_DUMMY_SAMPLER_IDX + 1 entries of KB_DESC_SET_STRIDE
 VA_LO, VA_HI = 0x5f00000000, 0x6000000000   # the fake backend's bump allocator window (header words like 0x5000000019 are not VAs)
+# MALI_FAKE_DISJOINT_VA=1 gives context n the 4 GiB window VA_LO + (n << 32) (and its own tiler heap slot): set
+# GOLDEN_VA_HI to the end of the last window or every address of context 1+ is read as a plain number and never checked.
+VA_HI = int(os.environ.get('GOLDEN_VA_HI', '0'), 16) or VA_HI
 HEAP_LO, HEAP_HI = 0xf0000000, 0xf8000000
 MAPS = {   # (name, first reg, bytes to follow, kind) -- same as cmp_cmd.py
     (11, 6): [('SRT_v', 0, 64, 'srt'), ('SRT_f', 4, 64, 'srt'), ('FAU_v', 8, 0, 'fau'), ('FAU_f', 12, 0, 'fau'), ('SPD_pos', 16, 32, 'b'),
@@ -65,8 +68,8 @@ class Dev:
 
 
 class Ctx:
-    def __init__(s, dev, kick, arch, out, viol):
-        s.dev, s.kick, s.arch, s.out, s.viol = dev, kick, arch, out, viol
+    def __init__(s, dev, kick, arch, out, viol, others=()):
+        s.dev, s.kick, s.arch, s.out, s.viol, s.others = dev, kick, arch, out, viol, others
         s.regions = sorted(dev.reg.values(), key=lambda r: r['va'])
 
     def find(s, va):
@@ -87,7 +90,10 @@ class Ctx:
         if not address and not s.looks_va(lo): return '%#x' % q
         r = s.find(lo)
         if not r:
-            if check: s.violate('R-VA', '%s %#x is not inside any BO' % (where or 'value', q & MASK48))
+            if check:
+                owner = [d.n for d in s.others if d is not s.dev and any(o['va'] <= lo < o['va'] + o['len'] for o in d.reg.values())]
+                s.violate('R-VA', '%s %#x is not inside any BO%s' % (where or 'value', q & MASK48,
+                          ' (it is a BO of dev%s)' % ','.join(map(str, owner)) if owner else ''))
             return 'VA?%#x' % lo
         if not r['live']:
             if check: s.violate('R-VA', '%s %#x points into freed BO%d' % (where or 'value', q & MASK48, r['id']))
@@ -244,7 +250,7 @@ def process(path, outpath, hook=None):
             q = struct.unpack('<%dQ' % (len(e['hex']) // 16), bytes.fromhex(e['hex']))
             evs = []
             ds.interp(q, d.mem, evs, 0, {})
-            c = Ctx(d, n, arch, out, viol)
+            c = Ctx(d, n, arch, out, viol, list(devs.values()))
             out.append('kick dev%d #%d  (%d instructions)' % (d.n, n, len(q)))
             for r in c.regions:   # only BOs created/freed since the previous kick (VAs are not printed: they are not part of the contract)
                 st = (r['len'], r['flags'], r['live'])

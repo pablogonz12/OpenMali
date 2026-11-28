@@ -73,6 +73,7 @@ struct mali_device {
    int32_t mem_count;         /* live VkDeviceMemory, vs maxMemoryAllocationCount */
    struct mali_hwctx *hw;     /* M9: per-device frame resources (mali_queue.c) */
    int present_fence_fd;      /* dup of the last submission's sync_file: the CPU-side present paths wait it (-1 = none) */
+   unsigned serial;           /* process-wide creation index: names this VkDevice in MALI_SUBMIT_DBG lines */
 };
 
 VK_DEFINE_HANDLE_CASTS(mali_instance, vk.base, VkInstance, VK_OBJECT_TYPE_INSTANCE)
@@ -110,6 +111,8 @@ VkResult mali_wsi_get_surface_capabilities2(VkPhysicalDevice, const VkPhysicalDe
                                             VkSurfaceCapabilities2KHR*);
 VkResult mali_wsi_get_surface_formats2(VkPhysicalDevice, const VkPhysicalDeviceSurfaceInfo2KHR*, uint32_t*,
                                        VkSurfaceFormat2KHR*);
+VkResult mali_wsi_get_surface_capabilities2_ext(VkPhysicalDevice, VkSurfaceKHR, VkSurfaceCapabilities2EXT*);
+VkResult mali_wsi_get_present_rectangles(VkPhysicalDevice, VkSurfaceKHR, uint32_t*, VkRect2D*);
 #if defined(VK_USE_PLATFORM_XCB_KHR)
 VkBool32 mali_wsi_xcb_presentation_support(VkPhysicalDevice, uint32_t, xcb_connection_t*, xcb_visualid_t);
 #endif
