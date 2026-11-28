@@ -2,6 +2,7 @@
 /* Real backend over libkbase (driver/libkbase): probe GPU id/arch/cores from kbase_props and own
  * one kernel context plus one CSF queue per VkDevice. */
 #include "mali_backend.h"
+#include "mali_kbase_sync.h"
 
 #include <errno.h>
 #include <pthread.h>
@@ -46,6 +47,9 @@ struct mali_kdev {
    struct kb_bo **bos;
    unsigned nbos, capbos;
    bool sync_all_pending;   /* M15: a write the front end could not pin to a BO: next device->CPU sync sweeps everything */
+   /* MEM_SYNC sweep counters (mali_kbase_sync.h), guarded by bo_lock like the sweeps that update them */
+   struct mali_sync_counter sc[MALI_SYNC_K_N][MALI_SYNC_DIR_N];
+   uint64_t stats_t0;       /* start of the current MALI_SYNC_STATS=1 print interval (ns), 0 = none yet */
 
    /* Free list of recently freed VkDeviceMemory BOs (HOSTLAZY only), oldest first; guarded by bo_lock. A hit skips MEM_ALLOC + mmap (+ the zero/flush of a
     * CACHED BO) and the matching MEM_FREE + munmap. Pooled BOs are not in bos[] (no MEM_SYNC for them). */
@@ -725,6 +729,80 @@ mem_sync_all(struct mali_kdev *k, unsigned op)
    mem_sync_bos(k, op, SYNC_ALL);
 }
 
+static uint64_t
+sync_now_ns(void)
+{
+   struct timespec t;
+   clock_gettime(CLOCK_MONOTONIC, &t);
+   return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec;
+}
+
+static enum mali_bo_class
+bo_class(const struct kb_bo *b)
+{
+   if (b->imported)
+      return MALI_BOC_IMPORTED;
+   if (b->dmabuf_fd >= 0)
+      return MALI_BOC_EXPORTED;
+   if (b->user_mem)
+      return b->cpu_mapped ? MALI_BOC_USER_MAPPED : MALI_BOC_USER_UNMAPPED;
+   return (b->flags & KB_BO_CPU_CACHED) ? MALI_BOC_INT_CACHED : MALI_BOC_INT_WC;
+}
+
+/* bo_lock held. The class counts walk the registry: only done for a snapshot or a once-a-second print. */
+static void
+sync_stats_locked(struct mali_kdev *k, struct mali_sync_stats *out, bool reset)
+{
+   memset(out, 0, sizeof *out);
+   memcpy(out->c, k->sc, sizeof out->c);
+   for (unsigned i = 0; i < k->nbos; i++)
+      out->live[bo_class(k->bos[i])]++;
+   out->nbos = k->nbos;
+   if (reset)
+      memset(k->sc, 0, sizeof k->sc);
+}
+
+void
+mali_kbase_sync_stats(struct mali_kdev *k, struct mali_sync_stats *out, bool reset)
+{
+   pthread_mutex_lock(&k->bo_lock);
+   sync_stats_locked(k, out, reset);
+   pthread_mutex_unlock(&k->bo_lock);
+}
+
+/* MALI_SYNC_STATS=1: one stderr line per second of sweep activity (bo_lock held). */
+static void
+sync_stats_tick(struct mali_kdev *k, uint64_t now)
+{
+   if (!k->stats_t0) {
+      k->stats_t0 = now;
+      return;
+   }
+   if (now - k->stats_t0 < 1000000000ull)
+      return;
+   struct mali_sync_stats s;
+   sync_stats_locked(k, &s, true);
+   static const char *const kn[MALI_SYNC_K_N] = {"cold", "hot", "poll", "wait"};
+   char line[768];
+   int n = snprintf(line, sizeof line,
+                    "mali_vk: sync-stats %.2fs bos %u (user mapped %u unmapped %u, int wc %u cached %u, imported %u, exported %u) lists push %u pend %u |",
+                    (now - k->stats_t0) / 1e9, s.nbos, s.live[MALI_BOC_USER_MAPPED], s.live[MALI_BOC_USER_UNMAPPED],
+                    s.live[MALI_BOC_INT_WC], s.live[MALI_BOC_INT_CACHED], s.live[MALI_BOC_IMPORTED],
+                    s.live[MALI_BOC_EXPORTED], s.push_list, s.pend_list);
+   for (int kind = 0; kind < MALI_SYNC_K_N; kind++)
+      for (int d = 0; d < MALI_SYNC_DIR_N; d++) {
+         const struct mali_sync_counter *c = &s.c[kind][d];
+         if (!c->calls || n <= 0 || (size_t)n >= sizeof line)
+            continue;
+         n += snprintf(line + n, sizeof line - n, " %s.%s %llu calls %llu bos %llu ioctl %llu us", kn[kind],
+                       d == MALI_SYNC_C2D ? "c2d" : "d2c", (unsigned long long)c->calls,
+                       (unsigned long long)c->visited, (unsigned long long)c->ioctls,
+                       (unsigned long long)(c->ns / 1000));
+      }
+   fprintf(stderr, "%s\n", line);
+   k->stats_t0 = now;
+}
+
 static void
 mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
 {
@@ -738,7 +816,13 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
     * not place (bo_wrote(NULL)) sweeps everything once. The CPU->device direction (op 1) is unchanged. */
    const bool dev2cpu = op == 2;
    const char *e = getenv("MALI_SYNC_ALL"), *t = getenv("MALI_SYNC_TRACK");   /* read per call: the tests flip them */
+   const uint64_t t_start = sync_now_ns();
+   struct mali_sync_counter *sc = &k->sc[sel == SYNC_COLD ? MALI_SYNC_K_COLD : sel == SYNC_HOT ? MALI_SYNC_K_HOT
+                                         : sel == SYNC_POLL ? MALI_SYNC_K_POLL : MALI_SYNC_K_WAIT]
+                                        [dev2cpu ? MALI_SYNC_D2C : MALI_SYNC_C2D];
    pthread_mutex_lock(&k->bo_lock);
+   sc->calls++;
+   sc->visited += k->nbos;
    bool sweep_all = dev2cpu && (k->sync_all_pending || (e && e[0] == '1') || (t && t[0] == '0'));
    k->sync_all_pending = false;
    static unsigned prof_calls;
@@ -783,11 +867,17 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
          uint8_t type, pad[7];
       } ms = {b->gpu_va, (uint64_t)(uintptr_t)b->cpu, b->size, (uint8_t)op, {0}};
       int sr = kb_ioctl_fd(kb_fd(k->ctx), _IOW(KBASE_IOCTL_TYPE, 15, ms), &ms);
+      sc->ioctls++;
       if (dev2cpu && !b->imported && sr >= 0)
          b->synced_writes = wrote;   /* what this ioctl covered; a concurrent submit's mark stays pending */
       else if (!dev2cpu && sr >= 0 && !b->cpu_mapped)
          b->cpu_dirty = false;   /* the CPU cannot write it now: this ioctl covered everything it wrote */
    }
+   const uint64_t t_end = sync_now_ns();
+   sc->ns += t_end - t_start;
+   const char *st = getenv("MALI_SYNC_STATS");
+   if (st && st[0] == '1')
+      sync_stats_tick(k, t_end);
    pthread_mutex_unlock(&k->bo_lock);
 }
 
