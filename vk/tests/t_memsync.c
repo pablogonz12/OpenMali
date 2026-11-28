@@ -14,7 +14,11 @@
  *    exported (foreign-writer) or driver-internal BO is never skipped.
  *  - M15: per-BO write tracking. A fence wait CSYNCs only BOs marked with bo_wrote; the fake kernel models a
  *    non-coherent GPU (kb_fake_gpu_write writes a shadow that only MEM_SYNC type 2 makes visible), so an
- *    unmarked GPU write reads back as stale data - that is the case the test asserts on purpose first. */
+ *    unmarked GPU write reads back as stale data - that is the case the test asserts on purpose first.
+ *  - Modes (build-t_memsync.sh runs all three): MALI_SYNC_LISTS=0 (registry walk) and MALI_SYNC_LISTS=1 MALI_SYNC_WC=0
+ *    (lists) run every assertion unchanged. The default (lists + MALI_SYNC_WC) issues no MEM_SYNC for write-combined
+ *    natives (a kbase no-op, mali_backend_kbase.c wc_noop), so there the BOs whose ioctls are counted are allocated
+ *    CPU-cached (C below), which keeps every policy assertion meaningful, and a last section pins the WC skip. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,6 +37,10 @@ static int fails;
 int main(void)
 {
    const struct mali_backend_ops *b = &mali_backend_kbase;
+   const char *le = getenv("MALI_SYNC_LISTS"), *we = getenv("MALI_SYNC_WC");
+   const bool wc_skip = (!le || le[0] != '0') && (!we || we[0] != '0');
+   const uint32_t C = wc_skip ? MALI_BO_CACHED : 0;   /* see the header: counted BOs must still need a MEM_SYNC */
+   printf("mode: MALI_SYNC_LISTS=%s MALI_SYNC_WC=%s\n", le ? le : "(default 1)", we ? we : "(default 1)");
    struct mali_gpu_info gi = {.arch_major = 11, .uapi_major = 1, .uapi_minor = 21, .core_count = 2};
    struct mali_kdev *k;
    if (b->device_create(&gi, &k)) { printf("FAIL  device_create\n"); return 1; }
@@ -41,12 +49,12 @@ int main(void)
    int r = 0;
    r |= b->bo_alloc(k, 65536, MALI_BO_EXPORT, &exp);
    r |= b->bo_alloc(k, 65536, MALI_BO_EXPORT | MALI_BO_CACHED, &expc);
-   r |= b->bo_alloc(k, 65536, MALI_BO_HOSTLAZY, &hl);
+   r |= b->bo_alloc(k, 65536, MALI_BO_HOSTLAZY | C, &hl);
    r |= b->bo_alloc(k, 65536, 0, &internal);
    r |= b->bo_alloc(k, 65536, MALI_BO_EXPORT, &src);
    if (r) { printf("FAIL  bo_alloc\n"); return 1; }
    struct mali_bo hot;
-   int hr = b->bo_alloc(k, 65536, MALI_BO_HOT | MALI_BO_COH, &hot);
+   int hr = b->bo_alloc(k, 65536, MALI_BO_HOT | MALI_BO_COH | C, &hot);
    if (hr) { printf("FAIL  bo_alloc hot\n"); return 1; }
    int fd = b->bo_export(k, &src);
    if (fd < 0 || b->bo_import(k, fd, 65536, 0, &imp)) { printf("FAIL  bo_export/import\n"); return 1; }
@@ -87,7 +95,7 @@ int main(void)
        * the =0 case, and restore it (unsetenv when it was unset). */
       char *env_dirty = getenv("MALI_SYNC_DIRTY") ? strdup(getenv("MALI_SYNC_DIRTY")) : NULL;
       unsetenv("MALI_SYNC_DIRTY");
-      if (b->bo_alloc(k, 65536, MALI_BO_HOSTLAZY, &u) || b->bo_alloc(k, 65536, MALI_BO_EXPORT, &ex)) {
+      if (b->bo_alloc(k, 65536, MALI_BO_HOSTLAZY | C, &u) || b->bo_alloc(k, 65536, MALI_BO_EXPORT, &ex)) {
          printf("FAIL  bo_alloc dirty\n");
          return 1;
       }
@@ -135,7 +143,7 @@ int main(void)
       struct mali_bo wb[NB];
       unsigned base[NB];
       for (int i = 0; i < NB; i++) {
-         if (b->bo_alloc(k, 65536, MALI_BO_HOSTLAZY, &wb[i])) { printf("FAIL  bo_alloc write-track\n"); return 1; }
+         if (b->bo_alloc(k, 65536, MALI_BO_HOSTLAZY | C, &wb[i])) { printf("FAIL  bo_alloc write-track\n"); return 1; }
          b->bo_host_touch(k, &wb[i]);   /* app-mapped: these are the BOs the old code swept on every wait */
          memset(wb[i].cpu, 0x11, 64);
          base[i] = kb_fake_memsync_count(wb[i].gpu_va);
@@ -255,6 +263,22 @@ int main(void)
    b->bo_wrote(k, &exp);
    b->wait_counter(k, &cnt, 1, 100);
    EXPECT(kb_fake_memsync_count(exp.gpu_va) > before, "mapped export: device->CPU invalidate after a counter wait, once the GPU wrote it");
+   if (wc_skip) {   /* MALI_SYNC_WC: write-combined natives (mapped user BO, hot arena-like BO) cost no MEM_SYNC at all */
+      struct mali_bo wu, wh;
+      if (b->bo_alloc(k, 65536, MALI_BO_HOSTLAZY, &wu) || b->bo_alloc(k, 65536, MALI_BO_HOT | MALI_BO_COH, &wh)) {
+         printf("FAIL  bo_alloc wc\n");
+         return 1;
+      }
+      b->bo_host_touch(k, &wu);
+      memset(wu.cpu, 0x22, 64);
+      b->bo_wrote(k, &wu);
+      for (int i = 0; i < 4; i++) { b->host_sync(k); b->submit_cs(k, cs, 0); b->wait_counter(k, &cnt, 1, 100); }
+      EXPECT(kb_fake_memsync_count(wu.gpu_va) == 0 && kb_fake_memsync_count(wh.gpu_va) == 0,
+             "MALI_SYNC_WC: mapped+written WC user BO and WC hot BO: no MEM_SYNC in 4 submits/waits (%u, %u)",
+             kb_fake_memsync_count(wu.gpu_va), kb_fake_memsync_count(wh.gpu_va));
+      b->bo_free(k, &wu);
+      b->bo_free(k, &wh);
+   }
    b->device_destroy(k);
    printf("{\"test\":\"t_memsync\",\"pass\":%s}\n", fails ? "false" : "true");
    return fails != 0;

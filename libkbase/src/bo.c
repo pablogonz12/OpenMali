@@ -81,6 +81,7 @@ int kb_bo_alloc(struct kb_ctx *ctx, size_t size, uint32_t flags, struct kb_bo *o
 	out->size = size;
 	out->flags = flags;
 	out->same_va = (of & BASE_MEM_SAME_VA) != 0;
+	out->cpu_wc = !(of & BASE_MEM_CACHED_CPU);   /* the kernel reports what it really mapped (kbase_mem_alloc) */
 	out->gpu_va = out->same_va ? (uint64_t)(uintptr_t)p : handle;
 	ctx->live_bos++;
 	return 0;

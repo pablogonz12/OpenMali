@@ -58,6 +58,7 @@ struct mali_kdev {
       bool prof;       /* MALI_PROF set: the legacy every-600-sweeps BO dump */
       bool stats;      /* MALI_SYNC_STATS=1: one counter line per second of sweep activity */
       bool lists;      /* MALI_SYNC_LISTS (default on): sweeps walk the sync lists below, not the registry */
+      bool wc_skip;    /* with lists, MALI_SYNC_WC (default on): no MEM_SYNC for write-combined natives (kbase no-op) */
    } cfg;
    /* MALI_SYNC_LISTS: the BOs a sweep has to visit, kept up to date on every state change (bo_lock held, O(1) each).
     * push[0]/push[1]: CPU->device candidates of the cold / hot sweep (the same rule the registry walk applies, see
@@ -112,6 +113,7 @@ sync_env_load_locked(struct mali_kdev *k)
       .stats = env_is("MALI_SYNC_STATS", '1'),
       .lists = !env_is("MALI_SYNC_LISTS", '0'),
    };
+   c.wc_skip = c.lists && !env_is("MALI_SYNC_WC", '0');
    if (memcmp(&c, &k->cfg, sizeof c)) {
       k->cfg = c;
       sync_lists_rebuild_locked(k);   /* membership depends on the policy switches */
@@ -311,10 +313,22 @@ lists_active(const struct mali_kdev *k)
 }
 
 /* The CPU->device rule of the registry walk (mem_sync_bos), per BO: true = this BO is synced by its sweep. */
+/* MALI_SYNC_WC: a native BO the kernel mapped write-combined needs no MEM_SYNC in either direction. kbase_do_syncset
+ * (mali_kbase_mem.c) handles imports first and then returns early for every region without KBASE_REG_CPU_CACHED,
+ * which kbase sets only from BASE_MEM_CACHED_CPU (kbase_cache_enabled) - and kb_bo_alloc records what the kernel
+ * replied. That code is GPU-architecture independent (same on v10, v11, v13). CPU stores into such a mapping are
+ * completed by kb_wmb (dsb st) before the doorbell; GPU writes reach memory through the CS cache flushes, and an
+ * uncached CPU read sees memory. So the ioctl the walk issues for these BOs changes nothing either side can observe. */
+static bool
+wc_noop(const struct mali_kdev *k, const struct kb_bo *b)
+{
+   return k->cfg.wc_skip && b->cpu_wc && !b->imported && b->dmabuf_fd < 0;
+}
+
 static bool
 push_wanted(const struct mali_kdev *k, const struct kb_bo *b)
 {
-   if (b->host_lazy || (b->flags & KB_BO_NOCOH) || b->imported)
+   if (b->host_lazy || (b->flags & KB_BO_NOCOH) || b->imported || wc_noop(k, b))
       return false;
    /* MALI_SYNC_DIRTY: a user BO the CPU cannot have written since the last sync has nothing to push */
    if (b->user_mem && k->cfg.dirty && !b->cpu_dirty && !b->cpu_mapped)
@@ -324,9 +338,9 @@ push_wanted(const struct mali_kdev *k, const struct kb_bo *b)
 
 /* The device->CPU rule for native BOs: a write mark the last sync did not cover. */
 static bool
-pend_wanted(const struct kb_bo *b)
+pend_wanted(const struct mali_kdev *k, const struct kb_bo *b)
 {
-   if (b->host_lazy || (b->flags & KB_BO_NOCOH) || b->imported)
+   if (b->host_lazy || (b->flags & KB_BO_NOCOH) || b->imported || wc_noop(k, b))
       return false;
    return __atomic_load_n(&b->gpu_writes, __ATOMIC_SEQ_CST) != b->synced_writes;
 }
@@ -352,7 +366,7 @@ sync_lists_update_locked(struct mali_kdev *k, struct kb_bo *b)
       ok &= set_add(&k->push[b->hot], b, IDX_PUSH);
    else
       set_del(&k->push[b->hot], b, IDX_PUSH);
-   if (pend_wanted(b))
+   if (pend_wanted(k, b))
       ok &= set_add(&k->pend, b, IDX_PEND);
    else
       set_del(&k->pend, b, IDX_PEND);
@@ -1029,7 +1043,7 @@ memsync_ioctl_locked(struct mali_kdev *k, const struct kb_bo *b, unsigned op, st
 static void
 sync_pend_retire_locked(struct mali_kdev *k, struct kb_bo *b)
 {
-   if (b->host_lazy || (b->flags & KB_BO_NOCOH)) {   /* cannot be synced now; host_touch files it again */
+   if (b->host_lazy || (b->flags & KB_BO_NOCOH) || wc_noop(k, b)) {   /* not synced now; host_touch files it again */
       set_del(&k->pend, b, IDX_PEND);
       return;
    }
@@ -1063,7 +1077,7 @@ mem_sync_lists_locked(struct mali_kdev *k, unsigned op, enum sync_sel sel, struc
       struct kb_bo *b = k->pend.v[i];
       sc->visited++;
       uint64_t wrote = __atomic_load_n(&b->gpu_writes, __ATOMIC_SEQ_CST);
-      if (!b->host_lazy && !(b->flags & KB_BO_NOCOH) && wrote != b->synced_writes &&
+      if (!b->host_lazy && !(b->flags & KB_BO_NOCOH) && !wc_noop(k, b) && wrote != b->synced_writes &&
           memsync_ioctl_locked(k, b, 2, sc) >= 0)
          b->synced_writes = wrote;   /* what this ioctl covered; a concurrent submit's mark stays pending */
       sync_pend_retire_locked(k, b);
@@ -1116,6 +1130,8 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
       struct kb_bo *b = k->bos[i];
       if (b->host_lazy || (b->flags & KB_BO_NOCOH) || (sel == SYNC_HOT && !b->hot) || (sel == SYNC_COLD && b->hot))
          continue;
+      if (wc_noop(k, b))
+         continue;   /* MALI_SYNC_WC (lists mode only): kbase no-op, see wc_noop */
       /* dma-buf imports are in k->bos[] for the device->CPU sweep only: we must not push our CPU copy of somebody
        * else's buffer at the GPU before a submit (that direction stays native-BO only). */
       if (!dev2cpu && b->imported)
