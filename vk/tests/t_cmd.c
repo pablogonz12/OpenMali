@@ -1082,6 +1082,15 @@ int main(int argc, char **argv)
          {"flipped", {0, H, W, -H, 0, 1}, 0, (W - 1) | ((H - 1) << 16)},
          {"flipped_clamped", {0, 100, W, -150, 0, 1}, 0, (W - 1) | (99u << 16)},
          {"positive", {0, 10, W, 100, 0, 1}, 10u << 16, (W - 1) | (109u << 16)},
+         /* fully above the target: both y endpoints clamp to row 0 (panvk: CLAMP(max - 1, 0, ..) = 0) */
+         {"flipped_offtarget", {0, -10, W, -20, 0, 1}, 0, (W - 1)},
+         /* fractional endpoints truncate: x 0.5..255.5 -> 0..254 */
+         {"fractional", {0.5f, 0.5f, W - 1.0f, H - 1.0f, 0, 1}, 0, (W - 2) | ((H - 2) << 16)},
+         {"flipped_fractional", {0, H - 0.5f, W, -(H - 1.0f), 0, 1}, 0, (W - 1) | ((H - 2) << 16)},
+         /* left edge off target with a fractional x: -100.5..155.5 -> 0..154 */
+         {"flipped_left_off", {-100.5f, H, W, -H, 0, 1}, 0, 154u | ((H - 1) << 16)},
+         /* larger than the framebuffer on every side: the box is not clipped to the target (the scissor does that) */
+         {"oversized", {-W, 2 * H, 3 * W, -3 * H, 0, 1}, 0, (2 * W - 1) | ((2 * H - 1) << 16)},
       };
       for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; i++) {
          VkCommandBuffer cbv;
