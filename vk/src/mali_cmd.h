@@ -110,7 +110,26 @@ struct mali_cmd_buffer {
    struct mali_memory *wrote[MALI_CMD_WROTE_MAX];
    unsigned nwrote;
    bool wrote_full;
+   /* Deferred render-pass end (mali_cmd.c "pass merge", MALI_PASS_MERGE): EndRendering parks the finished pass in `pm`
+    * instead of pushing it; the next BeginRendering on the same attachments continues it (one tiler + fragment pass, no
+    * store/preload pair), anything else pushes it first (pass_close). pm_keep: per colour/depth/stencil, a storeOp STORE
+    * of the chain that a later pass may not drop (suspend-forced stores excluded). pass_*: the same facts of the open pass. */
+   struct mali_frame pm;
+   bool pm_open, pm_suspended, pm_keep[3];
+   bool pass_suspending, pass_nomerge, pass_keep[3];
+   unsigned pass_draws0, pass_clear_quads;   /* cur.ndraws once the pass' own preload draws are in; ClearAttachments quads */
 };
+
+/* MALI_PASS_STATS counters (cumulative per process; MALI_PASS_STATS=1 also prints the per-second deltas on stderr). */
+enum mali_pass_stat {
+   MALI_PS_PASSES, MALI_PS_LOAD_C, MALI_PS_LOAD_Z, MALI_PS_LOAD_S, MALI_PS_MERGEABLE, MALI_PS_MERGED, MALI_PS_FOLDED,
+   MALI_PS_EMPTY, MALI_PS_PRELOADS, MALI_PS_PRELOAD_PX, MALI_PS_STORE_PX, MALI_PS_PARTIAL, MALI_PS_FRAMES, MALI_PS_RESUMED,
+   MALI_PS_N
+};
+void mali_pass_stats_read(uint64_t out[MALI_PS_N], bool reset);
+/* vkCmdPipelineBarrier2 hook (mali_pipeline.c): a barrier that makes attachment writes visible to anything but attachment
+ * access closes a parked pass (it cannot merge with the next one). */
+void mali_cmd_barrier(VkCommandBuffer h, const VkDependencyInfo *info);
 
 static inline struct mali_cmd_buffer *
 mali_cmd_buffer_from_vk(struct vk_command_buffer *cmd)
@@ -175,6 +194,7 @@ VKAPI_ATTR void VKAPI_CALL mali_CmdDrawIndexedIndirectCount(VkCommandBuffer, VkB
 VKAPI_ATTR void VKAPI_CALL mali_CmdDraw(VkCommandBuffer, uint32_t, uint32_t, uint32_t, uint32_t);
 VKAPI_ATTR void VKAPI_CALL mali_CmdDrawIndexed(VkCommandBuffer, uint32_t, uint32_t, uint32_t, int32_t, uint32_t);
 VKAPI_ATTR void VKAPI_CALL mali_CmdBeginRendering(VkCommandBuffer, const VkRenderingInfo *);
+VKAPI_ATTR void VKAPI_CALL mali_CmdExecuteCommands(VkCommandBuffer, uint32_t, const VkCommandBuffer *);
 VKAPI_ATTR void VKAPI_CALL mali_CmdEndRendering(VkCommandBuffer);
 VKAPI_ATTR void VKAPI_CALL mali_CmdClearColorImage(VkCommandBuffer, VkImage, VkImageLayout, const VkClearColorValue *, uint32_t,
                                                    const VkImageSubresourceRange *);

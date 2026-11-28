@@ -909,7 +909,10 @@ ls_ui_frame(VkCommandPool pool, VkAttachmentLoadOp op, const char *tag)
    VkResult r = EndCommandBuffer(cb);
    CHECK(r == VK_SUCCESS, "ui_like_%s: EndCommandBuffer %d", tag, r);
    struct mali_cmd_buffer *m = mali_cmd_buffer_from_vk(vc);
-   CHECK(m->nframes == 4, "ui_like_%s: %u frames", tag, m->nframes);
+   /* pass merge (mali_cmd.c): the same attachments, no clear in passes 2..4 -> one frame; MALI_PASS_MERGE=0 -> four */
+   const char *pm_env = getenv("MALI_PASS_MERGE");
+   const unsigned want = pm_env && pm_env[0] == '0' ? 4 : 1;
+   CHECK(m->nframes == want, "ui_like_%s: %u frames (want %u)", tag, m->nframes, want);
    struct mali_hw hw = make_hw();
    if (hw.job_begin)
       hw.job_begin(hw.user);
@@ -929,16 +932,19 @@ ls_ui_frame(VkCommandPool pool, VkAttachmentLoadOp op, const char *tag)
    CHECK(r == VK_SUCCESS, "ui_like_%s: submit %d", tag, r);
 }
 
+#include "t_cmd_passmerge.h"
+
 int main(int argc, char **argv)
 {
    int scene = 1;
-   bool extra = false, m13 = false, loadstore = false, ringwrap = false;
+   bool extra = false, m13 = false, loadstore = false, ringwrap = false, passmerge = false;
    for (int i = 1; i < argc; i++) {
       if (!strcmp(argv[i], "--scene") && i + 1 < argc) scene = atoi(argv[++i]);
       else if (!strcmp(argv[i], "--extra")) extra = true;
       else if (!strcmp(argv[i], "--m13")) m13 = true;
       else if (!strcmp(argv[i], "--loadstore")) loadstore = true;
       else if (!strcmp(argv[i], "--ringwrap")) ringwrap = true;
+      else if (!strcmp(argv[i], "--passmerge")) passmerge = true;
    }
    setenv("MALI_BACKEND", "fake", 1);
    setenv("MALI_FAKE_GPU", ARCH == 13 ? "v13" : ARCH == 10 ? "v10" : "v11", 1);
@@ -1036,7 +1042,7 @@ int main(int argc, char **argv)
    VkCommandBuffer cb;
    VkResult r = VK_SUCCESS;
    CHECK(scene >= 1 && scene <= 2, "bad scene");
-   if (!m13 && !loadstore) {   /* --m13/--loadstore dump only their own frames: the decoder's REQ_RESOURCE rule is per dump, not per frame */
+   if (!m13 && !loadstore && !passmerge) {   /* --m13/--loadstore dump only their own frames: the decoder's REQ_RESOURCE rule is per dump, not per frame */
       struct vk_command_buffer *vcmd = new_cmd(pool, &cb);
       record_scene(cb, &k_scenes[scene - 1], vbh);
       r = EndCommandBuffer(cb);
@@ -1258,6 +1264,12 @@ int main(int argc, char **argv)
       ls_ui_frame(pool, VK_ATTACHMENT_LOAD_OP_LOAD, "load");
       mali_meta_set_dev(NULL);
       printf("{\"test\":\"t_cmd%d\",\"loadstore\":true,\"pass\":%s}\n", ARCH, g_fail ? "false" : "true");
+   }
+   if (passmerge) {
+      struct mali_meta_dev seam = {.user = &F, .arch = ARCH, .alloc = hw_alloc, .free = ls_meta_free, .upload_shader = ls_upload};
+      mali_meta_set_dev(&seam);
+      test_passmerge(pool);
+      mali_meta_set_dev(NULL);
    }
    DestroyCommandPool(dev, pool, NULL);
    kb_queue_destroy(&F.q);
