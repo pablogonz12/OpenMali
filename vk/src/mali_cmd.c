@@ -1104,12 +1104,13 @@ pass_stats_on(void)
    return e && e[0] == '1';
 }
 
-/* default on; MALI_PASS_MERGE=0 restores one frame per render pass (the phone A/B) */
+/* opt-in: MALI_PASS_MERGE=1 merges; unset or anything else keeps one frame per render pass. Off by default until a phone
+ * run confirms it (host-verified only); MALI_PASS_STATS=1 predicts what it would save without changing the frames. */
 static bool
 pass_merge_on(void)
 {
    const char *e = getenv("MALI_PASS_MERGE");
-   return !e || e[0] != '0';
+   return e && e[0] == '1';
 }
 
 static inline void

@@ -96,6 +96,27 @@ test_passmerge(VkCommandPool pool)
    unsetenv("MALI_PASS_MERGE");
    mali_pass_stats_read(s, true);
 
+   /* ---- default: merging is off (opt-in MALI_PASS_MERGE=1); the counters still predict the merge ---- */
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR});
+   pm_rec(cb, &(struct pm_pass){.col = 1});
+   m = pm_finish(cb, "default_off", 2);
+   if (m->nframes == 2)
+      CHECK(ls_preloads(&m->frames[1]) == 1, "default_off: the second pass must preload");
+   {
+      static const int ix[] = {MALI_PS_PASSES, MALI_PS_MERGEABLE, MALI_PS_MERGED, MALI_PS_FRAMES};
+      const uint64_t want[] = {2, 1, 0, 2};
+      pm_stats_expect("default_off", want, ix, 4);
+   }
+   /* anything but "1" keeps it off */
+   setenv("MALI_PASS_MERGE", "yes", 1);
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR});
+   pm_rec(cb, &(struct pm_pass){.col = 1});
+   pm_finish(cb, "off_unless_1", 2);
+   setenv("MALI_PASS_MERGE", "1", 1);
+   mali_pass_stats_read(s, true);
+
    /* ---- must merge ---- */
    /* two passes: CLEAR+draw, then LOAD+draw on the same colour view: one frame, two app draws, no preload */
    new_cmd(pool, &cb);

@@ -909,9 +909,10 @@ ls_ui_frame(VkCommandPool pool, VkAttachmentLoadOp op, const char *tag)
    VkResult r = EndCommandBuffer(cb);
    CHECK(r == VK_SUCCESS, "ui_like_%s: EndCommandBuffer %d", tag, r);
    struct mali_cmd_buffer *m = mali_cmd_buffer_from_vk(vc);
-   /* pass merge (mali_cmd.c): the same attachments, no clear in passes 2..4 -> one frame; MALI_PASS_MERGE=0 -> four */
+   /* pass merge (mali_cmd.c, opt-in): MALI_PASS_MERGE=1 and the same attachments, no clear in passes 2..4 -> one frame;
+    * default (off) -> four */
    const char *pm_env = getenv("MALI_PASS_MERGE");
-   const unsigned want = pm_env && pm_env[0] == '0' ? 4 : 1;
+   const unsigned want = pm_env && pm_env[0] == '1' ? 1 : 4;
    CHECK(m->nframes == want, "ui_like_%s: %u frames (want %u)", tag, m->nframes, want);
    struct mali_hw hw = make_hw();
    if (hw.job_begin)
