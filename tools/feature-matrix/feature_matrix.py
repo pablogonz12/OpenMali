@@ -563,8 +563,9 @@ def cmd_gen(a):
     for g in GPUS:
         b = blob.get(g)
         if b:
-            w("| Arm proprietary driver, %s | gpuinfo report %d, %s, `%s` | Arm blob column for %s |" % (
-                b["id"].get("deviceName") or GPU_NAME[g], b["report_id"], b["profile"][0] if b["profile"] else "", b["id"].get("driverInfo", ""), g))
+            # The report comes from another vendor's phone with the same GPU (its device is in the profile name), not from ours.
+            w("| Arm proprietary driver, %s (gpuinfo upload from another phone with this GPU, not one of ours) | gpuinfo report %d, %s, `%s` | Arm blob column for %s |" % (
+                b["id"].get("deviceName") or GPU_NAME[g].split(" (")[0], b["report_id"], b["profile"][0] if b["profile"] else "", b["id"].get("driverInfo", ""), g))
     for g in GPUS:
         o = ours[g]
         w("| ours %s | `%s`, api %s, captured `%s` | ours columns |" % (g, o["id"]["deviceName"], ".".join(map(str, api_tuple(o["id"]["apiVersion"]))), o.get("captured_with", "")))
@@ -585,10 +586,13 @@ def cmd_gen(a):
     for e in cur["env_gates"]:
         w("| `%s` | %s | %s | %s | %s |" % (e["switch"], e["default"], e["affects"], e["source"], e["evidence"]))
     w("")
-    w("The ours columns below are the defaults (no switch set). The phones' vulkaninfo (x4 2026-11-28 03:12, cmf 03:15, "
-      "build aae6f8bd8f) matches the fake-backend capture except `VK_EXT_physical_device_drm` (node-dependent, see above), "
-      "`VK_GOOGLE_display_timing` (listed only on the phones; not in our source, so a layer adds it -- HYPOTHESIS) and "
-      "`timestampPeriod` (fake backend 1, phones 76.92).")
+    w("The ours columns below are the defaults (no switch set) and come from the **fake backend only**. Phone cross-check: "
+      "the vulkaninfo text of x4 (v10, 2026-11-28 03:12) and cmf (v11, 03:15), build aae6f8bd8f, DroidDeck layers loaded "
+      "(committed by the DirectX lane under `tools/feature-matrix-dx/data/phone/`; there is no v13/x8 capture), lists the "
+      "same named device extensions as the fake-backend capture except `VK_EXT_physical_device_drm` (node-dependent, see above) "
+      "and `VK_GOOGLE_display_timing` (listed only on the phones; not in our source, so a layer adds it -- HYPOTHESIS); "
+      "`timestampPeriod` differs (fake backend 1, phones 76.92). The comparison is partial: 56 of the 128 device-extension "
+      "entries in each phone capture print with an empty name, so they cannot be matched.")
     w("")
 
     # ---------------------------------------------------------------- extensions
