@@ -184,6 +184,21 @@ TQ="$OUT/t_queue --direct $OUT/libvulkan_mali.so"
 run "queue all v11"      0 MALI_BACKEND=fake MALI_FAKE_GPU=v11 $TQ
 run "queue teardown v13"  0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 MALI_FAKE_SLOW_US=400000 $TQ --only teardown
 run "queue all v13 slow" 0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 MALI_FAKE_SLOW_US=200 $TQ --submits 1000
+# Submit depth (mali_queue.c MALI_QUEUE_DEPTH, MALI_QUEUE_STATS): the ANGLE pattern (8 submits per frame) on the fake GPU timeline
+# (MALI_FAKE_CS_US). MALI_QUEUE_CHECK fails the run if the arena hands out a range an unretired submission still reads; a 64 KiB arena
+# with 40 render passes per command buffer must wrap and spill into overflow BOs; MALI_FAKE_WAIT_FAIL loses the device mid-run.
+TQD="MALI_BACKEND=fake MALI_FAKE_GPU=v11 MALI_FAKE_CS_US=100 MALI_FAKE_SLOW_US=100 MALI_PRESENT_FENCE=1 MALI_QUEUE_CHECK=1 MALI_ARENA_KB=64"
+for d in 3 1 8 32 ""; do
+   run "queue depth '$d' wrap+ovf"    0 $TQD MALI_QUEUE_DEPTH=$d T_QUEUE_EXPECT="wraps ovf" $TQ --only depth --rp 40 --frames 40
+   run "queue depth '$d' failed wait" 0 $TQD MALI_QUEUE_DEPTH=$d MALI_FAKE_WAIT_FAIL=40 T_QUEUE_EXPECT="wraps ovf" $TQ --only depth --rp 40 --frames 40
+done
+run "queue depth 3 v13 chrome" 0 $TQD MALI_FAKE_GPU=v13 MALI_ARENA_KB=256 MALI_QUEUE_DEPTH=3 $TQ --only chrome --frames 30
+run "queue depth default chrome" 0 $TQD MALI_ARENA_KB=32768 $TQ --only chrome --frames 30
+for v in 0 65 abc -1; do
+   out=$(MALI_BACKEND=fake MALI_QUEUE_DEPTH=$v timeout 120 $TQ --only mem 2>&1)
+   if echo "$out" | grep -q "MALI_QUEUE_DEPTH=$v refused" && echo "$out" | grep -q '"fail":"CreateDevice"'; then echo "ok    queue depth $v refused"
+   else echo "FAIL  queue depth $v refused"; echo "$out" | sed 's/^/        /'; fail=1; fi
+done
 # present ordering (queue-order): the commit never precedes the frame; with a fence it may (MALI_PRESENT_FENCE forces the kernel capability)
 for m in 0 1; do run "present order fence=$m" 0 MALI_BACKEND=fake MALI_FAKE_SLOW_US=100000 MALI_PRESENT_FENCE=$m $TQ --only order; done
 run "timeout-0 poll does not queue behind a blocking wait" 0 MALI_BACKEND=fake MALI_FAKE_SLOW_US=300000 $TQ --only poll0

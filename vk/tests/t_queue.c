@@ -4,6 +4,7 @@
  * the ICD like t_icd --direct. One JSON line per case; exit 0 = all pass.
  *
  *   t_queue --direct <icd.so> [--submits N] [--burst N] [--only mem|dmabuf|submits|binary|timeline|syncfile|fault|idle|teardown]
+ *   t_queue --direct <icd.so> --only chrome|depth [--frames N] [--rp N] [--cpu-us N]   (ANGLE submit pattern, see test_chrome)
  *   fault mode needs MALI_FAULT_INJECT=n in the environment (n-th submission fails).
  */
 #define _DEFAULT_SOURCE
@@ -65,7 +66,9 @@ now_us(void)
    X(QueueSubmit) X(QueueWaitIdle) X(DeviceWaitIdle) X(GetSemaphoreCounterValueKHR)                   \
    X(WaitSemaphoresKHR) X(SignalSemaphoreKHR) X(GetMemoryFdKHR) X(GetSemaphoreFdKHR)                     \
    X(ImportSemaphoreFdKHR) X(GetFenceFdKHR) X(CreateBuffer) X(DestroyBuffer) X(GetBufferMemoryRequirements) \
-   X(BindBufferMemory) X(GetMemoryFdPropertiesKHR) X(CreateImage) X(DestroyImage) X(GetImageMemoryRequirements) X(GetImageSubresourceLayout) X(CreateCommandPool) X(AllocateCommandBuffers) X(BeginCommandBuffer) X(EndCommandBuffer) X(CmdFillBuffer) X(CmdCopyBuffer)
+   X(BindBufferMemory) X(GetMemoryFdPropertiesKHR) X(CreateImage) X(DestroyImage) X(GetImageMemoryRequirements) X(GetImageSubresourceLayout) X(CreateCommandPool) X(AllocateCommandBuffers) X(BeginCommandBuffer) X(EndCommandBuffer) X(CmdFillBuffer) X(CmdCopyBuffer) \
+   X(DestroyCommandPool) X(CmdUpdateBuffer) X(BindImageMemory) X(CreateImageView) X(DestroyImageView) X(CreateRenderPass)          \
+   X(DestroyRenderPass) X(CreateFramebuffer) X(DestroyFramebuffer) X(CmdBeginRenderPass) X(CmdEndRenderPass)
 
 #define DECL(n) static PFN_vk##n n;
 DEV_FNS(DECL)
@@ -910,6 +913,215 @@ test_nofence(void)
    return 1;
 }
 
+/* ------------------------------------------------------------------ chrome: the ANGLE submit pattern
+ * Chromium's GPU thread submits many small command buffers per displayed frame. Per frame this case submits 8 times: 5 small
+ * upload/copy command buffers (UpdateBuffer + CopyBuffer + FillBuffer), 2 command buffers of `g_rp` small clear-only render passes
+ * each, then a present-like submit (no command buffers, waits the render semaphore, signals the frame fence). The app paces on the
+ * fence of frame f-2 (three swapchain images), like ANGLE. With MALI_FAKE_CS_US the fake GPU takes that long per retire signal, so
+ * the time vkQueueSubmit spends blocked is the driver's own serialisation. Mode "depth" (MALI_QUEUE_CHECK=1, small MALI_ARENA_KB,
+ * many render passes) exercises arena wrap and overflow at any MALI_QUEUE_DEPTH; with MALI_FAKE_WAIT_FAIL=n a wait fails like a
+ * lost device in the middle and the case requires DEVICE_LOST to surface (and no arena reuse, no crash, no leak at teardown). */
+static int g_frames = 60, g_rp = 3, g_cpu_us = 0;   /* --cpu-us N: the app's own CPU work before each submit (busy loop) */
+#define CH_SLOTS 3
+#define CH_UPL 5
+#define CH_RPCB 2
+
+static uint32_t
+pick_type(uint32_t bits, VkMemoryPropertyFlags want)
+{
+   for (uint32_t t = 0; t < memprops.memoryTypeCount; t++)
+      if ((bits & (1u << t)) && (memprops.memoryTypes[t].propertyFlags & want) == want)
+         return t;
+   for (uint32_t t = 0; t < memprops.memoryTypeCount; t++)
+      if (bits & (1u << t))
+         return t;
+   return 0;
+}
+
+static int
+test_chrome(int depth_mode)
+{
+   const int expect_lost = getenv("MALI_FAKE_WAIT_FAIL") != NULL;
+   VkBuffer src, dst[CH_SLOTS];
+   VkDeviceMemory msrc, mdst[CH_SLOTS], mimg;
+   const VkDeviceSize bsz = 64 << 10;
+   VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = bsz,
+                            .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+   VkMemoryRequirements mr;
+   CHECK(CreateBuffer(dev, &bi, NULL, &src) == VK_SUCCESS, "src buffer");
+   GetBufferMemoryRequirements(dev, src, &mr);
+   VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size,
+                              .memoryTypeIndex = pick_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)};
+   CHECK(AllocateMemory(dev, &ai, NULL, &msrc) == VK_SUCCESS && BindBufferMemory(dev, src, msrc, 0) == VK_SUCCESS, "src mem");
+   for (int i = 0; i < CH_SLOTS; i++) {
+      CHECK(CreateBuffer(dev, &bi, NULL, &dst[i]) == VK_SUCCESS, "dst buffer");
+      GetBufferMemoryRequirements(dev, dst[i], &mr);
+      ai.allocationSize = mr.size;
+      ai.memoryTypeIndex = pick_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+      CHECK(AllocateMemory(dev, &ai, NULL, &mdst[i]) == VK_SUCCESS && BindBufferMemory(dev, dst[i], mdst[i], 0) == VK_SUCCESS, "dst mem");
+   }
+   VkImageCreateInfo ii = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = VK_FORMAT_R8G8B8A8_UNORM,
+                           .extent = {256, 256, 1}, .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
+                           .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT};
+   VkImage img;
+   CHECK(CreateImage(dev, &ii, NULL, &img) == VK_SUCCESS, "image");
+   GetImageMemoryRequirements(dev, img, &mr);
+   ai.allocationSize = mr.size;
+   ai.memoryTypeIndex = pick_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+   CHECK(AllocateMemory(dev, &ai, NULL, &mimg) == VK_SUCCESS && BindImageMemory(dev, img, mimg, 0) == VK_SUCCESS, "image mem");
+   VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = img, .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                               .format = ii.format, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+   VkImageView view;
+   CHECK(CreateImageView(dev, &vi, NULL, &view) == VK_SUCCESS, "view");
+   VkAttachmentDescription ad = {.format = ii.format, .samples = VK_SAMPLE_COUNT_1_BIT, .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                 .storeOp = VK_ATTACHMENT_STORE_OP_STORE, .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                                 .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                                 .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+   VkAttachmentReference ar = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+   VkSubpassDescription sd = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 1, .pColorAttachments = &ar};
+   VkRenderPassCreateInfo rpi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = 1, .pAttachments = &ad,
+                                 .subpassCount = 1, .pSubpasses = &sd};
+   VkRenderPass rp;
+   CHECK(CreateRenderPass(dev, &rpi, NULL, &rp) == VK_SUCCESS, "render pass");
+   VkFramebufferCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = rp, .attachmentCount = 1,
+                                 .pAttachments = &view, .width = 256, .height = 256, .layers = 1};
+   VkFramebuffer fb;
+   CHECK(CreateFramebuffer(dev, &fi, NULL, &fb) == VK_SUCCESS, "framebuffer");
+
+   VkCommandPoolCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+   VkCommandPool pool;
+   CHECK(CreateCommandPool(dev, &pi, NULL, &pool) == VK_SUCCESS, "pool");
+   VkCommandBuffer upl[CH_SLOTS][CH_UPL], rcb[CH_SLOTS][CH_RPCB];
+   VkFence fence[CH_SLOTS];
+   VkSemaphore rendered[CH_SLOTS];
+   VkCommandBufferAllocateInfo cai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = pool,
+                                      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+   VkCommandBufferBeginInfo cbi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+   uint32_t words[64];
+   for (int i = 0; i < 64; i++)
+      words[i] = 0x01020304u * (i + 1);
+   for (int sl = 0; sl < CH_SLOTS; sl++) {
+      for (int u = 0; u < CH_UPL; u++) {
+         CHECK(AllocateCommandBuffers(dev, &cai, &upl[sl][u]) == VK_SUCCESS, "cb");
+         VkCommandBuffer cb = upl[sl][u];
+         CHECK(BeginCommandBuffer(cb, &cbi) == VK_SUCCESS, "begin");
+         CmdUpdateBuffer(cb, dst[sl], (VkDeviceSize)u * 256, sizeof words, words);
+         VkBufferCopy cp = {.srcOffset = (VkDeviceSize)u * 4096, .dstOffset = 8192 + (VkDeviceSize)u * 4096, .size = 4096};
+         CmdCopyBuffer(cb, src, dst[sl], 1, &cp);
+         CmdFillBuffer(cb, dst[sl], 32768 + (VkDeviceSize)u * 1024, 1024, 0x5a5a5a5au);
+         CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "end");
+      }
+      for (int c = 0; c < CH_RPCB; c++) {
+         CHECK(AllocateCommandBuffers(dev, &cai, &rcb[sl][c]) == VK_SUCCESS, "cb");
+         VkCommandBuffer cb = rcb[sl][c];
+         CHECK(BeginCommandBuffer(cb, &cbi) == VK_SUCCESS, "begin");
+         for (int k = 0; k < g_rp; k++) {
+            VkClearValue cv = {.color = {.float32 = {k / 8.0f, c * 0.5f, sl / 3.0f, 1.0f}}};
+            VkRenderPassBeginInfo rbi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = rp, .framebuffer = fb,
+                                         .renderArea = {{0, 0}, {64 + 32 * (k % 4), 64}}, .clearValueCount = 1, .pClearValues = &cv};
+            CmdBeginRenderPass(cb, &rbi, VK_SUBPASS_CONTENTS_INLINE);
+            CmdEndRenderPass(cb);
+         }
+         CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "end");
+      }
+      VkFenceCreateInfo fci = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, .flags = VK_FENCE_CREATE_SIGNALED_BIT};
+      CHECK(CreateFence(dev, &fci, NULL, &fence[sl]) == VK_SUCCESS, "fence");
+      VkSemaphoreCreateInfo sci = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+      CHECK(CreateSemaphore(dev, &sci, NULL, &rendered[sl]) == VK_SUCCESS, "semaphore");
+   }
+
+   double t_submit = 0, t_pace = 0, t0 = now_us(), worst = 0;
+   int nsub = 0, blocked = 0, lost = 0, frames_done = 0;
+   const VkPipelineStageFlags stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+   for (int f = 0; f < g_frames && !lost; f++) {
+      const int sl = f % CH_SLOTS;
+      double w0 = now_us();
+      VkResult r = WaitForFences(dev, 1, &fence[sl], VK_TRUE, 5000000000ull);   /* frame f-3 used this slot */
+      t_pace += now_us() - w0;
+      if (r == VK_ERROR_DEVICE_LOST && expect_lost) { lost = 1; break; }
+      CHECK(r == VK_SUCCESS, "frame %d: fence wait %d", f, r);
+      CHECK(ResetFences(dev, 1, &fence[sl]) == VK_SUCCESS, "reset");
+      for (int k = 0; k < CH_UPL + CH_RPCB + 1 && !lost; k++) {
+         VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO};
+         VkFence sf = VK_NULL_HANDLE;
+         if (k < CH_UPL) {
+            si.commandBufferCount = 1, si.pCommandBuffers = &upl[sl][k];
+         } else if (k < CH_UPL + CH_RPCB) {
+            si.commandBufferCount = 1, si.pCommandBuffers = &rcb[sl][k - CH_UPL];
+            if (k == CH_UPL + CH_RPCB - 1)
+               si.signalSemaphoreCount = 1, si.pSignalSemaphores = &rendered[sl];
+         } else {   /* present-like: what vk_common's present submit looks like (waits, no command buffers) */
+            si.waitSemaphoreCount = 1, si.pWaitSemaphores = &rendered[sl], si.pWaitDstStageMask = &stage;
+            sf = fence[sl];
+         }
+         for (double c0 = now_us(); g_cpu_us && now_us() - c0 < g_cpu_us;)
+            ;
+         double s0 = now_us();
+         r = QueueSubmit(queue, 1, &si, sf);
+         double ds = now_us() - s0;
+         t_submit += ds;
+         nsub++;
+         if (ds > 200.0)
+            blocked++;
+         if (ds > worst)
+            worst = ds;
+         if (r == VK_ERROR_DEVICE_LOST && expect_lost) { lost = 1; break; }
+         CHECK(r == VK_SUCCESS, "frame %d submit %d: %d", f, k, r);
+      }
+      if (!lost)
+         frames_done++;
+      if (f >= 2 && !lost) {   /* pace on frame f-2 (three images in the swapchain) */
+         double p0 = now_us();
+         r = WaitForFences(dev, 1, &fence[(f - 2) % CH_SLOTS], VK_TRUE, 5000000000ull);
+         t_pace += now_us() - p0;
+         if (r == VK_ERROR_DEVICE_LOST && expect_lost) { lost = 1; break; }
+         CHECK(r == VK_SUCCESS, "frame %d: pacing wait %d", f, r);
+      }
+   }
+   VkResult wr = QueueWaitIdle(queue);
+   if (!expect_lost)
+      CHECK(wr == VK_SUCCESS, "idle %d", wr);
+   double wall = now_us() - t0;
+   if (expect_lost)
+      CHECK(lost, "MALI_FAKE_WAIT_FAIL set but no DEVICE_LOST surfaced in %d frames", g_frames);
+   const char *dq = getenv("MALI_QUEUE_DEPTH");
+   printf("{\"test\":\"%s\",\"depth_env\":\"%s\",\"frames\":%d,\"submits\":%d,\"blocked_submits\":%d,\"blocked_per_frame\":%.2f,"
+          "\"submit_ms_per_frame\":%.3f,\"worst_submit_ms\":%.3f,\"pace_ms_per_frame\":%.3f,\"wall_ms_per_frame\":%.3f,\"lost\":%d,\"ok\":true}\n",
+          depth_mode ? "depth" : "chrome", dq ? dq : "", frames_done, nsub, blocked, frames_done ? (double)blocked / frames_done : 0.0,
+          frames_done ? t_submit / 1e3 / frames_done : 0.0, worst / 1e3, frames_done ? t_pace / 1e3 / frames_done : 0.0,
+          frames_done ? wall / 1e3 / frames_done : 0.0, lost);
+   fflush(stdout);
+   for (int sl = 0; sl < CH_SLOTS; sl++) {
+      DestroyFence(dev, fence[sl], NULL);
+      DestroySemaphore(dev, rendered[sl], NULL);
+      DestroyBuffer(dev, dst[sl], NULL);
+      FreeMemory(dev, mdst[sl], NULL);
+   }
+   DestroyCommandPool(dev, pool, NULL);
+   DestroyFramebuffer(dev, fb, NULL);
+   DestroyRenderPass(dev, rp, NULL);
+   DestroyImageView(dev, view, NULL);
+   DestroyImage(dev, img, NULL);
+   FreeMemory(dev, mimg, NULL);
+   DestroyBuffer(dev, src, NULL);
+   FreeMemory(dev, msrc, NULL);
+   return 1;
+}
+
+/* One value by key from the driver's MALI_QUEUE_STATS total line (stderr at DestroyDevice, captured through a temporary file). */
+static double
+stat_val(const char *line, const char *key)
+{
+   const char *p = line;
+   size_t kl = strlen(key);
+   while ((p = strstr(p, key))) {
+      if ((p == line || p[-1] == ' ') && p[kl] == ' ')
+         return atof(p + kl + 1);
+      p += kl;
+   }
+   return -1;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -920,10 +1132,24 @@ main(int argc, char **argv)
       else if (!strcmp(argv[i], "--submits") && i + 1 < argc) submits = atoi(argv[++i]);
       else if (!strcmp(argv[i], "--only") && i + 1 < argc) g_only = argv[++i];
       else if (!strcmp(argv[i], "--burst") && i + 1 < argc) g_burst = atoi(argv[++i]);
+      else if (!strcmp(argv[i], "--frames") && i + 1 < argc) g_frames = atoi(argv[++i]);
+      else if (!strcmp(argv[i], "--rp") && i + 1 < argc) g_rp = atoi(argv[++i]);
+      else if (!strcmp(argv[i], "--cpu-us") && i + 1 < argc) g_cpu_us = atoi(argv[++i]);
       else { fprintf(stderr, "usage: t_queue --direct icd.so [--submits N] [--only case]\n"); return 2; }
    }
    if (!icd) { fprintf(stderr, "--direct required\n"); return 2; }
 
+   /* chrome/depth: read the driver's MALI_QUEUE_STATS total line, printed to stderr at DestroyDevice */
+   const int chrome = g_only && (!strcmp(g_only, "chrome") || !strcmp(g_only, "depth"));
+   FILE *errcap = NULL;
+   int saved_err = -1;
+   if (chrome) {
+      setenv("MALI_QUEUE_STATS", "1", 1);
+      errcap = tmpfile();
+      fflush(stderr);
+      saved_err = dup(2);
+      if (!errcap || saved_err < 0 || dup2(fileno(errcap), 2) < 0) { printf("{\"fail\":\"stderr capture\"}\n"); return 1; }
+   }
    int fds0 = count_fds();
    void *lib = dlopen(icd, RTLD_NOW | RTLD_LOCAL);
    if (!lib) { printf("{\"fail\":\"dlopen: %s\"}\n", dlerror()); return 1; }
@@ -1001,6 +1227,7 @@ main(int argc, char **argv)
    if (ok && g_only && !strcmp(g_only, "wsiimg")) ok &= test_wsiimg();
    if (ok && g_only && !strcmp(g_only, "failsignal")) ok &= test_failsignal();
    if (ok && g_only && !strcmp(g_only, "nofence")) ok &= test_nofence();
+   if (ok && chrome) ok &= test_chrome(!strcmp(g_only, "depth"));
 
    int td = g_only && !strcmp(g_only, "teardown");
    if (ok && td) ok &= test_teardown();
@@ -1018,6 +1245,45 @@ main(int argc, char **argv)
    if (td && dms > slow_us / 2000.0) { /* destroy must cut the pending delay short, not sit it out */
       printf("{\"fail\":\"DestroyDevice took %.0f ms with a %u us fence delay\"}\n", dms, slow_us);
       g_fail = 1;
+   }
+   if (chrome) {
+      fflush(stderr);
+      dup2(saved_err, 2);
+      close(saved_err);
+      rewind(errcap);
+      char line[2048];
+      int seen = 0;
+      while (fgets(line, sizeof line, errcap)) {
+         fputs(line, stderr);   /* everything the driver said, unchanged */
+         if (strstr(line, "CHECK FAILED")) { printf("{\"fail\":\"arena reuse\"}\n"); g_fail = 1; }
+         if (strncmp(line, "mali_queue_stats total", 22))
+            continue;
+         seen = 1;
+         double fr = g_frames, blk = 0, blk_ms = 0;
+         static const char *const cause[] = {"blk_inflight", "blk_arena", "blk_ovf", "blk_ring", "blk_idle", "blk_semwait"};
+         printf("{\"stats\":\"%s\"", g_only);
+         for (unsigned c = 0; c < 6; c++) {
+            const char *p = strstr(line, cause[c]);
+            double n = p ? atof(p + strlen(cause[c]) + 1) : 0, ms = p && strchr(p, '/') ? atof(strchr(p, '/') + 1) : 0;
+            if (c != 5)   /* semwait is the app's own semaphore wait, not driver serialisation */
+               blk += n, blk_ms += ms;
+            printf(",\"%s\":[%.0f,%.2f]", cause[c], n, ms);
+         }
+         printf(",\"depth_limit\":%.0f,\"inflight_max\":%.0f,\"inflight_avg\":%.2f,\"frames_per_submit\":%.2f,\"kicks\":%.0f,"
+                "\"wraps\":%.0f,\"ovf_bos\":%.0f,\"driver_blocks_per_frame\":%.2f,\"driver_block_ms_per_frame\":%.3f}\n",
+                stat_val(line, "depth_limit"), stat_val(line, "inflight_max"), stat_val(line, "inflight_avg"),
+                stat_val(line, "frames_per_submit"), stat_val(line, "kicks"), stat_val(line, "wraps"), stat_val(line, "ovf_bos"),
+                blk / fr, blk_ms / fr);
+         /* T_QUEUE_EXPECT="wraps ovf": the depth runs must really have wrapped the arena and spilled into overflow BOs */
+         const char *ex = getenv("T_QUEUE_EXPECT");
+         if (ex && strstr(ex, "wraps") && stat_val(line, "wraps") < 1) { printf("{\"fail\":\"arena never wrapped\"}\n"); g_fail = 1; }
+         if (ex && strstr(ex, "ovf") && stat_val(line, "ovf_bos") < 1) { printf("{\"fail\":\"no overflow BO used\"}\n"); g_fail = 1; }
+         if (stat_val(line, "check_fail") != 0) { printf("{\"fail\":\"MALI_QUEUE_CHECK: %.0f arena ranges reused while in flight\"}\n", stat_val(line, "check_fail")); g_fail = 1; }
+         const char *dq = getenv("MALI_QUEUE_DEPTH");
+         if (dq && dq[0] && stat_val(line, "inflight_max") > atof(dq)) { printf("{\"fail\":\"in flight above MALI_QUEUE_DEPTH\"}\n"); g_fail = 1; }
+      }
+      fclose(errcap);
+      if (!seen) { printf("{\"fail\":\"no mali_queue_stats total line\"}\n"); g_fail = 1; }
    }
    int fds1 = count_fds();
    if (td && fds1 != fds0) { printf("{\"fail\":\"teardown fds %d -> %d\"}\n", fds0, fds1); g_fail = 1; }

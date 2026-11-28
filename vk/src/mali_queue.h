@@ -23,6 +23,8 @@ void mali_sync_init_physical(struct mali_physical_device *pdev);
  * mali_cmd.c as the (process-wide, one device at a time) hardware seam. */
 VkResult mali_hw_init(struct mali_device *dev);
 void mali_hw_finish(struct mali_device *dev);
+/* MALI_QUEUE_DEPTH (submissions in flight): 0 and *out set (default when unset), -1 for a value that cannot be honoured. */
+int mali_queue_depth_env(unsigned *out);
 /* Metadata BOs (events, query pools): allocated/freed through the NAMED device, independent of the global binding. */
 void *mali_hw_meta_alloc(struct mali_device *dev, size_t size, size_t align, uint64_t *va);
 void mali_hw_meta_free(struct mali_device *dev, void *cpu);

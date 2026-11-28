@@ -131,6 +131,8 @@ uint64_t kb_queue_extract(const struct kb_queue *q) { DMB(); return *q->cs_extra
 bool kb_queue_idle(const struct kb_queue *q) { return kb_queue_extract(q) == q->insert; }
 bool kb_queue_faulted(const struct kb_queue *q) { return q->ctx->group_faulted[q->group_handle]; }
 
+uint64_t kb_stat_kicks;
+
 int kb_queue_submit(struct kb_queue *q, const uint64_t *ins, size_t n, enum kb_kick how)
 {
 	size_t total = (n * 8 + 63) & ~(size_t)63; /* pad to 64 bytes: the firmware prefetches in 64-byte units */
@@ -162,6 +164,7 @@ int kb_queue_submit(struct kb_queue *q, const uint64_t *ins, size_t n, enum kb_k
 			return r;
 		}
 		q->kicks++;
+		__atomic_add_fetch(&kb_stat_kicks, 1, __ATOMIC_RELAXED);
 	}
 	return 0;
 }
