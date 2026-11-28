@@ -251,6 +251,10 @@ mali_preload_mode(const struct mali_frame *f)
       return MALI_PF_ALWAYS_ZS_LOAD;
    if ((f->has_zs && f->zs.clear) || (f->has_st && f->st.clear))
       return MALI_PF_ALWAYS_CLEAN_TILE;
+   /* Until attachment interactions are proven, even DONT_CARE Z/S must use
+    * the existing full-area preload draw. Keep the more specific reasons above. */
+   if (f->has_zs || f->has_st)
+      return MALI_PF_ALWAYS_ZS_ATTACHMENT;
    if (f->colour.resolve_va)
       return MALI_PF_ALWAYS_RESOLVE;
    if (f->samples > 1)
@@ -272,7 +276,7 @@ mali_preload_intersect_on(void)
 static unsigned g_pf_count[MALI_PF_NMODES];
 static pthread_mutex_t g_pf_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool g_pf_atexit;
-static const char *const g_pf_name[MALI_PF_NMODES] = { "none", "intersect", "always_zs_load", "always_clean_tile",
+static const char *const g_pf_name[MALI_PF_NMODES] = { "none", "intersect", "always_zs_load", "always_clean_tile", "always_zs_attachment",
                                                        "always_msaa", "always_resolve", "always_src", "always_empty" };
 
 static void

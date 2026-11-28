@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: MIT */
 /* Host test for the colour loadOp LOAD pre-frame shader (vk/src/mali_render.c mali_preload_mode / mali_render_pack_fbd_pf):
  *   (a) a partial-area LOAD/STORE colour pass (1363x27 inside 1920x128) picks INTERSECT, and its FBD has Pre Frame 0 = 2,
- *       the Frame Shader DCD pointer and Clean Tile Write off on the RT (and on the ZS extension when there is one);
- *   (b) every mandatory-ALWAYS case (Z/S LOAD, Z or S CLEAR = clean tile write, in-tile resolve, MSAA, a different load
+ *       the Frame Shader DCD pointer and Clean Tile Write off on the RT;
+ *   (b) every mandatory-ALWAYS case (any bound Z/S, Z/S LOAD, Z or S CLEAR = clean tile write, in-tile resolve, MSAA, a different load
  *       source, no geometry) picks its ALWAYS reason, so the frame keeps the preload draw and the old FBD;
  *   (c) pf_dcds_va = 0 packs byte for byte what mali_render_pack_fbd packs (the switch-off stream). */
 #include <stdio.h>
@@ -79,20 +79,34 @@ int main(void)
       EXPECT(!mali_render_pack_fbd(&env, &f, b, 0x5f00030000ull, 0x5f00031000ull), "v%u (a) pack old", arch);
       EXPECT((word(b, 0) & 0x1ff) == 0 && word(b, 6) == 0 && (word(b, 33) >> 31), "v%u (a) the old FBD: no frame shader, Clean Tile Write on", arch);
       EXPECT(word(a, 9) == word(b, 9) && word(a, 10) == word(b, 10), "v%u (a) same tile-aligned bound box (%#x..%#x)", arch, word(a, 9), word(a, 10));
+      /* Independent absolute oracle: a matching shrink in both packers must not pass. */
+      {
+         uint32_t bounds[4];
+         mali_fbd_bounds(&env, &f, bounds);
+         EXPECT(bounds[0] == 0 && bounds[1] == (arch == 13 ? 0u : 32u) &&
+                bounds[2] == 1407 && bounds[3] == (arch == 13 ? 127u : 95u),
+                "v%u (a) bounds contain the full tile-rounded render area: %u,%u..%u,%u",
+                arch, bounds[0], bounds[1], bounds[2], bounds[3]);
+         EXPECT(word(a, 9) == ((arch == 13 ? 0u : 32u) << 16) &&
+                word(a, 10) == (1407u | ((arch == 13 ? 127u : 95u) << 16)),
+                "v%u (a) emitted INTERSECT bounds match absolute oracle", arch);
+      }
       for (unsigned i = 0; i < KB_FB_DESC_SIZE / 4; i++)
          if (i != 0 && i != 6 && i != 7 && i != 33 && word(a, i) != word(b, i)) {
             EXPECT(0, "v%u (a) FBD word %u differs only where the frame shader / clean tile live (%#x vs %#x)", arch, i, word(a, i), word(b, i));
             break;
          }
 
-      /* (a') with a depth/stencil target that is not cleared (DONT_CARE load): still INTERSECT, ZS ext Clean Tile Write off */
-      base(&f); add_zs(&f, false, false);
-      EXPECT(mali_preload_mode(&f) == MALI_PF_INTERSECT, "v%u (a') + Z/S DONT_CARE/STORE -> INTERSECT", arch);
-      memset(a, 0, sizeof a); memset(b, 0, sizeof b);
-      mali_render_pack_fbd_pf(&env, &f, a, 0x5f00030000ull, 0x5f00031000ull, dcds);
-      mali_render_pack_fbd(&env, &f, b, 0x5f00030000ull, 0x5f00031000ull);
-      EXPECT(!(word(a, 32) >> 31) && !(word(a, 48 + 1) >> 31), "v%u (a') ZS ext and RT Clean Tile Write off (ext w0 %#x, RT w1 %#x)", arch, word(a, 32), word(a, 49));
-      EXPECT((word(b, 32) >> 31) && (word(b, 49) >> 31), "v%u (a') old FBD: both on", arch);
+      /* Each attachment independently forces fallback, regardless of STORE. */
+      for (unsigned mask = 1; mask <= 3; mask++) {
+         for (unsigned store = 0; store <= 1; store++) {
+            base(&f); add_zs(&f, false, false);
+            f.has_zs = !!(mask & 1); f.has_st = !!(mask & 2);
+            f.zs.store = store; f.st.store = store;
+            EXPECT(mali_preload_mode(&f) == MALI_PF_ALWAYS_ZS_ATTACHMENT,
+                   "v%u Z/S mask %u DONT_CARE store %u -> ALWAYS", arch, mask, store);
+         }
+      }
 
       /* (b) mandatory ALWAYS: each case keeps the preload draw */
       base(&f); f.pf_zs_load = true; add_zs(&f, false, false);

@@ -326,10 +326,10 @@ int mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f,
  * cmd_preload_color_attachments). Every other value is the reason the frame keeps today's full-area preload draw, i.e. the
  * hardware's ALWAYS behaviour: ZS_LOAD (PanVK preloads Z/S EARLY_ZS_ALWAYS / PREPASS_ALWAYS, and a Z/S preload draw touches
  * every tile anyway), CLEAN_TILE (a depth/stencil CLEAR needs Clean Tile Write, and TSIX-2033 makes INTERSECT unsafe with it),
- * MSAA, RESOLVE (an in-tile resolve is a store-always target), SRC (the preload reads another image than the one stored:
+ * ZS_ATTACHMENT (any other bound depth or stencil attachment, conservatively), MSAA, RESOLVE (an in-tile resolve is a store-always target), SRC (the preload reads another image than the one stored:
  * an untouched tile would keep stale memory) and EMPTY (no geometry besides the preload: no tiler context). NONE = no
  * candidate (no colour LOAD). The result ignores the switch: callers apply mali_preload_intersect_on(). */
-enum mali_pf_mode { MALI_PF_NONE, MALI_PF_INTERSECT, MALI_PF_ALWAYS_ZS_LOAD, MALI_PF_ALWAYS_CLEAN_TILE, MALI_PF_ALWAYS_MSAA,
+enum mali_pf_mode { MALI_PF_NONE, MALI_PF_INTERSECT, MALI_PF_ALWAYS_ZS_LOAD, MALI_PF_ALWAYS_CLEAN_TILE, MALI_PF_ALWAYS_ZS_ATTACHMENT, MALI_PF_ALWAYS_MSAA,
                     MALI_PF_ALWAYS_RESOLVE, MALI_PF_ALWAYS_SRC, MALI_PF_ALWAYS_EMPTY, MALI_PF_NMODES };
 enum mali_pf_mode mali_preload_mode(const struct mali_frame *f);
 bool mali_preload_intersect_on(void);   /* MALI_PRELOAD_INTERSECT=1 (default off) */
