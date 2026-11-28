@@ -204,6 +204,10 @@ done
 # M5/M7: buffers, images, views, samplers, memory binding, descriptor sets, updates, templates (white-box, static link).
 for g in v11 v13; do run "resources $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_resources"; done
 
+# Small narrow-texel texture matrix (Chromium path masks). The fake backend executes no shader: this proves only that every
+# variant is accepted, recorded and submitted; pixels need a phone (smoke --guest-bin). Copy-plan arithmetic is checked by t_meta.
+for g in v10 v11; do run "texupload matrix (no pixels) $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_texupload" --direct "$OUT/libvulkan_mali.so" --quiet; done
+
 # M9: client draws through the ICD (fake backend: API sequence, compile, CS build and submit; pixels only on hardware).
 for g in v11 v13; do
    run "vk_draw $g"       0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --loop 200
