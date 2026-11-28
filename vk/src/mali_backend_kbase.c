@@ -57,7 +57,17 @@ struct mali_kdev {
       bool dirty;      /* MALI_SYNC_DIRTY (default on): CPU->device only for user BOs the CPU may have written */
       bool prof;       /* MALI_PROF set: the legacy every-600-sweeps BO dump */
       bool stats;      /* MALI_SYNC_STATS=1: one counter line per second of sweep activity */
+      bool lists;      /* MALI_SYNC_LISTS (default on): sweeps walk the sync lists below, not the registry */
    } cfg;
+   /* MALI_SYNC_LISTS: the BOs a sweep has to visit, kept up to date on every state change (bo_lock held, O(1) each).
+    * push[0]/push[1]: CPU->device candidates of the cold / hot sweep (the same rule the registry walk applies, see
+    * push_wanted). pend: native BOs with a device->CPU write mark not yet covered (gpu_writes != synced_writes). imp:
+    * dma-buf imports (synced at every blocking wait, as by the walk). A BO that needs no sync is in no list. */
+   struct bo_set {
+      struct kb_bo **v;
+      unsigned n, cap;
+   } push[2], pend, imp;
+   bool lists_broken;       /* a list could not grow: back to the registry walk for the rest of the device's life */
 
    /* Free list of recently freed VkDeviceMemory BOs (HOSTLAZY only), oldest first; guarded by bo_lock. A hit skips MEM_ALLOC + mmap (+ the zero/flush of a
     * CACHED BO) and the matching MEM_FREE + munmap. Pooled BOs are not in bos[] (no MEM_SYNC for them). */
@@ -88,6 +98,8 @@ env_is(const char *name, char c)
    return e && e[0] == c;
 }
 
+static void sync_lists_rebuild_locked(struct mali_kdev *k);
+
 /* bo_lock held (or the device not yet shared). */
 static void
 sync_env_load_locked(struct mali_kdev *k)
@@ -98,9 +110,12 @@ sync_env_load_locked(struct mali_kdev *k)
       .dirty = !env_is("MALI_SYNC_DIRTY", '0'),
       .prof = getenv("MALI_PROF") != NULL,
       .stats = env_is("MALI_SYNC_STATS", '1'),
+      .lists = !env_is("MALI_SYNC_LISTS", '0'),
    };
-   if (memcmp(&c, &k->cfg, sizeof c))
+   if (memcmp(&c, &k->cfg, sizeof c)) {
       k->cfg = c;
+      sync_lists_rebuild_locked(k);   /* membership depends on the policy switches */
+   }
 }
 
 void
@@ -244,9 +259,132 @@ kbase_device_destroy(struct mali_kdev *k)
    pthread_mutex_destroy(&k->wait_lock);
    pthread_mutex_destroy(&k->bo_lock);
    free(k->bos);
+   free(k->push[0].v);
+   free(k->push[1].v);
+   free(k->pend.v);
+   free(k->imp.v);
    free(k);
 }
 
+/* ---- registry and sync lists (bo_lock held) ---- */
+enum { IDX_REG, IDX_PUSH, IDX_PEND, IDX_IMP };
+
+static bool
+set_add(struct bo_set *s, struct kb_bo *b, unsigned slot)
+{
+   if (b->sync_idx[slot])
+      return true;
+   if (s->n == s->cap) {
+      unsigned nc = s->cap ? s->cap * 2 : 64;
+      struct kb_bo **nv = realloc(s->v, nc * sizeof *nv);
+      if (!nv)
+         return false;
+      s->v = nv;
+      s->cap = nc;
+   }
+   s->v[s->n++] = b;
+   b->sync_idx[slot] = s->n;
+   if (slot == IDX_PEND)
+      __atomic_store_n(&b->pend_queued, true, __ATOMIC_SEQ_CST);
+   return true;
+}
+
+/* O(1): the last member takes the hole. A sweep that walks a list backwards may remove the member it is looking at. */
+static void
+set_del(struct bo_set *s, struct kb_bo *b, unsigned slot)
+{
+   unsigned i = b->sync_idx[slot];
+   if (!i)
+      return;
+   struct kb_bo *last = s->v[--s->n];
+   s->v[i - 1] = last;
+   last->sync_idx[slot] = i;
+   b->sync_idx[slot] = 0;
+   if (slot == IDX_PEND)
+      __atomic_store_n(&b->pend_queued, false, __ATOMIC_SEQ_CST);
+}
+
+static bool
+lists_active(const struct mali_kdev *k)
+{
+   return k->cfg.lists && !k->lists_broken;
+}
+
+/* The CPU->device rule of the registry walk (mem_sync_bos), per BO: true = this BO is synced by its sweep. */
+static bool
+push_wanted(const struct mali_kdev *k, const struct kb_bo *b)
+{
+   if (b->host_lazy || (b->flags & KB_BO_NOCOH) || b->imported)
+      return false;
+   /* MALI_SYNC_DIRTY: a user BO the CPU cannot have written since the last sync has nothing to push */
+   if (b->user_mem && k->cfg.dirty && !b->cpu_dirty && !b->cpu_mapped)
+      return false;
+   return true;
+}
+
+/* The device->CPU rule for native BOs: a write mark the last sync did not cover. */
+static bool
+pend_wanted(const struct kb_bo *b)
+{
+   if (b->host_lazy || (b->flags & KB_BO_NOCOH) || b->imported)
+      return false;
+   return __atomic_load_n(&b->gpu_writes, __ATOMIC_SEQ_CST) != b->synced_writes;
+}
+
+static void
+sync_lists_drop_locked(struct mali_kdev *k, struct kb_bo *b)
+{
+   set_del(&k->push[b->hot], b, IDX_PUSH);
+   set_del(&k->pend, b, IDX_PEND);
+   set_del(&k->imp, b, IDX_IMP);
+}
+
+static void sync_lists_clear_locked(struct mali_kdev *k);
+
+/* Re-evaluate one BO's list membership after any change of its state. */
+static void
+sync_lists_update_locked(struct mali_kdev *k, struct kb_bo *b)
+{
+   if (!lists_active(k) || !b->sync_idx[IDX_REG])
+      return;
+   bool ok = true;
+   if (push_wanted(k, b))
+      ok &= set_add(&k->push[b->hot], b, IDX_PUSH);
+   else
+      set_del(&k->push[b->hot], b, IDX_PUSH);
+   if (pend_wanted(b))
+      ok &= set_add(&k->pend, b, IDX_PEND);
+   else
+      set_del(&k->pend, b, IDX_PEND);
+   if (b->imported && !b->host_lazy && !(b->flags & KB_BO_NOCOH))
+      ok &= set_add(&k->imp, b, IDX_IMP);
+   else
+      set_del(&k->imp, b, IDX_IMP);
+   if (!ok) {
+      /* Out of memory: a BO missing from a list would miss its sync. The registry is complete, so walk it from now on. */
+      fprintf(stderr, "mali_vk: MEM_SYNC lists out of memory: back to the full registry walk\n");
+      k->lists_broken = true;
+      sync_lists_clear_locked(k);
+   }
+}
+
+static void
+sync_lists_clear_locked(struct mali_kdev *k)
+{
+   for (unsigned i = 0; i < k->nbos; i++)
+      sync_lists_drop_locked(k, k->bos[i]);
+}
+
+static void
+sync_lists_rebuild_locked(struct mali_kdev *k)
+{
+   sync_lists_clear_locked(k);
+   for (unsigned i = 0; i < k->nbos && lists_active(k); i++)
+      sync_lists_update_locked(k, k->bos[i]);
+}
+
+/* Registry add/remove, both O(1). The registry stays complete in every mode: it is what MALI_SYNC_LISTS=0, a full
+ * device->CPU sweep (bo_wrote(NULL), MALI_SYNC_ALL=1) and the stats walk. */
 static bool
 track_bo(struct mali_kdev *k, struct kb_bo *bo, bool add)
 {
@@ -262,13 +400,20 @@ track_bo(struct mali_kdev *k, struct kb_bo *bo, bool add)
          k->bos = nb;
          k->capbos = nc;
       }
+      memset(bo->sync_idx, 0, sizeof bo->sync_idx);   /* a pooled BO comes back with stale positions */
+      bo->pend_queued = false;
       k->bos[k->nbos++] = bo;
-   } else {
-      for (unsigned i = 0; i < k->nbos; i++)
-         if (k->bos[i] == bo) {
-            k->bos[i] = k->bos[--k->nbos];
-            break;
-         }
+      bo->sync_idx[IDX_REG] = k->nbos;
+      bo->sync_owner = k;
+      sync_lists_update_locked(k, bo);
+   } else if (bo->sync_idx[IDX_REG]) {
+      sync_lists_drop_locked(k, bo);
+      unsigned i = bo->sync_idx[IDX_REG];
+      struct kb_bo *last = k->bos[--k->nbos];
+      k->bos[i - 1] = last;
+      last->sync_idx[IDX_REG] = i;
+      bo->sync_idx[IDX_REG] = 0;
+      bo->sync_owner = NULL;
    }
    pthread_mutex_unlock(&k->bo_lock);
    return true;
@@ -469,8 +614,17 @@ kbase_bo_wrote(struct mali_kdev *k, struct mali_bo *b)
       return;
    }
    struct kb_bo *bo = b->priv;
-   if (bo)
-      __atomic_add_fetch(&bo->gpu_writes, 1, __ATOMIC_RELAXED);
+   if (!bo)
+      return;
+   __atomic_add_fetch(&bo->gpu_writes, 1, __ATOMIC_SEQ_CST);
+   /* MALI_SYNC_LISTS: file the BO in the pending list unless it is there already. Lock-free when it is: a sweep that
+    * takes it out first clears pend_queued and then re-reads gpu_writes (sync_pend_retire_locked), so either the sweep
+    * sees this mark and keeps it, or this thread sees the flag clear and files it under bo_lock. */
+   if (__atomic_load_n(&k->cfg.lists, __ATOMIC_RELAXED) && !__atomic_load_n(&bo->pend_queued, __ATOMIC_SEQ_CST)) {
+      pthread_mutex_lock(&k->bo_lock);
+      sync_lists_update_locked(k, bo);
+      pthread_mutex_unlock(&k->bo_lock);
+   }
 }
 
 /* The three host-write callbacks below run on the app's thread (vkMapMemory/vkUnmapMemory/vkFlushMappedMemoryRanges)
@@ -486,12 +640,15 @@ kbase_bo_host_touch(struct mali_kdev *k, struct mali_bo *b)
    if (!b || !b->priv)
       return;
    struct kb_bo *bo = b->priv;
+   if (!k)
+      k = bo->sync_owner;   /* mali_buffer.c passes no kdev; a tracked BO knows its device (its lists must see this) */
    if (k) pthread_mutex_lock(&k->bo_lock);
    bo->host_lazy = false;
    /* MALI_SYNC_DIRTY: the CPU may write through this mapping at any time, so the BO is dirty until it is unmapped and
     * a sync has covered it (mem_sync_bos keeps it dirty while cpu_mapped is set). */
    bo->cpu_dirty = true;
    bo->cpu_mapped = true;
+   if (k) sync_lists_update_locked(k, bo);
    if (k) pthread_mutex_unlock(&k->bo_lock);
 }
 
@@ -503,8 +660,11 @@ kbase_bo_host_unmap(struct mali_kdev *k, struct mali_bo *b)
    if (!b || !b->priv)
       return;
    struct kb_bo *bo = b->priv;
+   if (!k)
+      k = bo->sync_owner;
    if (k) pthread_mutex_lock(&k->bo_lock);
    bo->cpu_mapped = false;   /* cpu_dirty stays set: only the sync under bo_lock clears it */
+   if (k) sync_lists_update_locked(k, bo);
    if (k) pthread_mutex_unlock(&k->bo_lock);
 }
 
@@ -515,8 +675,11 @@ kbase_bo_host_dirty(struct mali_kdev *k, struct mali_bo *b)
    if (!b || !b->priv)
       return;
    struct kb_bo *bo = b->priv;
+   if (!k)
+      k = bo->sync_owner;
    if (k) pthread_mutex_lock(&k->bo_lock);
    bo->cpu_dirty = true;
+   if (k) sync_lists_update_locked(k, bo);
    if (k) pthread_mutex_unlock(&k->bo_lock);
 }
 
@@ -538,13 +701,13 @@ kbase_bo_import(struct mali_kdev *k, int dmabuf_fd, size_t size, uint32_t flags,
     * COHERENT_LOCAL too (bo.c: kb_bo_extra_flags), so after a GPU write its CPU mapping needs the CSYNC before
     * the CPU reads it. Marked as foreign so mem_sync_bos does not push our CPU copy at the GPU before a submit
     * (that direction stays for BOs this driver allocated; an exported one is still ours to push). */
+   bo->imported = true;   /* before track_bo: the lists file it by kind */
    if (!track_bo(k, bo, true)) {
       /* Without a registry slot the import would never be part of the device->CPU sweep: give it back. */
       kb_bo_free(bo);
       free(bo);
       return -ENOMEM;
    }
-   bo->imported = true;
    return 0;
 }
 
@@ -801,6 +964,8 @@ sync_stats_locked(struct mali_kdev *k, struct mali_sync_stats *out, bool reset)
    for (unsigned i = 0; i < k->nbos; i++)
       out->live[bo_class(k->bos[i])]++;
    out->nbos = k->nbos;
+   out->push_list = k->push[0].n + k->push[1].n;
+   out->pend_list = k->pend.n + k->imp.n;
    if (reset)
       memset(k->sc, 0, sizeof k->sc);
 }
@@ -846,6 +1011,71 @@ sync_stats_tick(struct mali_kdev *k, uint64_t now)
    k->stats_t0 = now;
 }
 
+/* One KBASE MEM_SYNC (bo_lock held). */
+static int
+memsync_ioctl_locked(struct mali_kdev *k, const struct kb_bo *b, unsigned op, struct mali_sync_counter *sc)
+{
+   struct {
+      uint64_t handle, user_addr, size;
+      uint8_t type, pad[7];
+   } ms = {b->gpu_va, (uint64_t)(uintptr_t)b->cpu, b->size, (uint8_t)op, {0}};
+   sc->ioctls++;
+   return kb_ioctl_fd(kb_fd(k->ctx), _IOW(KBASE_IOCTL_TYPE, 15, ms), &ms);
+}
+
+/* A pending-list member whose marks are all covered leaves the list. pend_queued is cleared BEFORE gpu_writes is
+ * re-read, so a concurrent kbase_bo_wrote either is seen here (the BO stays) or sees the flag clear and files the BO
+ * again once bo_lock is free; a mark is never left outside the list. */
+static void
+sync_pend_retire_locked(struct mali_kdev *k, struct kb_bo *b)
+{
+   if (b->host_lazy || (b->flags & KB_BO_NOCOH)) {   /* cannot be synced now; host_touch files it again */
+      set_del(&k->pend, b, IDX_PEND);
+      return;
+   }
+   __atomic_store_n(&b->pend_queued, false, __ATOMIC_SEQ_CST);
+   if (__atomic_load_n(&b->gpu_writes, __ATOMIC_SEQ_CST) != b->synced_writes)
+      __atomic_store_n(&b->pend_queued, true, __ATOMIC_SEQ_CST);
+   else
+      set_del(&k->pend, b, IDX_PEND);
+}
+
+/* MALI_SYNC_LISTS: the same syncs as the registry walk below, visiting only the list members (bo_lock held). The
+ * lists are walked backwards so that a member leaving its list (set_del moves the last one into its slot) is never
+ * skipped and never visited twice. */
+static void
+mem_sync_lists_locked(struct mali_kdev *k, unsigned op, enum sync_sel sel, struct mali_sync_counter *sc)
+{
+   if (op == 1) {
+      struct bo_set *ps = &k->push[sel == SYNC_HOT];
+      for (unsigned i = ps->n; i-- > 0;) {
+         struct kb_bo *b = ps->v[i];
+         sc->visited++;
+         int sr = memsync_ioctl_locked(k, b, 1, sc);
+         if (sr >= 0 && !b->cpu_mapped)
+            b->cpu_dirty = false;   /* the CPU cannot write it now: this ioctl covered everything it wrote */
+         if (!push_wanted(k, b))
+            set_del(ps, b, IDX_PUSH);
+      }
+      return;
+   }
+   for (unsigned i = k->pend.n; i-- > 0;) {
+      struct kb_bo *b = k->pend.v[i];
+      sc->visited++;
+      uint64_t wrote = __atomic_load_n(&b->gpu_writes, __ATOMIC_SEQ_CST);
+      if (!b->host_lazy && !(b->flags & KB_BO_NOCOH) && wrote != b->synced_writes &&
+          memsync_ioctl_locked(k, b, 2, sc) >= 0)
+         b->synced_writes = wrote;   /* what this ioctl covered; a concurrent submit's mark stays pending */
+      sync_pend_retire_locked(k, b);
+   }
+   if (sel == SYNC_POLL)
+      return;   /* see the poll path in kbase_fence_wait: a poll leaves foreign imports alone */
+   for (unsigned i = k->imp.n; i-- > 0;) {
+      sc->visited++;
+      (void)memsync_ioctl_locked(k, k->imp.v[i], 2, sc);
+   }
+}
+
 static void
 mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
 {
@@ -866,9 +1096,16 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
    if (kb_fake_memsync_count)
       sync_env_load_locked(k);   /* fake-kernel test build: the tests flip the switches between sweeps */
    sc->calls++;
-   sc->visited += k->nbos;
    bool sweep_all = dev2cpu && (k->sync_all_pending || k->cfg.sync_all || k->cfg.track_off);
    k->sync_all_pending = false;
+   /* MALI_SYNC_LISTS (default): visit only the BOs that need this sync. A full device->CPU sweep (an unplaceable
+    * write, MALI_SYNC_ALL=1) still walks the registry below and then prunes the pending list. */
+   const bool lists = lists_active(k);
+   if (lists && !sweep_all) {
+      mem_sync_lists_locked(k, op, sel, sc);
+      goto done;
+   }
+   sc->visited += k->nbos;
    static unsigned prof_calls;
    if (k->cfg.prof && ++prof_calls == 600) {
       unsigned n = 0;
@@ -902,17 +1139,16 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
          if (!sweep_all && wrote == b->synced_writes)
             continue;
       }
-      struct {
-         uint64_t handle, user_addr, size;
-         uint8_t type, pad[7];
-      } ms = {b->gpu_va, (uint64_t)(uintptr_t)b->cpu, b->size, (uint8_t)op, {0}};
-      int sr = kb_ioctl_fd(kb_fd(k->ctx), _IOW(KBASE_IOCTL_TYPE, 15, ms), &ms);
-      sc->ioctls++;
+      int sr = memsync_ioctl_locked(k, b, op, sc);
       if (dev2cpu && !b->imported && sr >= 0)
          b->synced_writes = wrote;   /* what this ioctl covered; a concurrent submit's mark stays pending */
       else if (!dev2cpu && sr >= 0 && !b->cpu_mapped)
          b->cpu_dirty = false;   /* the CPU cannot write it now: this ioctl covered everything it wrote */
    }
+   if (lists)   /* after a full sweep: drop the pending members it covered */
+      for (unsigned i = k->pend.n; i-- > 0;)
+         sync_pend_retire_locked(k, k->pend.v[i]);
+done:;
    const uint64_t t_end = sync_now_ns();
    sc->ns += t_end - t_start;
    if (k->cfg.stats)

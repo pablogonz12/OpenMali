@@ -97,6 +97,11 @@ struct kb_bo {
 	bool user_mem;   /* driver-level: a VkDeviceMemory BO (MALI_BO_HOSTLAZY|EXPORT): the only kind MALI_SYNC_DIRTY covers */
 	uint64_t gpu_writes;   /* driver-level: GPU-write marks (kb_bo_wrote) since allocation */
 	uint64_t synced_writes; /* driver-level: gpu_writes value the last device->CPU MEM_SYNC covered */
+	/* driver-level (vk/src/mali_backend_kbase.c sync lists): the device whose registry holds the BO (NULL while untracked or
+	 * pooled), and its position + 1 in the registry and in each sync list (0 = not a member). */
+	void *sync_owner;
+	uint32_t sync_idx[4];
+	bool pend_queued; /* driver-level: member of the device->CPU pending list (atomic; kbase_bo_wrote reads it lock-free) */
 };
 
 /* ioctl with optional per-request counters: MALI_IOCTL_PROF=1 prints count and time by request (type/nr) at exit */
