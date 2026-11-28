@@ -7,6 +7,7 @@
 #include "mali_entrypoints.h"
 #include "mali_cmd.h"
 #include "mali_queue.h"
+#include "mali_suballoc.h"
 #include "vk_alloc.h"
 #include "vk_cmd_enqueue_entrypoints.h"
 #include "vk_common_entrypoints.h"
@@ -144,6 +145,15 @@ mali_CreateDevice_impl(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo
       return result;
    }
 
+   dev->sub = mali_suballoc_create(pdev->backend, dev->kdev, mali_suballoc_env_on(), mali_device_gpu_progress, dev);
+   if (!dev->sub) {
+      pdev->backend->device_destroy(dev->kdev);
+      mali_queue_device_finish(dev);
+      vk_device_finish(&dev->vk);
+      vk_free2(&pdev->vk.instance->alloc, pAllocator, dev);
+      return vk_error(pdev, VK_ERROR_OUT_OF_HOST_MEMORY);
+   }
+
    dev->vk.command_dispatch_table = &dev->cmd_dispatch;   /* after vk_device_init (it zeroes the struct) */
    /* Queue commands (vkQueuePresentKHR) are resolved from the command dispatch table, not the device one, so the
     * present hook has to be installed here as well; without this the hook never ran and its trace stayed empty. */
@@ -157,6 +167,7 @@ mali_CreateDevice_impl(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo
    dev->vk.calibrate_time_domain = VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_KHR;
    result = mali_hw_init(dev);
    if (result != VK_SUCCESS) {
+      mali_suballoc_destroy(dev->sub);
       pdev->backend->device_destroy(dev->kdev);
       mali_queue_device_finish(dev);
       vk_device_finish(&dev->vk);
@@ -187,6 +198,7 @@ fail:
    if (dev->has_queue)
       vk_queue_finish(&dev->queue.vk);
    mali_hw_finish(dev);
+   mali_suballoc_destroy(dev->sub);   /* after the hw: its teardown frees meta memory; the GPU is idle now */
    pdev->backend->device_destroy(dev->kdev);
    mali_queue_device_finish(dev);
    vk_device_finish(&dev->vk);
@@ -222,6 +234,7 @@ mali_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
       vk_queue_finish(&dev->queue.vk);
    struct mali_physical_device *pdev = container_of(dev->vk.physical, struct mali_physical_device, vk);
    mali_hw_finish(dev);
+   mali_suballoc_destroy(dev->sub);   /* after the hw: its teardown frees meta memory; the GPU is idle now */
    pdev->backend->device_destroy(dev->kdev);
    mali_queue_device_finish(dev);
    vk_device_finish(&dev->vk);

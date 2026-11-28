@@ -72,6 +72,7 @@ struct mali_device {
    pthread_cond_t sync_cv;    /* a sync got a fence or was signalled */
    int32_t mem_count;         /* live VkDeviceMemory, vs maxMemoryAllocationCount */
    struct mali_hwctx *hw;     /* M9: per-device frame resources (mali_queue.c) */
+   struct mali_suballoc *sub;  /* small driver-internal GPU memory (mali_suballoc.c) */
    int present_fence_fd;      /* dup of the last submission's sync_file: the CPU-side present paths wait it (-1 = none) */
 };
 

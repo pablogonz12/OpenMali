@@ -31,6 +31,8 @@ struct mali_meta_ctx *mali_device_swap_meta(struct mali_device *dev, struct mali
 /* Metadata BOs (events, query pools): allocated/freed through the NAMED device, independent of the global binding. */
 void *mali_hw_meta_alloc(struct mali_device *dev, size_t size, size_t align, uint64_t *va);
 void mali_hw_meta_free(struct mali_device *dev, void *cpu);
+/* mali_suballoc progress callback (user = the struct mali_device): last submitted and last retired frame serial. */
+void mali_device_gpu_progress(void *dev, uint64_t *submitted, uint64_t *retired);
 struct mali_cmd_res_ops;
 extern const struct mali_cmd_res_ops mali_cmd_res;
 

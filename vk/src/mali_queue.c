@@ -100,33 +100,36 @@ mali_device_swap_meta(struct mali_device *dev, struct mali_meta_ctx *ctx)
 
 /* ---- M12/M13 device seam of mali_meta.c: long-lived zeroed memory (one uncached BO each, 64 B header keeps the struct mali_bo) and
  * executable shader memory ---- */
-#define META_HDR 64u
-struct meta_hdr {
-   struct mali_bo bo;
-};
-_Static_assert(sizeof(struct meta_hdr) <= META_HDR, "meta header");
 
-/* Allocate and free through the device the caller names. */
+/* Allocate and free through the device the caller names: ranges of the device's suballocator (MALI_BO_SUBALLOC=0: one
+ * BO each, 64 B header in front, as before). */
+void
+mali_device_gpu_progress(void *u, uint64_t *submitted, uint64_t *retired)
+{
+   struct mali_device *dev = u;
+   struct mali_hwctx *h = dev ? dev->hw : NULL;
+   if (!h || !h->sync_live) {   /* no frame resources: nothing was or can be submitted that reads driver memory */
+      *submitted = 0;
+      *retired = UINT64_MAX;
+      return;
+   }
+   /* expected: retire-counter value after the last submitted frame (written by the submit thread; an aligned 64-bit
+    * load); the counter itself is the CQS word the GPU increments as frames retire */
+   *submitted = __atomic_load_n(&h->expected, __ATOMIC_RELAXED);
+   *retired = *(volatile uint64_t *)h->sync.cpu;
+}
+
 static void *
 hw_meta_alloc_site(struct mali_device *dev, enum mali_bo_site site, size_t size, size_t align, uint64_t *va)
 {
-   struct meta_hdr hdr;
-   if (!dev || mali_bo_alloc_site(mali_device_pdev(dev)->backend, dev->kdev, site, size + META_HDR, MALI_BO_COH, &hdr.bo) != 0)
-      return NULL;
-   struct mali_bo bo = hdr.bo;
-   memcpy(bo.cpu, &hdr, sizeof hdr);
-   *va = bo.gpu_va + META_HDR;
-   return (char *)bo.cpu + META_HDR;
+   return dev ? mali_suballoc_alloc(dev->sub, site, MALI_BO_COH, size, align, va) : NULL;
 }
 
 static void
 hw_meta_free_site(struct mali_device *dev, enum mali_bo_site site, void *cpu)
 {
-   struct meta_hdr hdr;
-   if (!cpu)
-      return;
-   memcpy(&hdr, (char *)cpu - META_HDR, sizeof hdr);
-   mali_bo_free_site(mali_device_pdev(dev)->backend, dev->kdev, site, &hdr.bo);
+   if (dev && cpu)
+      mali_suballoc_free_site(dev->sub, site, cpu);
 }
 
 /* Query pools and events (mali_query.c, mali_event_vk.c). */
