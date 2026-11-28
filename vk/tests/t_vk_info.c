@@ -353,9 +353,10 @@ main(int argc, char **argv)
                      m4i = (unsigned)((const VkBool32 *)&f13.maintenance4 - d), pdi = (unsigned)((const VkBool32 *)&f13.privateData - d),
                      zi = (unsigned)((const VkBool32 *)&f13.shaderZeroInitializeWorkgroupMemory - d),   /* t_vk_feat zinit */
                      dm = (unsigned)((const VkBool32 *)&f13.shaderDemoteToHelperInvocation - d), idp = (unsigned)((const VkBool32 *)&f13.shaderIntegerDotProduct - d),   /* t_vk_feat intdot */
-                     sgc = (unsigned)((const VkBool32 *)&f13.subgroupSizeControl - d), cfs = (unsigned)((const VkBool32 *)&f13.computeFullSubgroups - d), iub = (unsigned)((const VkBool32 *)&f13.inlineUniformBlock - d);   /* t_vk_feat demote */
+                     sgc = (unsigned)((const VkBool32 *)&f13.subgroupSizeControl - d), cfs = (unsigned)((const VkBool32 *)&f13.computeFullSubgroups - d), iub = (unsigned)((const VkBool32 *)&f13.inlineUniformBlock - d),
+                     pcc = (unsigned)((const VkBool32 *)&f13.pipelineCreationCacheControl - d);   /* cache control below */   /* t_vk_feat demote */
       for (unsigned i = 0; i < (sizeof(f13) - 16) / 4; i++)
-         CHECK(!d[i] || i == s2 || i == dr || i == m4i || i == pdi || i == zi || i == dm || i == idp || i == sgc || i == cfs || i == iub, "vk13 feature #%u advertised without a test", i);
+         CHECK(!d[i] || i == s2 || i == dr || i == m4i || i == pdi || i == zi || i == dm || i == idp || i == sgc || i == cfs || i == iub || i == pcc, "vk13 feature #%u advertised without a test", i);
    }
 
    /* ---- queue + format consistency ---- */
@@ -584,6 +585,33 @@ main(int argc, char **argv)
          CHECK(rr == (v ? VK_ERROR_FEATURE_NOT_PRESENT : VK_ERROR_INVALID_SHADER_NV), "early-return variant %d: result %d", v, rr);
          CHECK(pp[0] == VK_NULL_HANDLE && pp[1] == VK_NULL_HANDLE, "early-return variant %d: handles not nulled", v);
       }
+   }
+   /* cache control (VK_EXT_pipeline_creation_cache_control, core 1.3): the feature is required by 1.3; FAIL_ON_PIPELINE_COMPILE_REQUIRED returns
+      VK_PIPELINE_COMPILE_REQUIRED with null handles (flags and maintenance5 flags2 forms, graphics and compute); with EARLY_RETURN the batch stops
+      there, without it the next index is still created (here: garbage SPIR-V, so its own error is reported). */
+   {
+      CHECK(f13.pipelineCreationCacheControl, "pipelineCreationCacheControl (required by Vulkan 1.3)");
+      PFN_vkCreateComputePipelines CCP = (PFN_vkCreateComputePipelines)gdpa(dev, "vkCreateComputePipelines");
+      PFN_vkCreateGraphicsPipelines CGP = (PFN_vkCreateGraphicsPipelines)gdpa(dev, "vkCreateGraphicsPipelines");
+      uint32_t junk[5] = {0xdeadbeef, 0, 0, 0, 0};
+      VkShaderModuleCreateInfo smci = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = sizeof junk, .pCode = junk};
+      VkPipelineCreateFlags2CreateInfoKHR f2 = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO_KHR, .flags = VK_PIPELINE_CREATE_2_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_KHR};
+      for (int v = 0; v < 3; v++) {
+         VkComputePipelineCreateInfo pi[2] = {
+            {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .flags = VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT,
+             .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .pNext = &smci, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .pName = "main"}},
+            {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .pNext = &smci, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .pName = "main"}},
+         };
+         if (v == 1) pi[0].flags |= VK_PIPELINE_CREATE_EARLY_RETURN_ON_FAILURE_BIT;
+         if (v == 2) { pi[0].flags = 0; pi[0].pNext = &f2; pi[1].pNext = NULL; pi[1].flags = 0; }
+         VkPipeline pp[2] = {(VkPipeline)1, (VkPipeline)1};
+         VkResult rr = CCP(dev, VK_NULL_HANDLE, v == 2 ? 1 : 2, pi, NULL, pp);
+         CHECK(rr == (v == 0 ? VK_ERROR_INVALID_SHADER_NV : VK_PIPELINE_COMPILE_REQUIRED), "cache control variant %d: result %d", v, rr);
+         CHECK(pp[0] == VK_NULL_HANDLE && (v == 2 || pp[1] == VK_NULL_HANDLE), "cache control variant %d: handles not nulled", v);
+      }
+      VkGraphicsPipelineCreateInfo gi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .flags = VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT};
+      VkPipeline gp = (VkPipeline)1;
+      CHECK(CGP(dev, VK_NULL_HANDLE, 1, &gi, NULL, &gp) == VK_PIPELINE_COMPILE_REQUIRED && gp == VK_NULL_HANDLE, "graphics FAIL_ON_PIPELINE_COMPILE_REQUIRED");
    }
    /* synchronization2: submit2 + barrier2 + fence, and timeline signal via submit2 */
    {

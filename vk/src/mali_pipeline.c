@@ -112,9 +112,27 @@ static const uint32_t null_fs_spv[] = {
    0x00010038,                                     /* OpFunctionEnd */
 };
 
+/* VK_EXT_pipeline_creation_cache_control (core 1.3, pipelineCreationCacheControl). Every pipeline here is compiled at creation (the shader
+ * cache only shortens the backend compile), so FAIL_ON_PIPELINE_COMPILE_REQUIRED always answers VK_PIPELINE_COMPILE_REQUIRED with a null
+ * handle, before any allocation; the caller then creates it without the bit. EARLY_RETURN_ON_FAILURE treats that code like a failure
+ * (create_batch / the sequential loops stop at the first non-VK_SUCCESS index). The cache's EXTERNALLY_SYNCHRONIZED bit is the runtime's
+ * vk_pipeline_cache (vk_common_CreatePipelineCache). Test: t_vk_info "cache control". */
+static bool
+fail_on_compile(VkPipelineCreateFlags flags, const void *pNext)
+{
+   const VkPipelineCreateFlags2CreateInfoKHR *f2 = vk_find_struct_const(pNext, PIPELINE_CREATE_FLAGS_2_CREATE_INFO_KHR);
+   if (f2)
+      return (f2->flags & VK_PIPELINE_CREATE_2_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_KHR) != 0;
+   return (flags & VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT) != 0;
+}
+
 static VkResult
 create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, const VkAllocationCallbacks *alloc, VkPipeline *out)
 {
+   if (fail_on_compile(ci->flags, ci->pNext)) {
+      *out = VK_NULL_HANDLE;
+      return VK_PIPELINE_COMPILE_REQUIRED;
+   }
    struct mali_physical_device *pdev = mali_device_pdev(dev);
    const unsigned arch = pdev->gpu.arch_major >= 12 ? 13 : pdev->gpu.arch_major == 10 ? 10 : 11;
    struct mali_pipeline *p = vk_object_zalloc(&dev->vk, alloc, sizeof *p, VK_OBJECT_TYPE_PIPELINE);
@@ -619,6 +637,10 @@ create_compute_one(struct mali_device *dev, const VkComputePipelineCreateInfo *c
    const uint32_t *ccode = NULL;
    uint32_t cwords = 0;
 
+   if (fail_on_compile(ci->flags, ci->pNext)) {
+      *out = VK_NULL_HANDLE;
+      return VK_PIPELINE_COMPILE_REQUIRED;
+   }
    if (!stage_spirv(&ci->stage, &ccode, &cwords) || ci->stage.stage != VK_SHADER_STAGE_COMPUTE_BIT)
       return VK_ERROR_FEATURE_NOT_PRESENT;
    /* subgroupSizeControl: we advertise min == max == the hardware warp (16). A different requiredSubgroupSize is a spec
