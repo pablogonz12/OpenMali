@@ -820,6 +820,46 @@ test_msaa_zs_only(VkCommandPool pool)
    }
 }
 
+/* zink's in-pass glClear(STENCIL) (zink_clear.c clear_in_rp -> vkCmdClearAttachments) inside a 4x pass that already holds a draw
+ * (here the stencil LOAD preload). The clear used to be dropped ("degraded"), leaving the previous stencil for the
+ * stencil-then-cover draws that follow. It must append a fixed-function quad that runs multisampled, so the REPLACE reaches
+ * every covered sample; it needs no per-sample shading (no shader output is involved). */
+static void
+test_msaa_zs_clear_in_pass(VkCommandPool pool)
+{
+   DFN(EndCommandBuffer);
+   for (unsigned i = 0; i < 2; i++) {
+      VkCommandBuffer cb;
+      struct vk_command_buffer *vc = new_cmd(pool, &cb);
+      const bool depth = i == 1;
+      VkRenderingAttachmentInfo a = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+         .imageView = (VkImageView)(uintptr_t)(depth ? 9 : 6), .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+         .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+      VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {32, 32}}, .layerCount = 1,
+         .pDepthAttachment = depth ? &a : NULL, .pStencilAttachment = &a};
+      mali_CmdBeginRendering(cb, &ri);
+      struct mali_cmd_buffer *cmd = mali_cmd_buffer_from_vk(vc);
+      struct mali_frame *f = &cmd->cur;
+      const unsigned before = f->ndraws;
+      VkClearAttachment ca = {.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT | (depth ? VK_IMAGE_ASPECT_DEPTH_BIT : 0)};
+      ca.clearValue.depthStencil.depth = 0.25f;
+      ca.clearValue.depthStencil.stencil = 0x5a;
+      VkClearRect cr = {.rect = {{0, 0}, {32, 32}}, .layerCount = 1};
+      mali_CmdClearAttachments(cb, 1, &ca, 1, &cr);
+      CHECK(f->samples == 4 && f->ndraws == before + 1, "4x in-pass ZS clear %u appends a quad (draws %u -> %u)", i, before, f->ndraws);
+      if (f->ndraws == before + 1 && f->draws[before].pipe) {
+         const struct mali_bpipe *d = f->draws[before].pipe;
+         CHECK(d->gfx.samples == 4 && !d->gfx.per_sample, "4x ZS clear %u runs multisampled (samples %u per_sample %d)", i,
+               d->gfx.samples, d->gfx.per_sample);
+         CHECK(d->fx.st_test && d->fx.st_f.cmp == 7 && d->fx.st_f.pass == 2 && d->fx.st_f.ref == 0x5a && d->fx.st_f.wmask == 0xff,
+               "4x ZS clear %u stencil REPLACE 0x5a", i);
+         CHECK(d->gfx.depth_write == depth && (!depth || d->vp[4] == 0.25f), "4x ZS clear %u depth", i);
+      }
+      mali_CmdEndRendering(cb);
+      CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "4x ZS clear %u end", i);
+   }
+}
+
 /* Records one pass with one triangle and checks the load-op outcome at record time (the frame draw list is the command stream's draws). */
 static struct mali_frame *
 ls_pass(VkCommandPool pool, const struct ls_case *c)
@@ -1233,6 +1273,7 @@ int main(int argc, char **argv)
       struct mali_meta_dev seam = {.user = &F, .arch = ARCH, .alloc = hw_alloc, .free = ls_meta_free, .upload_shader = ls_upload};
       mali_meta_set_dev(&seam);
       test_msaa_zs_only(pool);
+      test_msaa_zs_clear_in_pass(pool);
       static const struct ls_case cases[] = {
          {.name = "colour_none", .col = true, .lcol = VK_ATTACHMENT_LOAD_OP_NONE_KHR, .pre = 0},
          {.name = "colour_dont_care", .col = true, .lcol = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .pre = 0},
