@@ -16,6 +16,8 @@
 
 #include <dlfcn.h>
 #include <math.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,7 +27,8 @@
 #define W 64
 #define H 64
 
-static int g_fail, g_fake, g_loop = 1, g_ms4 = 1;   /* g_ms4: 4x colour samples advertised (MALI_EXPERIMENTAL_MSAA gate) */
+static _Atomic int g_fail;
+static int g_fake, g_loop = 1, g_ms4 = 1;   /* g_ms4: 4x colour samples advertised (MALI_EXPERIMENTAL_MSAA gate) */
 static const char *g_only;
 
 
@@ -60,8 +63,8 @@ static const char *g_only;
 
 #define DECL(n) static PFN_vk##n n;
 DEV_FNS(DECL)
-static VkDevice dev;
-static VkQueue queue;
+static _Thread_local VkDevice dev;
+static _Thread_local VkQueue queue;
 static VkPhysicalDeviceMemoryProperties memprops;
 
 __attribute__((unused)) static double
@@ -109,8 +112,8 @@ rmbuf(struct buf *o)
 }
 
 /* ---- cases ---- */
-static VkCommandPool pool;
-static VkFence fence;
+static _Thread_local VkCommandPool pool;
+static _Thread_local VkFence fence;
 
 static VkCommandBuffer
 begin_cb(void)
@@ -196,6 +199,57 @@ rmimg(struct img *o)
 }
 
 #define TRY(x) do { if (!(x)) return 0; } while (0)
+
+/* One command buffer exercises both graphics clears and compute meta jobs. */
+static int
+case_two_device(void)
+{
+   struct buf a = {0}, b = {0};
+   struct img src = {0}, dst = {0};
+   VkImageUsageFlags usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+   TRY(mkbuf(&a, 4096, VK_BUFFER_USAGE_TRANSFER_SRC_BIT));
+   TRY(mkbuf(&b, 4096, VK_BUFFER_USAGE_TRANSFER_DST_BIT));
+   TRY(mkimg(&src, VK_FORMAT_R8G8B8A8_UNORM, 32, 32, usage, VK_SAMPLE_COUNT_1_BIT));
+   TRY(mkimg(&dst, VK_FORMAT_R8G8B8A8_UNORM, 32, 32, usage, VK_SAMPLE_COUNT_1_BIT));
+   VkCommandBuffer cb = begin_cb();
+   CHECK(cb, "cb");
+   layout_tr(cb, src.i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+   layout_tr(cb, dst.i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+   VkClearColorValue colour = {.float32 = {1, 0, 0, 1}};
+   VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+   CmdClearColorImage(cb, src.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &colour, 1, &range);
+   VkBufferCopy copy = {0, 0, 4096};
+   CmdCopyBuffer(cb, a.b, b.b, 1, &copy);
+   layout_tr(cb, src.i, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT);
+   VkImageSubresourceLayers sl = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+   VkImageBlit blit = {.srcSubresource = sl, .srcOffsets = {{0, 0, 0}, {32, 32, 1}},
+                       .dstSubresource = sl, .dstOffsets = {{0, 0, 0}, {16, 16, 1}}};
+   CmdBlitImage(cb, src.i, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst.i,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
+   CHECK(submit_wait(cb), "two-device clear/copy/blit submit");
+   rmimg(&src); rmimg(&dst); rmbuf(&a); rmbuf(&b);
+   return 1;
+}
+
+struct parallel_case { VkDevice device; pthread_barrier_t *barrier; int ok; };
+
+static void *
+parallel_meta(void *arg)
+{
+   struct parallel_case *p = arg;
+   dev = p->device;
+   GetDeviceQueue(dev, 0, 0, &queue);
+   VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+   VkFenceCreateInfo fci = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   int ready = CreateCommandPool(dev, &pci, NULL, &pool) == VK_SUCCESS &&
+               CreateFence(dev, &fci, NULL, &fence) == VK_SUCCESS;
+   pthread_barrier_wait(p->barrier);
+   p->ok = ready && case_two_device();
+   DeviceWaitIdle(dev);
+   if (fence) DestroyFence(dev, fence, NULL);
+   if (pool) DestroyCommandPool(dev, pool, NULL);
+   return NULL;
+}
 
 static void
 report(const char *name, const char *skip)
@@ -1108,10 +1162,14 @@ int
 main(int argc, char **argv)
 {
    const char *icd = NULL;
+   int second_device = 0, second_first = 0, parallel = 0;
    for (int i = 1; i < argc; i++) {
       if (!strcmp(argv[i], "--direct") && i + 1 < argc) icd = argv[++i];
       else if (!strcmp(argv[i], "--loop") && i + 1 < argc) g_loop = atoi(argv[++i]);
       else if (!strcmp(argv[i], "--only") && i + 1 < argc) g_only = argv[++i];
+      else if (!strcmp(argv[i], "--second-device")) second_device = 1;
+      else if (!strcmp(argv[i], "--second-first")) second_first = 1;
+      else if (!strcmp(argv[i], "--parallel-devices")) parallel = second_device = 1;
       else { fprintf(stderr, "usage: t_vk_meta --direct icd.so [--loop N] [--only case]\n"); return 2; }
    }
    if (!icd) { fprintf(stderr, "--direct required\n"); return 2; }
@@ -1154,6 +1212,8 @@ main(int argc, char **argv)
    VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = &prio};
    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi};
    if (CreateDevice(pd, &di, NULL, &dev) != VK_SUCCESS) { printf("{\"fail\":\"CreateDevice\"}\n"); return 1; }
+   VkDevice other = VK_NULL_HANDLE;
+   if (second_device && CreateDevice(pd, &di, NULL, &other) != VK_SUCCESS) { printf("{\"fail\":\"CreateDevice second\"}\n"); return 1; }
 #define LOAD(n) n = (PFN_vk##n)GDPA(dev, "vk" #n); if (!n) { printf("{\"fail\":\"missing vk" #n "\"}\n"); return 1; }
    DEV_FNS(LOAD)
    GetDeviceQueue(dev, 0, 0, &queue);
@@ -1165,6 +1225,22 @@ main(int argc, char **argv)
    }
 
    int ok = 1;
+   if (parallel) {
+      pthread_barrier_t barrier;
+      pthread_t threads[2];
+      struct parallel_case cases[2] = {{dev, &barrier, 0}, {other, &barrier, 0}};
+      pthread_barrier_init(&barrier, NULL, 3);
+      /* Both workers start recording together; each owns its pool and queue. */
+      if (pthread_create(&threads[0], NULL, parallel_meta, &cases[0]) ||
+          pthread_create(&threads[1], NULL, parallel_meta, &cases[1]))
+         return 1;
+      pthread_barrier_wait(&barrier);
+      pthread_join(threads[0], NULL);
+      pthread_join(threads[1], NULL);
+      pthread_barrier_destroy(&barrier);
+      ok = cases[0].ok && cases[1].ok;
+   }
+   if (!parallel && g_only && CASE_ON("two_device")) ok &= case_two_device();
    if (CASE_ON("buf")) ok &= case_buf();
    if (ok && CASE_ON("fill")) ok &= case_fill();
    if (ok && CASE_ON("img")) ok &= case_img(0);
@@ -1195,7 +1271,9 @@ main(int argc, char **argv)
    DeviceWaitIdle(dev);
    DestroyFence(dev, fence, NULL);
    DestroyCommandPool(dev, pool, NULL);
+   if (other && second_first) DestroyDevice(other, NULL);
    DestroyDevice(dev, NULL);
+   if (other && !second_first) DestroyDevice(other, NULL);
    DestroyInstance(inst, NULL);
    dlclose(lib);
    printf("{\"pass\":%s}\n", (ok && !g_fail) ? "true" : "false");
