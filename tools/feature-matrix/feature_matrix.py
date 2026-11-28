@@ -915,7 +915,10 @@ def cmd_check(a):
             return 1
     lost = []
     lost += ["extension %s" % e for e in base["extensions"] if e not in now["extensions"] and e not in a.ignore]
-    lost += ["feature %s" % f for f, v in base["features"].items() if v and not now["features"].get(f)]
+    # A feature the probe does not report at all comes from a vulkaninfo too old to know its struct (CI's distro
+    # vulkan-tools); the owning extension and apiVersion are still checked. Reported as false is a regression.
+    unreported = [f for f, v in base["features"].items() if v and f not in now["features"]]
+    lost += ["feature %s" % f for f, v in base["features"].items() if v and f in now["features"] and not now["features"][f]]
     for fm, bits in base["formats"].items():
         for b in bits:
             if b not in now["formats"].get(fm, []):
@@ -933,6 +936,8 @@ def cmd_check(a):
     msg = "feature-matrix %s: all %d extensions, %d feature bits, %d format bits still advertised" % (
         a.gpu, len(base["extensions"]), sum(1 for v in base["features"].values() if v),
         sum(len(v) for v in base["formats"].values()))
+    if unreported:
+        msg += "; %d feature bit(s) not reported by this vulkaninfo, not checked: %s" % (len(unreported), ", ".join(unreported[:8]))
     if gained:
         msg += "; %d new item(s) not yet in the matrix (re-capture): %s" % (len(gained), ", ".join(gained[:8]))
     print(msg)

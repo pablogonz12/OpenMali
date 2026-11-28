@@ -53,7 +53,9 @@ format feature bit of `data/ours-v11.json` that the fresh capture lacks; new ite
 capability is removed on purpose, re-capture (`ours`) and re-run `gen` in the same commit.
 `vk/check.sh` requires `vulkaninfo` and runs this comparison for all three fake GPUs using the selected build.
 Probe failures, incomplete data and the wrong device fail the gate; unknown or unsupported capabilities are not
-requirements. Limits are not regression-gated. The check also runs synthetic negative-case self-tests.
+requirements. A feature bit the probe does not report at all (a `vulkaninfo` older than the struct, e.g. a
+distro `vulkan-tools` in CI) is listed as not checked instead of failing; its extension and the API version still are.
+Limits are not regression-gated. The check also runs synthetic negative-case self-tests.
 
 ## Limits of the extraction (read before trusting a cell)
 

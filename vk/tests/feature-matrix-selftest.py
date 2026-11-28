@@ -56,6 +56,8 @@ with tempfile.TemporaryDirectory() as tmp:
     check(0, "still advertised")  # a driver version change is not an identity change
     probe["capabilities"]["device"]["features"]["features"]["present"] = False
     check(1, "feature present")
+    del probe["capabilities"]["device"]["features"]["features"]["present"]
+    check(0, "not reported by this vulkaninfo")  # an older vulkaninfo that lacks the struct is not a regression
     probe["capabilities"]["device"]["features"]["features"]["present"] = True
     probe["capabilities"]["device"]["extensions"]["VK_EXT_new"] = 1
     del probe["capabilities"]["device"]["extensions"]["VK_EXT_present"]
