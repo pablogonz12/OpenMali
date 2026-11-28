@@ -5,6 +5,7 @@
 #include "mali_entrypoints.h"
 #include "mali_image.h"
 #include "mali_queue.h"
+#include "mali_suballoc.h"
 
 #include <string.h>
 
@@ -14,11 +15,11 @@
 _Static_assert(sizeof(struct mali_bo) <= POOL_HDR, "mali_bo header");
 
 static void *
-pool_alloc(struct vk_device *vkdev, size_t size, uint64_t *va)
+pool_alloc_site(struct vk_device *vkdev, enum mali_bo_site site, size_t size, uint64_t *va)
 {
    struct mali_device *dev = container_of(vkdev, struct mali_device, vk);
    struct mali_bo bo;
-   if (mali_device_pdev(dev)->backend->bo_alloc(dev->kdev, size + POOL_HDR, 0, &bo) != 0)
+   if (mali_bo_alloc_site(mali_device_pdev(dev)->backend, dev->kdev, site, size + POOL_HDR, 0, &bo) != 0)
       return NULL;
    memcpy(bo.cpu, &bo, sizeof bo);
    *va = bo.gpu_va + POOL_HDR;
@@ -26,22 +27,29 @@ pool_alloc(struct vk_device *vkdev, size_t size, uint64_t *va)
 }
 
 static void
-pool_free(struct vk_device *vkdev, void *cpu, size_t size)
+pool_free_site(struct vk_device *vkdev, enum mali_bo_site site, void *cpu)
 {
    struct mali_device *dev = container_of(vkdev, struct mali_device, vk);
    struct mali_bo bo;
    memcpy(&bo, (char *)cpu - POOL_HDR, sizeof bo);
-   mali_device_pdev(dev)->backend->bo_free(dev->kdev, &bo);
+   mali_bo_free_site(mali_device_pdev(dev)->backend, dev->kdev, site, &bo);
 }
 
+/* Descriptor pools and image-view payloads are separate sites (MALI_BO_STATS). */
+static void *pool_alloc(struct vk_device *d, size_t size, uint64_t *va) { return pool_alloc_site(d, MALI_SITE_DPOOL, size, va); }
+static void pool_free(struct vk_device *d, void *cpu, size_t size) { pool_free_site(d, MALI_SITE_DPOOL, cpu); }
+static void *view_alloc(struct vk_device *d, size_t size, uint64_t *va) { return pool_alloc_site(d, MALI_SITE_VIEW, size, va); }
+static void view_free(struct vk_device *d, void *cpu, size_t size) { pool_free_site(d, MALI_SITE_VIEW, cpu); }
+
 static const struct mali_desc_mem_ops pool_ops = { pool_alloc, pool_free };
+static const struct mali_desc_mem_ops view_ops = { view_alloc, view_free };
 
 void
 mali_resources_init(void)
 {
    mali_desc_set_res_ops(&mali_res_ops);
    mali_desc_set_mem_ops(&pool_ops);
-   mali_image_set_mem_ops(&pool_ops);
+   mali_image_set_mem_ops(&view_ops);
 }
 
 static unsigned

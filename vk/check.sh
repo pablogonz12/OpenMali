@@ -205,6 +205,10 @@ done
 
 # M5/M7: buffers, images, views, samplers, memory binding, descriptor sets, updates, templates (white-box, static link).
 for g in v11 v13; do run "resources $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_resources"; done
+# BO counters by allocation site (MALI_BO_STATS) on a known sequence and in steady state (copies + image-view cycles).
+for g in v11 v13; do
+   run "bo_stats $g suballoc=0" 0 MALI_BO_SUBALLOC=0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_bo_stats"
+done
 
 # M9: client draws through the ICD (fake backend: API sequence, compile, CS build and submit; pixels only on hardware).
 run "two-device draw submits on A" 0 python3 "$V/tests/check_two_device_submit.py" "$OUT/t_vk_draw" "$OUT/libvulkan_mali.so" "$V/shader"

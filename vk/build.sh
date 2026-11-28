@@ -72,7 +72,7 @@ SRCS="$V/src/mali_instance.c $V/src/mali_physical_device.c $V/src/mali_device.c
       $V/src/mali_descriptor.c $V/src/mali_descriptor_lower.c $V/src/mali_pipeline_layout.c
       $V/src/mali_compile.c $V/src/mali_gs.c $V/src/mali_resources.c
       $V/src/mali_wsi.c $V/src/mali_meta.c $V/src/mali_bc.c $V/src/mali_meta_vk.c $V/src/mali_query.c $V/src/mali_query_core.c
-      $V/src/mali_event.c $V/src/mali_event_vk.c $V/src/mali_cmd.c $V/src/mali_render.c $V/src/mali_cs_emit.c $V/src/mali_blend.c $V/src/mali_pipeline.c $V/src/mali_maint5.c $V/src/mali_vb3.c $V/src/mali_soft.c $V/src/mali_dmabuf.c $GEN/mali_entrypoints.c"
+      $V/src/mali_event.c $V/src/mali_event_vk.c $V/src/mali_cmd.c $V/src/mali_render.c $V/src/mali_cs_emit.c $V/src/mali_blend.c $V/src/mali_pipeline.c $V/src/mali_maint5.c $V/src/mali_vb3.c $V/src/mali_soft.c $V/src/mali_dmabuf.c $V/src/mali_suballoc.c $GEN/mali_entrypoints.c"
 # libkbase (own, MIT, libc only) is compiled in with the same flags as the rest, warnings not fatal.
 KB=$D/libkbase
 KBSRCS="$KB/src/ctx.c $KB/src/bo.c $KB/src/queue.c $KB/src/sync.c $KB/src/heap.c
@@ -147,6 +147,12 @@ eval "$CC -I$GEN -I$V/src -I$KB/include -Wno-unused-parameter -Wno-unused-functi
 # shellcheck disable=SC2086
 $CXX -o "$OUT/t_resources" $OBJ/t_resources.o $OBJS \
    -Wl,--wrap=memset -Wl,--whole-archive -Wl,--start-group $WHOLE -Wl,--no-whole-archive $LIBS $LDSYS ${MALI_EXTRA_LD:-} -Wl,--end-group
+
+# 4b'. t_bo_stats: BO counters by site and the suballocator's steady state (white-box like t_resources: mali_bo_stats_get).
+eval "$CC -I$GEN -I$V/src -I$KB/include -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable -o $OBJ/t_bo_stats.o -c $V/tests/t_bo_stats.c"
+# shellcheck disable=SC2086
+$CXX -o "$OUT/t_bo_stats" $OBJ/t_bo_stats.o $OBJS \
+   -Wl,--whole-archive -Wl,--start-group $WHOLE -Wl,--no-whole-archive $LIBS $LDSYS ${MALI_EXTRA_LD:-} -Wl,--end-group
 
 # 4c. shaderdb: offline compile statistics over a SPIR-V corpus (tools/shaderdb/run.sh).
 eval "$CC -I$GEN -I$V/src -I$KB/include -Wno-unused-parameter -o $OBJ/shaderdb.o -c $D/tools/shaderdb/shaderdb.c"

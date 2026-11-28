@@ -613,14 +613,49 @@ fake_gpu_timestamp(struct mali_kdev *k, uint64_t *ticks)
    return 0;
 }
 
+/* BO statistics (mali_suballoc.c, MALI_BO_STATS): weak, so the standalone backend tests link without it. */
+__attribute__((weak)) void mali_bo_stats_note(bool alloc, size_t size, uint64_t ns);
+static uint64_t
+fake_now_ns(void)
+{
+   struct timespec t;
+   clock_gettime(CLOCK_MONOTONIC, &t);
+   return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec;
+}
+
+static int
+fake_bo_alloc_timed(struct mali_kdev *k, size_t size, uint32_t flags, struct mali_bo *out)
+{
+   if (!mali_bo_stats_note)
+      return fake_bo_alloc(k, size, flags, out);
+   uint64_t t0 = fake_now_ns();
+   int r = fake_bo_alloc(k, size, flags, out);
+   if (r == 0)
+      mali_bo_stats_note(true, out->size, fake_now_ns() - t0);
+   return r;
+}
+
+static void
+fake_bo_free_timed(struct mali_kdev *k, struct mali_bo *bo)
+{
+   if (!mali_bo_stats_note) {
+      fake_bo_free(k, bo);
+      return;
+   }
+   size_t size = bo->size;
+   uint64_t t0 = fake_now_ns();
+   fake_bo_free(k, bo);
+   mali_bo_stats_note(false, size, fake_now_ns() - t0);
+}
+
 const struct mali_backend_ops mali_backend_fake = {
    .name = "fake",
    .probe = fake_probe,
    .device_create = fake_device_create,
    .device_destroy = fake_device_destroy,
-   .bo_alloc = fake_bo_alloc,
+   .bo_alloc = fake_bo_alloc_timed,
    .bo_import = fake_bo_import,
-   .bo_free = fake_bo_free,
+   .bo_free = fake_bo_free_timed,
    .bo_cache = fake_bo_cache,
    .bo_export = fake_bo_export,
    .va_cpu = fake_va_cpu,

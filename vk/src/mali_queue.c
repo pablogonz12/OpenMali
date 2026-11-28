@@ -21,6 +21,7 @@ static double prof_acc[6]; static unsigned prof_n;
 #include "mali_event.h"
 #include "mali_meta.h"
 #include "mali_soft.h"
+#include "mali_suballoc.h"
 #include "vk_command_buffer.h"
 
 /* ---- M9: frame resources ---- */
@@ -106,11 +107,11 @@ struct meta_hdr {
 _Static_assert(sizeof(struct meta_hdr) <= META_HDR, "meta header");
 
 /* Allocate and free through the device the caller names. */
-void *
-mali_hw_meta_alloc(struct mali_device *dev, size_t size, size_t align, uint64_t *va)
+static void *
+hw_meta_alloc_site(struct mali_device *dev, enum mali_bo_site site, size_t size, size_t align, uint64_t *va)
 {
    struct meta_hdr hdr;
-   if (!dev || mali_device_pdev(dev)->backend->bo_alloc(dev->kdev, size + META_HDR, MALI_BO_COH, &hdr.bo) != 0)
+   if (!dev || mali_bo_alloc_site(mali_device_pdev(dev)->backend, dev->kdev, site, size + META_HDR, MALI_BO_COH, &hdr.bo) != 0)
       return NULL;
    struct mali_bo bo = hdr.bo;
    memcpy(bo.cpu, &hdr, sizeof hdr);
@@ -118,28 +119,42 @@ mali_hw_meta_alloc(struct mali_device *dev, size_t size, size_t align, uint64_t 
    return (char *)bo.cpu + META_HDR;
 }
 
-void
-mali_hw_meta_free(struct mali_device *dev, void *cpu)
+static void
+hw_meta_free_site(struct mali_device *dev, enum mali_bo_site site, void *cpu)
 {
    struct meta_hdr hdr;
    if (!cpu)
       return;
    memcpy(&hdr, (char *)cpu - META_HDR, sizeof hdr);
-   mali_device_pdev(dev)->backend->bo_free(dev->kdev, &hdr.bo);
+   mali_bo_free_site(mali_device_pdev(dev)->backend, dev->kdev, site, &hdr.bo);
 }
 
+/* Query pools and events (mali_query.c, mali_event_vk.c). */
+void *
+mali_hw_meta_alloc(struct mali_device *dev, size_t size, size_t align, uint64_t *va)
+{
+   return hw_meta_alloc_site(dev, MALI_SITE_QEV, size, align, va);
+}
+
+void
+mali_hw_meta_free(struct mali_device *dev, void *cpu)
+{
+   hw_meta_free_site(dev, MALI_SITE_QEV, cpu);
+}
+
+/* mali_meta.c's device seam: per-command-buffer meta memory. */
 static void *
 meta_alloc(void *u, size_t size, size_t align, uint64_t *va)
 {
    struct mali_hwctx *h = u;
-   return mali_hw_meta_alloc(h->dev, size, align, va);
+   return hw_meta_alloc_site(h->dev, MALI_SITE_META, size, align, va);
 }
 
 static void
 meta_free(void *u, void *cpu, uint64_t va, size_t size)
 {
    struct mali_hwctx *h = u;
-   mali_hw_meta_free(h->dev, cpu);
+   hw_meta_free_site(h->dev, MALI_SITE_META, cpu);
 }
 
 static int

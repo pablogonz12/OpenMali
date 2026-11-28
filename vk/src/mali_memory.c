@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 #include "mali_dmabuf.h"
+#include "mali_suballoc.h"
 #include "mali_entrypoints.h"
 #include "util/u_atomic.h"
 #include "vk_alloc.h"
@@ -162,13 +163,15 @@ mali_AllocateMemory(VkDevice _device, const VkMemoryAllocateInfo *pAllocateInfo,
          r = (sz > 0 && (uint64_t)sz < pAllocateInfo->allocationSize) ? -EINVAL : 0;
          if (r == 0)
             r = be->bo_import(dev->kdev, imp->fd, pAllocateInfo->allocationSize, flags, &mem->bo);
-         if (r == 0)
+         if (r == 0) {
             close(imp->fd); /* ownership moves to the memory on success */
+            mali_bo_stats_note_site(MALI_SITE_USER, true, mem->bo.size, 0);   /* freed through bo_free like an allocation */
+         }
       }
    } else {
       const bool export = mem->vk.export_handle_types != 0;
-      r = be->bo_alloc(dev->kdev, pAllocateInfo->allocationSize,
-                       flags | (export ? MALI_BO_EXPORT : MALI_BO_HOSTLAZY), &mem->bo);
+      r = mali_bo_alloc_site(be, dev->kdev, MALI_SITE_USER, pAllocateInfo->allocationSize,
+                             flags | (export ? MALI_BO_EXPORT : MALI_BO_HOSTLAZY), &mem->bo);
    }
    if (r != 0) {
       vk_device_memory_destroy(&dev->vk, pAllocator, &mem->vk);
@@ -190,7 +193,7 @@ mali_FreeMemory(VkDevice _device, VkDeviceMemory _mem, const VkAllocationCallbac
 
    if (!mem)
       return;
-   mali_device_pdev(dev)->backend->bo_free(dev->kdev, &mem->bo);
+   mali_bo_free_site(mali_device_pdev(dev)->backend, dev->kdev, MALI_SITE_USER, &mem->bo);
    /* A BO the kbase pool kept is still committed (kbase_bo_free only moves it to the free list), so its charge stays
     * until the pool really frees it or hands it to the next allocation; that is the pool's release callback. */
    if (!mem->bo.pooled)
