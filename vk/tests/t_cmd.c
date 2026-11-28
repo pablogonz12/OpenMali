@@ -979,7 +979,7 @@ int main(int argc, char **argv)
    md->vk.command_buffer_ops = &mali_cmd_ops;   /* M8 wiring item #1 */
 
    struct mali_hw hw = make_hw();
-   mali_cmd_set_hw(&hw);
+   *mali_device_hw(md) = hw;
    mali_cmd_set_res(&k_res);
 
    DFN(CreateCommandPool);

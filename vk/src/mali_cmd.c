@@ -29,8 +29,6 @@
 #include "vk_format.h"
 
 static struct mali_cmd_res_ops g_res;
-static struct mali_hw g_hw;
-static bool g_hw_set;
 
 void
 mali_cmd_set_res(const struct mali_cmd_res_ops *ops)
@@ -39,14 +37,6 @@ mali_cmd_set_res(const struct mali_cmd_res_ops *ops)
       g_res = *ops;
    else
       memset(&g_res, 0, sizeof g_res);
-}
-
-void
-mali_cmd_set_hw(const struct mali_hw *hw)
-{
-   g_hw_set = hw != NULL;
-   if (hw)
-      g_hw = *hw;
 }
 
 #define CMD(h) struct mali_cmd_buffer *cmd = mali_cmd_buffer_from_vk(vk_command_buffer_from_handle(h))
@@ -801,7 +791,8 @@ record_indirect(VkCommandBuffer h, bool indexed, VkBuffer b, VkDeviceSize off, V
    const char *ind_cpu_env = getenv("MALI_IND_CPU");
    const bool force_cpu = ind_cpu_env && *ind_cpu_env && strcmp(ind_cpu_env, "0") != 0;
    const bool cpu_drain = force_cpu && !strcmp(ind_cpu_env, "drain");
-   const bool cpu_args = cb || g_hw.soft || cmd->tf.active || cmd->gfx.poly_mode || dyn_poly || n > MALI_IND_UNROLL_MAX || force_cpu;
+   const struct mali_hw *hw = mali_device_hw(container_of(cmd->vk.base.device, struct mali_device, vk));
+   const bool cpu_args = cb || (hw && hw->soft) || cmd->tf.active || cmd->gfx.poly_mode || dyn_poly || n > MALI_IND_UNROLL_MAX || force_cpu;
    const uint8_t *p = NULL;
    const uint32_t *cp = NULL;
    uint64_t va = 0;
@@ -1822,8 +1813,10 @@ VkResult
 mali_cmd_submit(struct vk_command_buffer *vk)
 {
    struct mali_cmd_buffer *cmd = mali_cmd_buffer_from_vk(vk);
-   if (!g_hw_set)
+   const struct mali_hw *hw = mali_device_hw(container_of(vk->base.device, struct mali_device, vk));
+   if (!hw)
       return VK_ERROR_FEATURE_NOT_PRESENT;
+   const struct mali_hw g_hw = *hw;
    uint64_t *all = NULL;
    unsigned nall = 0, capall = 0, counted = 0;
    VkResult res = VK_SUCCESS;

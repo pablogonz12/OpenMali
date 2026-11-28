@@ -60,7 +60,6 @@ struct mali_cmd_res_ops {
    struct mali_memory *(*image_view_mem)(VkImageView v);
 };
 void mali_cmd_set_res(const struct mali_cmd_res_ops *ops);
-void mali_cmd_set_hw(const struct mali_hw *hw);   /* copied; NULL clears. Without it submit returns VK_ERROR_FEATURE_NOT_PRESENT */
 
 struct mali_cmd_buffer {
    struct vk_command_buffer vk;

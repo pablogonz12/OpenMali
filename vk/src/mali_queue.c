@@ -64,21 +64,24 @@ struct mali_hwctx {
  * (that made vkCreateEvent/meta allocations of the surviving device fail with VK_ERROR_OUT_OF_DEVICE_MEMORY). */
 static pthread_mutex_t g_bind_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct mali_hwctx *g_cur;
+static pthread_once_t g_res_once = PTHREAD_ONCE_INIT;
+
+static void
+init_cmd_res(void)
+{
+   mali_cmd_set_res(&mali_cmd_res);
+}
 
 static void
 bind_hw(struct mali_hwctx *h)
 {
    if (h) {
-      mali_cmd_set_hw(&h->hw);
-      mali_cmd_set_res(&mali_cmd_res);
       mali_meta_set_dev(&h->md);
       /* Not on the fake backend: the goldens dump its whole BO table, and the compile BOs a background prewarm allocates would land in it
          at a thread-timing-dependent index. The fake device has no first-use hitch to hide. */
       if (mali_device_pdev(h->dev)->backend != &mali_backend_fake)
          mali_meta_prewarm();
    } else {
-      mali_cmd_set_hw(NULL);
-      mali_cmd_set_res(NULL);
       mali_meta_set_dev(NULL);
    }
 }
@@ -91,6 +94,12 @@ hw_bo_wrote(void *user, struct mali_bo *bo)
    const struct mali_backend_ops *be = mali_device_pdev(h->dev)->backend;
    if (be->bo_wrote)
       be->bo_wrote(h->dev->kdev, bo);
+}
+
+struct mali_hw *
+mali_device_hw(struct mali_device *dev)
+{
+   return dev && dev->hw ? &dev->hw->hw : NULL;
 }
 
 /* ---- M12/M13 device seam of mali_meta.c: long-lived zeroed memory (one uncached BO each, 64 B header keeps the struct mali_bo) and
@@ -522,6 +531,7 @@ mali_hw_init(struct mali_device *dev)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
    h->dev = dev;
    dev->hw = h;
+   pthread_once(&g_res_once, init_cmd_res);
    mali_fprof_init(&h->fp, dev);
    const char *t = getenv("MALI_FRAME_TIMEOUT_MS");
    h->wait_ms = t ? (unsigned)strtoul(t, NULL, 0) : 10000;
