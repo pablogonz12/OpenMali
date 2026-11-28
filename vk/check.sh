@@ -40,7 +40,9 @@ export MALI_DIRTY_CHECK=1   # trap: build_draw_descs aborts when the record-time
 # 2026-11-22 robustness2: the list grew 47 -> 49 because robustness2.robustBufferAccess2/nullDescriptor are DXVK 3.1.1
 # requirements (DXVK-GAP.md:11) that t_dxvk_caps never counted; robustBufferAccess2 is advertised now (vk_feat robust2,
 # X4 6/6), so the honest count is 3/49 where main's 47-row list read 3.
-DXVK_MISSING=3
+# 2026-11-28 descriptorIndexing: the vk.xml minimum set is advertised (t_desc descidx, vk_feat didxuab, vk_info) -> 2/49
+# (geometryShader, shaderCullDistance).
+DXVK_MISSING=2
 DXVK_MISSING_MSAA=$DXVK_MISSING
 LOADER_ENV="VK_DRIVER_FILES=$OUT/mali_icd.json VK_ICD_FILENAMES=$OUT/mali_icd.json VK_LOADER_LAYERS_DISABLE=~all~"
 
@@ -164,6 +166,8 @@ for g in v11 v13; do run "vk_feat tf_write $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU
 # element past its descriptor. --robust2 enables the feature at device creation, so the pipeline carries the bounds-checked
 # size loads (get_ssbo_size/get_ubo_size -> descriptor dw1 via resource table 62); on the phone the loads must read 0,
 # the OOB store/atomic are discarded, and the null descriptor reads 0.
+# descriptorIndexing (explicit only, keeps the vk_feat goldens): UAB storage/texel arrays written after the bind, partially bound
+for g in v11 v13; do run "vk_feat didxuab $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only didxuab; done
 for g in v10 v11 v13; do run "vk_feat robust2 $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only robust2 --robust2; done
 for g in v11 v13; do run "vk_feat tf_reject $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only tf_reject; done
 # tf_inactive is the guard that makes default-on safe: an XFB program drawn outside Begin/End runs the pipeline's second,
