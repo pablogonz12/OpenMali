@@ -88,12 +88,15 @@ int main(void)
    b->bo_free(k, &x);
    EXPECT(kb_fake_mem_free_count() == f0 + 1, "BO larger than the pool is never kept");
 
-   /* sync state of a reused BO */
-   if (b->bo_alloc(k, 65536, MALI_BO_HOSTLAZY, &x)) return 1;
+   /* sync state of a reused BO. With the default MALI_SYNC_WC a write-combined BO is never MEM_SYNCed (a kbase no-op),
+    * so the counted BO is CPU-cached there; MALI_SYNC_LISTS=0 keeps the original write-combined one. */
+   const char *le = getenv("MALI_SYNC_LISTS"), *we = getenv("MALI_SYNC_WC");
+   const uint32_t C = (!le || le[0] != '0') && (!we || we[0] != '0') ? MALI_BO_CACHED : 0;
+   if (b->bo_alloc(k, 65536, MALI_BO_HOSTLAZY | C, &x)) return 1;
    b->bo_host_touch(k, &x);
    va = x.gpu_va;
    b->bo_free(k, &x);
-   if (b->bo_alloc(k, 65536, MALI_BO_HOSTLAZY, &y)) return 1;
+   if (b->bo_alloc(k, 65536, MALI_BO_HOSTLAZY | C, &y)) return 1;
    EXPECT(y.gpu_va == va, "reused the touched BO");
    uint64_t cs[8] = {0};
    unsigned s0 = kb_fake_memsync_count(va);

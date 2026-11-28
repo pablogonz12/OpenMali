@@ -313,6 +313,19 @@ hw_drain(void *u)
    hw_retire(h, 0);
 }
 
+/* MALI_SYNC_SUBMIT (diagnostic: one frame in flight): read once, not at every frame. */
+static bool
+sync_submit_env(void)
+{
+   static int v = -1;
+   int r = __atomic_load_n(&v, __ATOMIC_RELAXED);
+   if (r < 0) {
+      r = getenv("MALI_SYNC_SUBMIT") != NULL;
+      __atomic_store_n(&v, r, __ATOMIC_RELAXED);
+   }
+   return r;
+}
+
 static void
 hw_job_begin(void *u)
 {
@@ -320,7 +333,7 @@ hw_job_begin(void *u)
    hw_retire(h, MALI_MAX_INFLIGHT - 1);
    kb_arena_begin(&h->ar);
    h->cur_start = h->ar.start;
-   if (h->nfl && !getenv("MALI_SYNC_SUBMIT")) {
+   if (h->nfl && !sync_submit_env()) {
       /* the new frame must stay clear of the oldest in-flight frame's arena range */
       size_t so = h->fl[0].start;
       if (so > h->ar.start)
@@ -423,7 +436,7 @@ hw_submit_multi(void *u, const uint64_t *cs, unsigned n, unsigned nframes)
       if (!h->ovf[i].tag)
          h->ovf[i].tag = h->expected;
    h->ovf_last = 0;   /* the next frame's overflow sequence starts small again (and finds its BOs in the pool) */
-   if (!getenv("MALI_SYNC_SUBMIT")) {
+   if (!sync_submit_env()) {
       /* The list is bounded (MALI_MAX_INFLIGHT) and hw_job_begin only guarantees nfl <= MAX-1 when it runs, which is not
        * enough: ONE command buffer can submit several times (an indirect or CPU-polygon frame flushes the frames
        * accumulated before it, mali_cmd_submit), and a drain whose wait fails leaves the entries in place, so the next
