@@ -783,9 +783,14 @@ rect_push(struct push *p, const float r[4], uint32_t w, uint32_t h)
    p->rect[2] = 2.0f * r[2] / w - 1; p->rect[3] = 2.0f * r[3] / h - 1;
 }
 
-enum { MS_PATTERN, MS_PATTERN_CMD, MS_EDGE, MS_EDGE_CMD, MS_LOAD, MS_STENCIL, MS_AREA, MS_DISCARD, MS_NMODES };
+/* MS_ICON_SLOAD: the Chromium icon pass (ANGLE-Vulkan, zink with its threaded context): colour CLEAR/DONT_CARE + in-pass Average
+ * resolve, 4x S8 stencilLoadOp LOAD of what the previous pass stored, stencil-then-cover; run twice after a stencil-clearing pass.
+ * MS_ICON_SCLEAR: the zink shape without the threaded context: the stencil is first dirtied by a draw, then cleared inside the pass
+ * (vkCmdClearAttachments, zink clear_in_rp), stencil-then-cover, colour STORE and a separate vkCmdResolveImage. */
+enum { MS_PATTERN, MS_PATTERN_CMD, MS_EDGE, MS_EDGE_CMD, MS_LOAD, MS_STENCIL, MS_AREA, MS_DISCARD, MS_ICON_SLOAD, MS_ICON_SCLEAR, MS_NMODES };
 static const char *const ms_names[] = { "pattern-resolve", "pattern-cmdresolve", "edge-resolve", "edge-cmdresolve", "load-resolve",
-                                        "stencil-cover", "subarea-resolve", "pattern-resolve-discard" };
+                                        "stencil-cover", "subarea-resolve", "pattern-resolve-discard",
+                                        "icon-sload", "icon-sclear" };
 
 static void
 t_msaa(void)
@@ -813,12 +818,13 @@ t_msaa(void)
       VkPipeline p_cv = sfmt ? make_pipe_s(m_vs, m_gen, f->f, false, S4, 2, sfmt) : VK_NULL_HANDLE;
       for (unsigned s = 0; s < sizeof sz / sizeof sz[0]; s++)
          for (int mode = 0; mode < MS_NMODES; mode++) {
-            if (mode == MS_STENCIL && !sfmt) continue;
+            const bool stm = mode == MS_STENCIL || mode == MS_ICON_SLOAD || mode == MS_ICON_SCLEAR;
+            if (stm && !sfmt) continue;
             const uint32_t w = sz[s][0], h = sz[s][1];
             struct img ms = make_img_s(f->f, w, h, 1, S4, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
             struct img one = make_img(f->f, w, h, 1, true), st = { 0 };
             const VkImageAspectFlags saspect = sfmt == VK_FORMAT_S8_UINT ? VK_IMAGE_ASPECT_STENCIL_BIT : VK_IMAGE_ASPECT_STENCIL_BIT | VK_IMAGE_ASPECT_DEPTH_BIT;
-            if (mode == MS_STENCIL)
+            if (stm)
                st = make_img_s(sfmt, w, h, 1, S4, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, saspect);
             uint8_t *m = model_new(f, w, h, 77);
             begin();
@@ -833,13 +839,13 @@ t_msaa(void)
                   .subresourceRange = { saspect, 0, 1, 0, 1 } };
                CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, 1, &b);
             }
-            const bool cmdres = mode == MS_PATTERN_CMD || mode == MS_EDGE_CMD;
+            const bool cmdres = mode == MS_PATTERN_CMD || mode == MS_EDGE_CMD || mode == MS_ICON_SCLEAR;
             VkRect2D area = { { 0, 0 }, { w, h } };
             if (mode == MS_AREA) area = (VkRect2D){ { (int)(w / 4) + 1, (int)(h / 4) + 1 }, { (w + 1) / 2, (h + 1) / 2 } };
             VkRenderingAttachmentInfo att = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = ms.v,
                .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
                /* STORE + resolve: separate resolve pass after the frame; DONT_CARE + resolve: tile-buffer average writeback */
-               .storeOp = mode == MS_DISCARD ? VK_ATTACHMENT_STORE_OP_DONT_CARE : VK_ATTACHMENT_STORE_OP_STORE };
+               .storeOp = mode == MS_DISCARD || mode == MS_ICON_SLOAD ? VK_ATTACHMENT_STORE_OP_DONT_CARE : VK_ATTACHMENT_STORE_OP_STORE };
             if (!cmdres) {
                att.resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
                att.resolveImageView = one.v;
@@ -847,17 +853,38 @@ t_msaa(void)
             }
             VkRenderingAttachmentInfo satt = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = st.v,
                .imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-               .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE };
+               .storeOp = mode == MS_STENCIL ? VK_ATTACHMENT_STORE_OP_DONT_CARE : VK_ATTACHMENT_STORE_OP_STORE };
             VkRenderingInfo ri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = area, .layerCount = 1,
                                    .colorAttachmentCount = 1, .pColorAttachments = &att, .pStencilAttachment = st.i ? &satt : NULL,
                                    .pDepthAttachment = st.i && sfmt != VK_FORMAT_S8_UINT ? &satt : NULL };
             VkViewport vp = { 0, 0, (float)w, (float)h, 0, 1 };
-            CmdBeginRendering(cb, &ri);
-            CmdSetViewport(cb, 0, 1, &vp);
-            CmdSetScissor(cb, 0, 1, &area);
+            if (mode == MS_ICON_SLOAD || mode == MS_ICON_SCLEAR) {
+               /* an earlier pass leaves junk in the stencil: INVERT over the whole attachment (0xff everywhere) */
+               CmdBeginRendering(cb, &ri);
+               CmdSetViewport(cb, 0, 1, &vp);
+               CmdSetScissor(cb, 0, 1, &area);
+               draw(p_st, (struct push){ .a = { 255, 1, 127, 0 }, .rect = { -1, -1, 1, 1 } });
+               CmdEndRendering(cb);
+               barrier_all();
+               satt.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+               if (mode == MS_ICON_SLOAD) {
+                  /* the stencil-clearing pass Skia's atlas starts with, then the icon passes LOAD what it stored */
+                  satt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+                  CmdBeginRendering(cb, &ri);
+                  CmdEndRendering(cb);
+                  barrier_all();
+                  satt.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+               }
+            }
             /* outer / inner rectangles on half pixels: the "disc with a knocked-out letter" of a footer glyph */
             const float outer[4] = { (float)(w / 8) + .5f, (float)(h / 8) + .5f, (float)(w - w / 8) - .5f, (float)(h - h / 8) - .5f };
             const float inner[4] = { (float)(w / 3) + .5f, (float)(h / 3), (float)(w - w / 3), (float)(h - h / 3) - .5f };
+            const unsigned npass = mode == MS_ICON_SLOAD ? 2 : 1;
+            for (unsigned pass = 0; pass < npass; pass++) {
+            if (pass) barrier_all();
+            CmdBeginRendering(cb, &ri);
+            CmdSetViewport(cb, 0, 1, &vp);
+            CmdSetScissor(cb, 0, 1, &area);
             struct push pc = { .a = { 255, 1, 127, 0 }, .rect = { -1, -1, 1, 1 } };
             if (mode == MS_PATTERN || mode == MS_PATTERN_CMD || mode == MS_LOAD || mode == MS_AREA || mode == MS_DISCARD) {
                pc = (struct push){ .a = { (int)s, 0, 127, 0 }, .rect = { -1, -1, 1, 1 } };
@@ -866,6 +893,16 @@ t_msaa(void)
                rect_push(&pc, outer, w, h);
                draw(p_draw, pc);
             } else {
+               if (mode == MS_ICON_SCLEAR) {
+                  /* draws first, so the clear cannot fold into the loadOp (the in-pass vkCmdClearAttachments zink emits); two
+                   * colour-masked INVERTs leave the 0xff junk in place, which a dropped clear would hand to the cover draw */
+                  draw(p_st, (struct push){ .a = { 255, 1, 127, 0 }, .rect = { -1, -1, 1, 1 } });
+                  draw(p_st, (struct push){ .a = { 255, 1, 127, 0 }, .rect = { -1, -1, 1, 1 } });
+                  VkClearAttachment ca = { .aspectMask = saspect };
+                  ca.clearValue.depthStencil.depth = 1.0f;
+                  VkClearRect cr = { .rect = area, .layerCount = 1 };
+                  CmdClearAttachments(cb, 1, &ca, 1, &cr);
+               }
                rect_push(&pc, outer, w, h);
                draw(p_st, pc);
                rect_push(&pc, inner, w, h);
@@ -874,6 +911,7 @@ t_msaa(void)
                draw(p_cv, pc);
             }
             CmdEndRendering(cb);
+            }
             if (mode == MS_LOAD) {
                /* second pass: LOAD the 4x contents, add 64 on the right half, resolve again */
                barrier_all();
@@ -904,12 +942,12 @@ t_msaa(void)
                      continue;   /* outside the render area the resolve target keeps the sentinel */
                   unsigned cov = 0;
                   if (mode == MS_EDGE || mode == MS_EDGE_CMD) cov = __builtin_popcount(cover_mask(x, y, outer));
-                  if (mode == MS_STENCIL) cov = __builtin_popcount(cover_mask(x, y, outer) ^ cover_mask(x, y, inner));
+                  if (stm) cov = __builtin_popcount(cover_mask(x, y, outer) ^ cover_mask(x, y, inner));
                   for (unsigned c = 0; c < f->nc; c++) {
                      unsigned byte = f->f == VK_FORMAT_B8G8R8A8_UNORM && c != 1 && c != 3 ? 2 - c : c;
                      unsigned v = (x * 7 + y * 13 + c * 61 + s * 29) & 127;
                      if (mode == MS_LOAD && x >= w / 2) v += 64;
-                     if (mode == MS_EDGE || mode == MS_EDGE_CMD || mode == MS_STENCIL) v = (cov * 255 + 2) / 4;
+                     if (mode == MS_EDGE || mode == MS_EDGE_CMD || stm) v = (cov * 255 + 2) / 4;
                      m[((size_t)y * w + x) * f->bs + byte] = (uint8_t)v;
                   }
                }
