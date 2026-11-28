@@ -213,6 +213,10 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
    p->subgroupQuadOperationsInAllStages = false;
    p->pointClippingBehavior = VK_POINT_CLIPPING_BEHAVIOR_ALL_CLIP_PLANES;
    p->maxPerSetDescriptors = 1024;
+   /* VK_KHR_push_descriptor: the spec minimum. A push set is an ordinary set in transient memory, so every valid layout of up to 32
+    * descriptors works (t_cmd push: 32 immutable combined image samplers, 32 uniform buffers); push layouts cannot hold dynamic
+    * buffers or inline uniform blocks. */
+   p->maxPushDescriptors = 32;
    p->maxMemoryAllocationSize = 1u << 30;
 
    /* ---- Vulkan 1.2 ---- driverID has no Mali-open value; PanVK is the nearest sibling (same compiler). */
@@ -430,6 +434,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .EXT_vertex_attribute_divisor = true, .KHR_vertex_attribute_divisor = true,   /* t_vk_feat divisor */
       .KHR_shader_integer_dot_product = true, /* t_vk_feat intdot */
       .KHR_maintenance6 = true,              /* t_cmd: BindDescriptorSets2/PushConstants2 == 1.0 forms */
+      .KHR_push_descriptor = true,           /* t_cmd push: transient set per push and bind point, templates, 2KHR routing, 32 descriptors */
       .EXT_extended_dynamic_state = true,   /* core 1.3 setters (runtime-tracked, read in mali_cmd.c snapshot); t_vk_draw dyn cull/depth/stencil/topology, t_angle_seq procaddr */
       .EXT_memory_budget = true,             /* t_dxvk_caps: budget/usage track vkAllocateMemory */
       .KHR_calibrated_timestamps = true,     /* t_dxvk_caps: device/monotonic/raw domains */

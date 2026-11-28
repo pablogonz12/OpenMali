@@ -89,7 +89,7 @@ from 64), set n = table n+1; push constants = FAU via `push_base`. `src/mali_pip
 UBO/SSBO `vec2_index_32bit_offset` + scalar pack); `mali_compile_opts.layout` enables it (NULL keeps the descriptor-free stub; cache key includes the layout).
 Seams for others: `mali_desc_set_res_ops` (image view/sampler/buffer -> hardware data, M5), `mali_desc_set_mem_ops` (pool memory, M2); entrypoints are `mali_create_descriptor_*` etc. taking `(dev, arch)`.
 `build.sh` must add mali_descriptor.c, mali_descriptor_lower.c, mali_pipeline_layout.c and mali_compile.c. Test: `tests/build-t_desc.sh [-v]` (5 s build, 0.01 s run; shaders `desc.frag`, `desc.comp`).
-Not yet: push descriptors, inline uniform blocks, image-size queries, immutable-sampler hardware check, dEQP.
+Not yet: inline uniform blocks, image-size queries, immutable-sampler hardware check, dEQP.
 
 ## M5: buffers, images, views, samplers, formats (offline, no GPU)
 

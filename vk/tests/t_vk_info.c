@@ -228,6 +228,23 @@ main(int argc, char **argv)
       }
    }
    CHECK(p13.maxInlineUniformBlockSize == 256 && p13.maxInlineUniformTotalSize == 256, "inline UBO limits (t_vk_feat inlineub)");
+   /* VK_KHR_push_descriptor (vkd3d-proton requires it at device creation): advertised with the spec minimum of 32, backed by t_cmd push
+    * (transient sets per bind point, templates, maintenance6 forms, 32-descriptor layouts with immutable samplers) */
+   {
+      uint32_t en = 0;
+      int have = 0;
+      EnumerateDeviceExtensionProperties(pd, NULL, &en, NULL);
+      VkExtensionProperties *e = calloc(en ? en : 1, sizeof *e);
+      if (e && EnumerateDeviceExtensionProperties(pd, NULL, &en, e) == VK_SUCCESS)
+         for (uint32_t i = 0; i < en; i++)
+            if (!strcmp(e[i].extensionName, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME)) have = 1;
+      free(e);
+      VkPhysicalDevicePushDescriptorPropertiesKHR pdp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PUSH_DESCRIPTOR_PROPERTIES_KHR};
+      VkPhysicalDeviceProperties2 q4 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &pdp};
+      GetPhysicalDeviceProperties2(pd, &q4);
+      CHECK(have && pdp.maxPushDescriptors == 32, "VK_KHR_push_descriptor %s, maxPushDescriptors %u (want 32)", have ? "advertised" : "absent",
+            pdp.maxPushDescriptors);
+   }
 
    /* ---- features ---- */
    VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
