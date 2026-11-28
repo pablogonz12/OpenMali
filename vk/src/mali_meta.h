@@ -15,6 +15,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "mali_cs_emit.h"
 
@@ -119,6 +121,23 @@ enum mali_preload_kind { MALI_PRELOAD_COLOUR, MALI_PRELOAD_Z, MALI_PRELOAD_S, MA
 struct mali_preload_src { uint64_t va[2]; uint32_t bytes[2], row[2], arg, bpp; uint32_t clear[4];
                           uint32_t samples, sample_stride, stencil_sample_stride; };   /* sample strides are independent plane sizes */
 int mali_meta_preload(struct mali_meta_mem *mem, enum mali_preload_kind kind, const struct mali_preload_src *src, struct mali_draw *d);
+
+/* MALI_PRELOAD: how a loadOp LOAD runs (read on every call, so a test can switch it).
+ *   unset / "hw": the hardware pre-frame shader (frame descriptor pre-frame slots, INTERSECT for colour) with the
+ *                 specialised shaders, where the architecture path supports it (mali_cmd.c), else as "fastdraw";
+ *   "fastdraw":   a preload draw over the render area with the specialised shaders (preload_fast.frag, preload_zs_fast.frag);
+ *   "draw":       the old path: a preload draw with the general shaders (preload.frag, preload_zs.frag). */
+enum mali_preload_mode { MALI_PRELOAD_MODE_HW, MALI_PRELOAD_MODE_FASTDRAW, MALI_PRELOAD_MODE_DRAW };
+static inline enum mali_preload_mode
+mali_preload_mode(void)
+{
+   const char *e = getenv("MALI_PRELOAD");
+   if (e && !strcmp(e, "draw"))
+      return MALI_PRELOAD_MODE_DRAW;
+   if (e && !strcmp(e, "fastdraw"))
+      return MALI_PRELOAD_MODE_FASTDRAW;
+   return MALI_PRELOAD_MODE_HW;
+}
 
 /* Software reference of the shaders: executes the job with GPU VAs interpreted as host pointers. */
 void mali_meta_ref_run(const struct mali_meta_job *j);

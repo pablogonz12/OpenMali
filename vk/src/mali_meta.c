@@ -11,6 +11,7 @@
 #include "mali_pipeline_layout_flat.h"
 #include "mali_meta_spv.h"
 #include "mali_preload_spv.h"
+#include "mali_preload_fast_spv.h"
 #include "mali_bc.h"
 
 int mali_meta_ref_oob;
@@ -595,7 +596,12 @@ mali_meta_materialize(const struct mali_meta_job *j, struct mali_meta_mem *mem, 
 #define PRE_SLOT_Z_MS  (MALI_PRELOAD_KINDS + 3)   /* depth, per sample */
 #define PRE_SLOT_S_MS  (MALI_PRELOAD_KINDS + 4)   /* stencil, per sample */
 #define PRE_SLOT_ZS_MS (MALI_PRELOAD_KINDS + 5)   /* depth+stencil, per sample */
-#define PRE_SLOTS      (MALI_PRELOAD_KINDS + 6)
+/* Specialised variants (preload_fast.frag / preload_zs_fast.frag), used unless MALI_PRELOAD=draw:
+ * colour: PRE_SLOT_FC + fmt * 4 + srgb * 2 + per-sample, fmt 0 RGBA8, 1 BGRA8, 2 A2B10G10R10, 3 A2R10G10B10 (no sRGB);
+ * depth:  PRE_SLOT_FZ + zfmt * 4 + with-stencil * 2 + per-sample, zfmt = the push word (0 D32F, 1 D16, 2 D24). */
+#define PRE_SLOT_FC    (MALI_PRELOAD_KINDS + 6)
+#define PRE_SLOT_FZ    (PRE_SLOT_FC + 16)
+#define PRE_SLOTS      (PRE_SLOT_FZ + 12)
 
 static struct { bool ok; struct mali_compiled vs, fs; uint64_t vs_va, fs_va; } g_pre[PRE_SLOTS];
 static struct { bool ok; struct mali_compiled vs; uint64_t vs_va; } g_pre_vs;
@@ -623,7 +629,7 @@ preload_compile(unsigned slot)   /* one of PRE_SLOT_* (the enum kinds are slots 
    struct mali_compile_layout lay;
    memset(&lay, 0, sizeof lay);
    lay.nsets = 1;
-   unsigned nb = slot == MALI_PRELOAD_ZS || slot == PRE_SLOT_ZS_MS ? 2 : 1;
+   unsigned nb = slot == MALI_PRELOAD_ZS || slot == PRE_SLOT_ZS_MS || (slot >= PRE_SLOT_FZ && (slot - PRE_SLOT_FZ) % 4 >= 2) ? 2 : 1;
    lay.set[0] = (struct mali_lset){ nb, nb, 0, b, NULL };
    lay.push_size = 20;
    struct mali_compile_opts o = { 0 };
@@ -652,6 +658,16 @@ preload_compile(unsigned slot)   /* one of PRE_SLOT_* (the enum kinds are slots 
       [PRE_SLOT_Z_MS]       = { preload_z_ms_frag_spv, sizeof preload_z_ms_frag_spv, true },
       [PRE_SLOT_S_MS]       = { preload_s_ms_frag_spv, sizeof preload_s_ms_frag_spv, true },
       [PRE_SLOT_ZS_MS]      = { preload_zs_ms_frag_spv, sizeof preload_zs_ms_frag_spv, true },
+#define FC(f, srgb, n) [PRE_SLOT_FC + (f) * 4 + (srgb) * 2] = { n##_frag_spv, sizeof n##_frag_spv, false }, \
+                       [PRE_SLOT_FC + (f) * 4 + (srgb) * 2 + 1] = { n##_ms_frag_spv, sizeof n##_ms_frag_spv, true }
+      FC(0, 0, preload_fast_rgba8), FC(0, 1, preload_fast_rgba8_srgb), FC(1, 0, preload_fast_bgra8), FC(1, 1, preload_fast_bgra8_srgb),
+      FC(2, 0, preload_fast_a2b10), FC(3, 0, preload_fast_a2r10),
+#undef FC
+#define FZ(z, st, n) [PRE_SLOT_FZ + (z) * 4 + (st) * 2] = { n##_frag_spv, sizeof n##_frag_spv, false }, \
+                     [PRE_SLOT_FZ + (z) * 4 + (st) * 2 + 1] = { n##_ms_frag_spv, sizeof n##_ms_frag_spv, true }
+      FZ(0, 0, preload_zsf_z32), FZ(0, 1, preload_zsf_z32_s), FZ(1, 0, preload_zsf_z16), FZ(1, 1, preload_zsf_z16_s),
+      FZ(2, 0, preload_zsf_z24), FZ(2, 1, preload_zsf_z24_s),
+#undef FZ
    };
    if (slot >= PRE_SLOTS || !fs[slot].spv) {
       fprintf(stderr, "mali_meta: no preload shader for slot %u\n", slot);
@@ -675,6 +691,27 @@ preload_compile(unsigned slot)   /* one of PRE_SLOT_* (the enum kinds are slots 
    return 0;
 }
 
+/* The specialised slot for this LOAD, or -1 for the general shader (MALI_PRELOAD=draw, or a format without a variant).
+ * Colour: the four-byte UNORM kinds whose texel is one aligned word (preload.frag kinds 0 with bpp 4, 1, 4, 5) and no
+ * modifier bit except sRGB; depth: Z and Z+S of any of the three depth formats. Stencil-only already has no branch. */
+static int
+mali_preload_fast_slot(enum mali_preload_kind kind, const struct mali_preload_src *src)
+{
+   if (mali_preload_mode() == MALI_PRELOAD_MODE_DRAW)
+      return -1;
+   const unsigned ms = src->samples > 1 ? 1u : 0u;
+   if (kind == MALI_PRELOAD_COLOUR) {
+      const unsigned k = src->arg & 255u, srgb = (src->arg >> 8) & 1u;
+      if ((src->arg & ~0x1ffu) || src->bpp != 4 || (srgb && k > 1) || ((src->row[0] | src->sample_stride) & 3u))
+         return -1;
+      const int f = k == 0 ? 0 : k == 1 ? 1 : k == 4 ? 2 : k == 5 ? 3 : -1;
+      return f < 0 ? -1 : (int)(PRE_SLOT_FC + (unsigned)f * 4 + srgb * 2 + ms);
+   }
+   if ((kind == MALI_PRELOAD_Z || kind == MALI_PRELOAD_ZS) && src->arg <= 2)
+      return (int)(PRE_SLOT_FZ + src->arg * 4 + (kind == MALI_PRELOAD_ZS ? 2u : 0u) + ms);
+   return -1;
+}
+
 /* va0/bytes0/row0: colour, depth, or stencil plane; va1/bytes1/row1: the stencil plane of MALI_PRELOAD_ZS. push words: row bytes (0), row
  * bytes (1) or kind flags, per-kind extra (see shaders). */
 int
@@ -692,6 +729,9 @@ mali_meta_preload(struct mali_meta_mem *mem, enum mali_preload_kind kind, const 
                    ? (msaa ? PRE_SLOT_MSAA : ((src->arg >> 16) & 3) ? MALI_PRELOAD_KINDS - 1 + ((src->arg >> 16) & 3) : (unsigned)kind)
                    : msaa ? (unsigned)PRE_SLOT_Z_MS + (kind == MALI_PRELOAD_S ? 1 : kind == MALI_PRELOAD_ZS ? 2 : 0)
                           : (unsigned)kind;
+   const int fast = mali_preload_fast_slot(kind, src);
+   if (fast >= 0)
+      slot = (unsigned)fast;
    if (!g_pre[slot].ok) {
       int r = preload_compile(slot);
       if (r) {
