@@ -35,6 +35,11 @@ struct kb_fb_params {
 	uint64_t tiler_va;            /* Tiler Context pointer; 0 = geometry-less frame */
 	/* experiment knobs (defaults 0 = the documented configuration) */
 	unsigned no_clean_tile_write; /* 0 (default): Clean Tile Write Enable set, empty tiles are written */
+	unsigned zs_no_clean_tile_write; /* the same for the ZS/CRC extension's depth and stencil targets (0 = on, as before) */
+	/* Pre-frame shader 0 (genxml v10/v11/v13 Framebuffer Parameters 0:0, mode 0 never / 1 always / 2 intersect) and the
+	 * Frame Shader DCDs pointer (words 6..7: 3 x 128 B Draw descriptors, slot 0 = pre-frame 0). 0 = none, as before. */
+	unsigned pre_frame_0;
+	uint64_t frame_shader_dcds_va;
 	unsigned block_format;        /* 0 = linear (2) , 1 = tiled u-interleaved (1) */
 	/* depth attachment (genxml v11 "ZS Target" + FBD Z fields). Zero-initialised = none: output stays 192 B, identical to before. */
 	enum kb_zs_format zs_format;

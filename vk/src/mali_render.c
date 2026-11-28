@@ -7,6 +7,8 @@
  *   depth loadOp CLEAR  -> Z clear value; depth storeOp DONT_CARE/NONE -> Z write enable off (zs_no_store).
  * FBD word 12 bits 31:28 are NOT set on v13 (they fault the queue, V13-NEXT2.md). */
 #include <errno.h>
+#include <pthread.h>
+#include <stdio.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -233,9 +235,91 @@ mali_fbd_bounds(const struct mali_env *env, const struct mali_frame *f, uint32_t
    out[0] = (uint32_t)minx; out[1] = (uint32_t)miny; out[2] = (uint32_t)maxx; out[3] = (uint32_t)maxy;
 }
 
+/* Pre-frame shader mode of the colour preload (see mali_cs_emit.h). Panfrost/PanVK reference, read only:
+ * panvk_vX_cmd_frame_shaders.c cmd_preload_color_attachments (INTERSECT unless a written target is "always" = loadOp CLEAR),
+ * cmd_preload_zs_attachments (Z/S: EARLY_ZS_ALWAYS v9..v12, PREPASS_ALWAYS v13), pan_desc.h pan_fix_frame_shader_mode and
+ * csf/panvk_vX_cmd_draw.c (INTERSECT becomes ALWAYS when any target has Clean Tile Write or CRC: TSIX-2033), pan_fb.c
+ * pan_fb_get_clean_tile (Clean Tile Write = load.always | store.always | AFBC superblock > tile). This driver has no CRC, no
+ * AFBC render target and no incremental-rendering spill, so those ALWAYS cases cannot arise here; a change adding one of them
+ * has to add its reason. */
+enum mali_pf_mode
+mali_preload_mode(const struct mali_frame *f)
+{
+   if (!f->pf_cand || !f->has_colour || f->colour.clear || !f->ndraws)
+      return MALI_PF_NONE;
+   if (f->pf_zs_load)
+      return MALI_PF_ALWAYS_ZS_LOAD;
+   if ((f->has_zs && f->zs.clear) || (f->has_st && f->st.clear))
+      return MALI_PF_ALWAYS_CLEAN_TILE;
+   if (f->colour.resolve_va)
+      return MALI_PF_ALWAYS_RESOLVE;
+   if (f->samples > 1)
+      return MALI_PF_ALWAYS_MSAA;
+   if (f->pf_src_va != f->colour.va)
+      return MALI_PF_ALWAYS_SRC;
+   if (f->ndraws < 2)
+      return MALI_PF_ALWAYS_EMPTY;
+   return MALI_PF_INTERSECT;
+}
+
+bool
+mali_preload_intersect_on(void)
+{
+   const char *e = getenv("MALI_PRELOAD_INTERSECT");
+   return e && e[0] == '1';
+}
+
+static unsigned g_pf_count[MALI_PF_NMODES];
+static pthread_mutex_t g_pf_lock = PTHREAD_MUTEX_INITIALIZER;
+static bool g_pf_atexit;
+static const char *const g_pf_name[MALI_PF_NMODES] = { "none", "intersect", "always_zs_load", "always_clean_tile",
+                                                       "always_msaa", "always_resolve", "always_src", "always_empty" };
+
+static void
+pf_print(void)
+{
+   unsigned c[MALI_PF_NMODES];
+   mali_preload_mode_stats(c);
+   fprintf(stderr, "mali_preload: switch=%s", mali_preload_intersect_on() ? "on" : "off");
+   for (int i = 1; i < MALI_PF_NMODES; i++)
+      fprintf(stderr, " %s=%u", g_pf_name[i], c[i]);
+   fprintf(stderr, "\n");
+}
+
+void
+mali_preload_mode_note(enum mali_pf_mode m)
+{
+   if (m <= MALI_PF_NONE || m >= MALI_PF_NMODES)
+      return;
+   pthread_mutex_lock(&g_pf_lock);
+   g_pf_count[m]++;
+   if (!g_pf_atexit) {
+      const char *e = getenv("MALI_PRELOAD_STATS");
+      g_pf_atexit = true;
+      if (e && e[0] == '1')
+         atexit(pf_print);
+   }
+   pthread_mutex_unlock(&g_pf_lock);
+}
+
+void
+mali_preload_mode_stats(unsigned *out)
+{
+   pthread_mutex_lock(&g_pf_lock);
+   memcpy(out, g_pf_count, sizeof g_pf_count);
+   pthread_mutex_unlock(&g_pf_lock);
+}
+
 int
 mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uint8_t *out, uint64_t tiler_ctx_va,
                      uint64_t sample_locations_va)
+{
+   return mali_render_pack_fbd_pf(env, f, out, tiler_ctx_va, sample_locations_va, 0);
+}
+
+int
+mali_render_pack_fbd_pf(const struct mali_env *env, const struct mali_frame *f, uint8_t *out, uint64_t tiler_ctx_va,
+                        uint64_t sample_locations_va, uint64_t pf_dcds_va)
 {
    struct kb_fb_params p;
 
@@ -302,6 +386,15 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
       p.clear_stencil = f->st.clear ? f->st.clear_stencil : 0;
       p.s_no_store = !f->st.store;
       if (msaa) p.s_layered_stride = f->st.surface_stride;
+   }
+   if (pf_dcds_va) {
+      /* colour LOAD as pre-frame shader 0, mode INTERSECT (2): only tiles some primitive touches are preloaded, and with
+       * Clean Tile Write off on every target an untouched tile is not written back either, so its memory stays as it was
+       * (what LOAD + STORE requires). Clean Tile Write must be off on all of them: TSIX-2033 (pan_desc.h). */
+      p.pre_frame_0 = 2;
+      p.frame_shader_dcds_va = pf_dcds_va;
+      p.no_clean_tile_write = 1;
+      p.zs_no_clean_tile_write = 1;
    }
    p.arch = env->arch == 13 ? 13 : 0;
    int rc = kb_fb_pack(out, &p);

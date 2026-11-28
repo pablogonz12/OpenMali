@@ -139,6 +139,16 @@ def render_job(c, e, op_name):
             out.append('    FBD'); out += c.words(lo, 128, 'FBD')
             if ext: out.append('    ZS/CRC ext'); out += c.words(lo + 128, 64, 'ZSEXT')
             out.append('    RTD'); out += c.words(lo + 128 + 64 * ext, 64, 'RTD')
+            # Pre/post-frame shaders (FBD word 0: Pre Frame 0 2:0, Pre Frame 1 5:3, Post Frame 8:6; words 6..7 the 3 x 128 B
+            # Draw descriptor array). Printed only when a mode is set, so frames without one render as before.
+            w0 = struct.unpack('<I', c.dev.mem.read(lo, 4))[0]
+            if w0 & 0x1ff:
+                dq = struct.unpack('<Q', c.dev.mem.read(lo + 24, 8))[0]
+                out.append('    frame shaders pre0=%d pre1=%d post=%d DCDs = %s' % (w0 & 7, (w0 >> 3) & 7, (w0 >> 6) & 7,
+                                                                                    c.nv(dq, 63, 'FBD frame shader DCDs', address=True)))
+                for k in range(3):
+                    if (w0 >> (3 * k)) & 7 and c.find(dq & MASK48):
+                        out.append('    DCD%d' % k); out += c.words((dq & MASK48) + 128 * k, 128, 'DCD%d' % k)
     elif mp:
         for nm, reg, n, kind in mp:
             q = ds.pair(r, reg); done |= {reg, reg + 1}
