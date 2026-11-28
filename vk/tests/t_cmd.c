@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 #include "mali_cmd.h"
+#include "mali_queue.h"
 #include "mali_image.h"
 #include "mali_meta.h"
 #include "mali_meta_vk.h"
@@ -1009,7 +1010,7 @@ int main(int argc, char **argv)
    md->vk.command_buffer_ops = &mali_cmd_ops;   /* M8 wiring item #1 */
 
    struct mali_hw hw = make_hw();
-   mali_cmd_set_hw(&hw);
+   *mali_device_hw(md) = hw;
    mali_cmd_set_res(&k_res);
 
    DFN(CreateCommandPool);
@@ -1288,9 +1289,11 @@ int main(int argc, char **argv)
       }
       printf("{\"test\":\"t_cmd%d\",\"extra\":true,\"pass\":%s}\n", ARCH, g_fail ? "false" : "true");
    }
+   struct mali_meta_ctx *test_meta = NULL, *old_meta = NULL;
    if (loadstore) {
       struct mali_meta_dev seam = {.user = &F, .arch = ARCH, .alloc = hw_alloc, .free = ls_meta_free, .upload_shader = ls_upload};
-      mali_meta_set_dev(&seam);
+      test_meta = mali_meta_ctx_create(&seam);
+      old_meta = mali_device_swap_meta(md, test_meta);
       test_msaa_zs_only(pool);
       static const struct ls_case cases[] = {
          {.name = "colour_none", .col = true, .lcol = VK_ATTACHMENT_LOAD_OP_NONE_KHR, .pre = 0},
@@ -1315,10 +1318,13 @@ int main(int argc, char **argv)
          ls_pass(pool, &cases[i]);
       ls_ui_frame(pool, VK_ATTACHMENT_LOAD_OP_NONE_KHR, "none");
       ls_ui_frame(pool, VK_ATTACHMENT_LOAD_OP_LOAD, "load");
-      mali_meta_set_dev(NULL);
       printf("{\"test\":\"t_cmd%d\",\"loadstore\":true,\"pass\":%s}\n", ARCH, g_fail ? "false" : "true");
    }
    DestroyCommandPool(dev, pool, NULL);
+   if (test_meta) {
+      mali_device_swap_meta(md, old_meta);
+      mali_meta_ctx_destroy(test_meta);
+   }
    kb_queue_destroy(&F.q);
    return g_fail ? 1 : 0;
 }

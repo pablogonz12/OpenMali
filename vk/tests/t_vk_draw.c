@@ -3328,15 +3328,17 @@ int
 main(int argc, char **argv)
 {
    const char *icd = NULL;
+   int second_device = 0;
    for (int i = 1; i < argc; i++) {
       if (!strcmp(argv[i], "--direct") && i + 1 < argc) icd = argv[++i];
       else if (!strcmp(argv[i], "--loop") && i + 1 < argc) g_loop = atoi(argv[++i]);
       else if (!strcmp(argv[i], "--loop-reset")) g_reset = 1;
+      else if (!strcmp(argv[i], "--second-device")) second_device = 1;
       else if (!strcmp(argv[i], "--only") && i + 1 < argc) g_only = argv[++i];
       else if (!strcmp(argv[i], "--spv-dir") && i + 1 < argc) g_spv = argv[++i];
       else if (!strcmp(argv[i], "--gs") && i + 1 < argc) g_gs = argv[++i];   /* lane 1: draw every case through this geometry shader */
       else if (!strcmp(argv[i], "--topo") && i + 1 < argc) g_topo = !strcmp(argv[++i], "strip") ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-      else { fprintf(stderr, "usage: t_vk_draw --direct icd.so [--loop N] [--loop-reset] [--only case] [--gs geom.spv] [--topo list|strip]\n"); return 2; }
+      else { fprintf(stderr, "usage: t_vk_draw --direct icd.so [--loop N] [--loop-reset] [--second-device] [--only case] [--gs geom.spv] [--topo list|strip]\n"); return 2; }
    }
    if (!icd) { fprintf(stderr, "--direct required\n"); return 2; }
    const char *be = getenv("MALI_BACKEND");
@@ -3440,6 +3442,12 @@ main(int argc, char **argv)
       di.ppEnabledExtensionNames = en_ext;
    }
    if (CreateDevice(pd, &di, NULL, &dev) != VK_SUCCESS) { printf("{\"fail\":\"CreateDevice\"}\n"); return 1; }
+   /* Keep B live while all the cases below create and submit work on A. */
+   VkDevice other = VK_NULL_HANDLE;
+   if (second_device && CreateDevice(pd, &di, NULL, &other) != VK_SUCCESS) {
+      printf("{\"fail\":\"CreateDevice second\"}\n");
+      return 1;
+   }
 #define LOAD(n) n = (PFN_vk##n)GDPA(dev, "vk" #n); if (!n) { printf("{\"fail\":\"missing vk" #n "\"}\n"); return 1; }
    DEV_FNS(LOAD)
    CmdBindVertexBuffers2_ = (PFN_vkCmdBindVertexBuffers2)GDPA(dev, "vkCmdBindVertexBuffers2");
@@ -3559,6 +3567,7 @@ main(int argc, char **argv)
 
    DeviceWaitIdle(dev);
    DestroyDevice(dev, NULL);
+   if (other) DestroyDevice(other, NULL);
    DestroyInstance(inst, NULL);
    dlclose(lib);
    printf("{\"pass\":%s}\n", (ok && !g_fail) ? "true" : "false");

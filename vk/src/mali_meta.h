@@ -4,7 +4,7 @@
  * Every operation is planned as one or more compute jobs (struct mali_meta_job: shader id, push constants, <= 2 buffer bindings,
  * workgroup counts). Images are linear by default (R3-PLAN.md M5), so an image is "a buffer with a row/slice pitch" for the shaders
  * and no storage-image descriptor is needed. A job is materialised into a struct mali_dispatch (mali_cs_emit.h): descriptor set in
- * persistent GPU memory, shader binary uploaded once (seam mali_meta_set_dev). The command buffer then pushes it as a compute frame;
+ * persistent GPU memory, shader binary uploaded once per meta context. The command buffer then pushes it as a compute frame;
  * frames complete in order (mali_cmd_submit waits for each), so no barrier is needed between meta jobs.
  *
  * Plain C: no Vulkan/Mesa header. mali_meta_ref_run() is a bit-exact (copy) / formula-equal (blit) software reference of the shaders
@@ -93,24 +93,26 @@ struct mali_meta_dev {
    void (*free)(void *user, void *cpu, uint64_t va, size_t size);
    int (*upload_shader)(void *user, const uint8_t *bin, uint32_t size, uint64_t *va);   /* executable memory, never freed */
 };
-void mali_meta_prewarm(void);   /* async-compile the built-in meta shaders for the installed device (no-op without one) */
-void mali_meta_set_dev(const struct mali_meta_dev *dev);   /* copied; NULL clears (and drops the compiled shader cache) */
+struct mali_meta_ctx;
+struct mali_meta_ctx *mali_meta_ctx_create(const struct mali_meta_dev *dev);
+void mali_meta_ctx_destroy(struct mali_meta_ctx *ctx);
+void mali_meta_prewarm(struct mali_meta_ctx *ctx);
 
 /* Long-lived zeroed GPU memory from the installed device seam (query pools, events). NULL when no device is set. */
-void *mali_meta_dev_alloc(size_t size, size_t align, uint64_t *va);
-void mali_meta_dev_free(void *cpu, uint64_t va, size_t size);
+void *mali_meta_dev_alloc(struct mali_meta_ctx *ctx, size_t size, size_t align, uint64_t *va);
+void mali_meta_dev_free(struct mali_meta_ctx *ctx, void *cpu, uint64_t va, size_t size);
 
 /* Persistent allocations of one command buffer (descriptor sets, staged update data). Release on reset/destroy of the command buffer. */
-struct mali_meta_mem { struct { void *cpu; uint64_t va; size_t size; } *a; unsigned n, cap; };
+struct mali_meta_mem { struct { void *cpu; uint64_t va; size_t size; } *a; unsigned n, cap; struct mali_meta_ctx *ctx; };
 void mali_meta_mem_release(struct mali_meta_mem *m);
 
 /* Compiles (once per arch/shader) and uploads the shader of job j. */
 struct mali_bc_job;
 /* Appends a BC decode job (compute, 2 SSBO bindings, 48 B push) to the list. 0 or -ENOMEM. */
 int mali_meta_list_add_bc(struct mali_meta_list *l, const struct mali_bc_job *bj);
-int mali_meta_shader_get(enum mali_meta_shader sh, const struct mali_compiled **c, uint64_t *va);
+int mali_meta_shader_get(struct mali_meta_ctx *ctx, enum mali_meta_shader sh, const struct mali_compiled **c, uint64_t *va);
 /* Builds the dispatch (descriptor set bytes in persistent memory, push constants, groups). Does not touch the frame list. */
-int mali_meta_materialize(const struct mali_meta_job *j, struct mali_meta_mem *mem, struct mali_dispatch *out);
+int mali_meta_materialize(struct mali_meta_ctx *ctx, const struct mali_meta_job *j, struct mali_meta_mem *mem, struct mali_dispatch *out);
 
 /* R4: fills a draw (full-viewport triangle) that re-emits the old contents of a linear attachment. kind: colour (any render-target format:
  * arg = format kind | 0x100 sRGB | (colour output type << 16: 0 float, 1 uint, 2 sint), bpp = bytes per texel, see preload.frag), depth (arg 0 = D32F, 1 = D16), stencil, or depth+stencil
@@ -118,7 +120,7 @@ int mali_meta_materialize(const struct mali_meta_job *j, struct mali_meta_mem *m
 enum mali_preload_kind { MALI_PRELOAD_COLOUR, MALI_PRELOAD_Z, MALI_PRELOAD_S, MALI_PRELOAD_ZS, MALI_PRELOAD_KINDS };
 struct mali_preload_src { uint64_t va[2]; uint32_t bytes[2], row[2], arg, bpp; uint32_t clear[4];
                           uint32_t samples, sample_stride, stencil_sample_stride; };   /* sample strides are independent plane sizes */
-int mali_meta_preload(struct mali_meta_mem *mem, enum mali_preload_kind kind, const struct mali_preload_src *src, struct mali_draw *d);
+int mali_meta_preload(struct mali_meta_ctx *ctx, struct mali_meta_mem *mem, enum mali_preload_kind kind, const struct mali_preload_src *src, struct mali_draw *d);
 
 /* Software reference of the shaders: executes the job with GPU VAs interpreted as host pointers. */
 void mali_meta_ref_run(const struct mali_meta_job *j);

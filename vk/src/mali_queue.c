@@ -53,34 +53,18 @@ struct mali_hwctx {
    size_t ovf_off, ovf_last;
    uint32_t meta_sz[16];          /* byte size of each meta_sh[] upload (dedupe on re-bind) */
    int light_pending;             /* see mali_env.light_pending */
-   struct mali_hw hw;             /* what mali_cmd/mali_meta singletons are bound to while this device is the current one */
+   struct mali_hw hw;             /* command recording and submit use the command buffer's device */
    struct mali_meta_dev md;
+   struct mali_meta_ctx *meta;
    struct mali_fprof fp;          /* M15: MALI_FRAME_PROF; off (all no-ops) unless the env var asks for it */
-   struct mali_hwctx *below;      /* previously current device (stack of live devices) */
 };
 
-/* mali_cmd.c / mali_meta.c keep process-global bindings to ONE device. dEQP (and apps) create short-lived extra devices
- * while the main one stays alive: destroying the extra one must re-bind the singletons to the one below it, not unbind them
- * (that made vkCreateEvent/meta allocations of the surviving device fail with VK_ERROR_OUT_OF_DEVICE_MEMORY). */
-static pthread_mutex_t g_bind_lock = PTHREAD_MUTEX_INITIALIZER;
-static struct mali_hwctx *g_cur;
+static pthread_once_t g_res_once = PTHREAD_ONCE_INIT;
 
 static void
-bind_hw(struct mali_hwctx *h)
+init_cmd_res(void)
 {
-   if (h) {
-      mali_cmd_set_hw(&h->hw);
-      mali_cmd_set_res(&mali_cmd_res);
-      mali_meta_set_dev(&h->md);
-      /* Not on the fake backend: the goldens dump its whole BO table, and the compile BOs a background prewarm allocates would land in it
-         at a thread-timing-dependent index. The fake device has no first-use hitch to hide. */
-      if (mali_device_pdev(h->dev)->backend != &mali_backend_fake)
-         mali_meta_prewarm();
-   } else {
-      mali_cmd_set_hw(NULL);
-      mali_cmd_set_res(NULL);
-      mali_meta_set_dev(NULL);
-   }
+   mali_cmd_set_res(&mali_cmd_res);
 }
 
 /* M15: per-BO write tracking for the fence-wait CSYNC (mali_backend.h bo_wrote, vk/MEMORY.md). */
@@ -93,6 +77,26 @@ hw_bo_wrote(void *user, struct mali_bo *bo)
       be->bo_wrote(h->dev->kdev, bo);
 }
 
+struct mali_hw *
+mali_device_hw(struct mali_device *dev)
+{
+   return dev && dev->hw ? &dev->hw->hw : NULL;
+}
+
+struct mali_meta_ctx *
+mali_device_meta(struct mali_device *dev)
+{
+   return dev && dev->hw ? dev->hw->meta : NULL;
+}
+
+struct mali_meta_ctx *
+mali_device_swap_meta(struct mali_device *dev, struct mali_meta_ctx *ctx)
+{
+   struct mali_meta_ctx *old = dev->hw->meta;
+   dev->hw->meta = ctx;
+   return old;
+}
+
 /* ---- M12/M13 device seam of mali_meta.c: long-lived zeroed memory (one uncached BO each, 64 B header keeps the struct mali_bo) and
  * executable shader memory ---- */
 #define META_HDR 64u
@@ -101,8 +105,7 @@ struct meta_hdr {
 };
 _Static_assert(sizeof(struct meta_hdr) <= META_HDR, "meta header");
 
-/* Device-scoped: the BO is allocated and freed through the device the caller names, never through the process-global binding
- * (g_cur) and never through a pointer stored in the BO (which could dangle once another device is destroyed). */
+/* Allocate and free through the device the caller names. */
 void *
 mali_hw_meta_alloc(struct mali_device *dev, size_t size, size_t align, uint64_t *va)
 {
@@ -480,18 +483,7 @@ mali_hw_finish(struct mali_device *dev)
    for (unsigned i = 0; i < h->n_pool; i++)
       be->bo_free(dev->kdev, &h->ovf_pool[i]);
    h->n_pool = 0;
-   pthread_mutex_lock(&g_bind_lock);
-   if (g_cur == h) {
-      g_cur = h->below;
-      bind_hw(g_cur);
-   } else {
-      for (struct mali_hwctx *c = g_cur; c; c = c->below)
-         if (c->below == h) {
-            c->below = h->below;
-            break;
-         }
-   }
-   pthread_mutex_unlock(&g_bind_lock);
+   mali_meta_ctx_destroy(h->meta);
    for (unsigned i = 0; i < h->n_meta_sh; i++)
       be->bo_free(dev->kdev, &h->meta_sh[i]);
    if (h->heap_live)
@@ -522,6 +514,7 @@ mali_hw_init(struct mali_device *dev)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
    h->dev = dev;
    dev->hw = h;
+   pthread_once(&g_res_once, init_cmd_res);
    mali_fprof_init(&h->fp, dev);
    const char *t = getenv("MALI_FRAME_TIMEOUT_MS");
    h->wait_ms = t ? (unsigned)strtoul(t, NULL, 0) : 10000;
@@ -578,11 +571,12 @@ mali_hw_init(struct mali_device *dev)
    if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: va arena %llx+%zx geo %llx sync %llx heap ctx %llx first %llx\n", (unsigned long long)h->arena.gpu_va, (size_t)h->arena.size, (unsigned long long)h->geo.gpu_va, (unsigned long long)h->sync.gpu_va, (unsigned long long)h->heap.ctx_va, (unsigned long long)h->heap.first_chunk_va);
    h->hw = hw;
    h->md = (struct mali_meta_dev){.user = h, .arch = arch, .alloc = meta_alloc, .free = meta_free, .upload_shader = meta_upload_shader};
-   pthread_mutex_lock(&g_bind_lock);
-   h->below = g_cur;
-   g_cur = h;
-   bind_hw(h);
-   pthread_mutex_unlock(&g_bind_lock);
+   h->meta = mali_meta_ctx_create(&h->md);
+   if (!h->meta)
+      goto fail;
+   /* Avoid nondeterministic background BO allocation in fake golden dumps. */
+   if (pdev->backend != &mali_backend_fake)
+      mali_meta_prewarm(h->meta);
    return VK_SUCCESS;
 fail:
    mali_hw_finish(dev);

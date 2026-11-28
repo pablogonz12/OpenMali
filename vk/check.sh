@@ -180,6 +180,8 @@ if echo "$out" | grep -q '"skipped":"VK_EXT_transform_feedback not advertised"';
 else echo "FAIL  vk_feat tf_write opt-out v11"; echo "$out" | sed 's/^/        /'; fail=1; fi
 
 # M4: memory, sync, queue (fake backend; MALI_FAKE_SLOW_US makes the fences really block).
+run "build fake context isolation" 0 cc -std=gnu11 -pthread -I"$V/src" "$V/tests/t_fake_context.c" "$V/src/mali_backend_fake.c" -o "$OUT/t_fake_context"
+run "fake context VA isolation" 0 "$OUT/t_fake_context"
 TQ="$OUT/t_queue --direct $OUT/libvulkan_mali.so"
 run "queue all v11"      0 MALI_BACKEND=fake MALI_FAKE_GPU=v11 $TQ
 run "queue teardown v13"  0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 MALI_FAKE_SLOW_US=400000 $TQ --only teardown
@@ -205,6 +207,10 @@ done
 for g in v11 v13; do run "resources $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_resources"; done
 
 # M9: client draws through the ICD (fake backend: API sequence, compile, CS build and submit; pixels only on hardware).
+run "two-device draw submits on A" 0 python3 "$V/tests/check_two_device_submit.py" "$OUT/t_vk_draw" "$OUT/libvulkan_mali.so" "$V/shader"
+run "two-device meta A destroyed first" 0 MALI_BACKEND=fake MALI_FAKE_DISJOINT_VA=1 MALI_FAKE_CHECK_CS_VA=1 "$OUT/t_vk_meta" --direct "$OUT/libvulkan_mali.so" --second-device --only two_device
+run "two-device meta B destroyed first" 0 MALI_BACKEND=fake MALI_FAKE_DISJOINT_VA=1 MALI_FAKE_CHECK_CS_VA=1 "$OUT/t_vk_meta" --direct "$OUT/libvulkan_mali.so" --second-device --second-first --only two_device
+run "two-device concurrent meta" 0 MALI_BACKEND=fake MALI_FAKE_DISJOINT_VA=1 MALI_FAKE_CHECK_CS_VA=1 "$OUT/t_vk_meta" --direct "$OUT/libvulkan_mali.so" --parallel-devices --only two_device
 for g in v11 v13; do
    run "vk_draw $g"       0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --loop 200
    run "vk_draw many $g"  0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_draw" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only many_draws
