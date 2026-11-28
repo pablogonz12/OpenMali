@@ -78,6 +78,7 @@ struct mali_kdev {
    pthread_mutex_t wait_lock;   /* models kbase's notification-read lock: a blocking fence wait holds it for <= 20 ms slices */
    unsigned long cs_submits, cs_instr;
    uint64_t next_va;
+   uint64_t va_base;
    uint64_t va_limit;           /* exclusive, when disjoint VA testing is enabled */
    bool lost;
    /* Offline checking (MALI_FAKE_DUMP=path|-): BO registry + decoded-stream dump, see tests/golden.py */
@@ -249,6 +250,7 @@ fake_device_create(const struct mali_gpu_info *gpu, struct mali_kdev **out)
    k->next_va = 0x5f00000000ull;
    if (getenv("MALI_FAKE_DISJOINT_VA")) {
       k->next_va += (uint64_t)k->id << 32;
+      k->va_base = k->next_va;
       k->va_limit = k->next_va + (1ull << 32);
    }
    *out = k;
@@ -550,6 +552,25 @@ fake_submit_cs(struct mali_kdev *k, const uint64_t *cs, unsigned n)
 {
    pthread_mutex_lock(&k->lock);
    bool lost = k->lost;
+   /* This opt-in diagnostic checks only direct MOVE48 immediates. Descriptor
+    * memory, MOVE32 register pairs and indirect command chunks require a
+    * proper stream/descriptor walker; do not treat a pass as full validation. */
+   if (k->va_limit && getenv("MALI_FAKE_CHECK_CS_VA")) {
+      uint64_t end = 0x5f00000000ull +
+                     ((uint64_t)atomic_load_explicit(&g_fake_ndev, memory_order_relaxed) << 32);
+      for (unsigned i = 0; i < n; i++) {
+         if (cs[i] >> 56 != 1)
+            continue;
+         uint64_t va = cs[i] & 0xffffffffffffull;
+         if (va >= 0x5f00000000ull && va < end &&
+             (va < k->va_base || va >= k->va_limit)) {
+            fprintf(stderr, "mali-fake: foreign MOVE48 address 0x%llx at instruction %u\n",
+                    (unsigned long long)va, i);
+            lost = true;
+            break;
+         }
+      }
+   }
    k->cs_submits++;
    k->cs_instr += n;
    dump_kick(k, cs, n);

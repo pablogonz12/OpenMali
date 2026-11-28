@@ -22,6 +22,13 @@ int main(void)
        be->va_cpu(b, bb.gpu_va, 64) != bb.cpu ||
        be->va_cpu(a, bb.gpu_va, 64) || be->va_cpu(b, ba.gpu_va, 64))
       return 2;
+   /* MOVE48 r0, immediate: only the other device's VA must be rejected. */
+   if (setenv("MALI_FAKE_CHECK_CS_VA", "1", 1))
+      return 4;
+   uint64_t local = (1ull << 56) | ba.gpu_va;
+   uint64_t foreign = (1ull << 56) | (bb.gpu_va + 64);
+   if (be->submit_cs(a, &local, 1) || !be->submit_cs(a, &foreign, 1))
+      return 5;
    be->bo_free(a, &ba);
    be->device_destroy(a);
    if (be->va_cpu(b, bb.gpu_va, 64) != bb.cpu)
