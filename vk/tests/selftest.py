@@ -34,6 +34,21 @@ def m_cs(d, e):          # v11 RUN_IDVS without the fragment SRT select bit (38)
     for i, w in enumerate(q):
         if w >> 56 in (6, 12): q[i] = w & ~(1 << (38 if w >> 56 == 6 else 33)); put(e, q); e['done'] = 1; return
 
+def m_box(d, e):         # v13 VIEWPORT_LOW depth range written as given for a reversed viewport (minDepth 1, maxDepth 0)
+    if e.get('done'): return
+    q = qwords(e)
+    lo = [i for i, w in enumerate(q) if w >> 56 == 2 and (w >> 48) & 0xff == 46]
+    if lo: q[lo[0]] = (q[lo[0]] & ~0xffffffff) | 0x40000000; put(e, q); e['done'] = 1
+def m_tile(d, e):        # the FBD declares 32x32 tiles while the tiler context bins for 64x64
+    q = qwords(e)
+    for k, w in enumerate(q):
+        if w >> 56 != 7: continue
+        mv = [i for i in moves(q, 40) if i < k]
+        if not mv: return
+        f = q[mv[-1]] & ((1 << 48) - 1) & ~63
+        b = bytearray(d.mem.read(f & ~4095, 4096)); o = (f & 4095) + 44
+        w11 = struct.unpack_from('<I', b, o)[0]; struct.pack_into('<I', b, o, (w11 & ~(15 << 9)) | (10 << 9)); d.mem.add(f & ~4095, bytes(b)); return
+
 def run(path, arch, hook, tmp):
     os.environ['GOLDEN_ARCH'] = str(arch)
     return g.process(path, os.path.join(tmp, 'st.txt'), hook)[1]
@@ -53,7 +68,8 @@ if __name__ == '__main__':
     v11, v13 = head(v11, tmp), head(v13, tmp)
     bad = 0
     for name, path, arch, hook in (('R-VA', v11, 11, m_va), ('R-VA', v13, 13, m_va), ('R-SET', v11, 11, m_set), ('R-SET', v13, 13, m_set),
-                                   ('R-HEAP', v11, 11, m_heap), ('R-HEAP', v13, 13, m_heap), ('R-CS', v11, 11, m_cs), ('R-CS', v13, 13, m_cs)):
+                                   ('R-HEAP', v11, 11, m_heap), ('R-HEAP', v13, 13, m_heap), ('R-CS', v11, 11, m_cs), ('R-CS', v13, 13, m_cs),
+                                   ('R-BOX', v13, 13, m_box), ('R-TILE', v13, 13, m_tile)):
         clean = run(path, arch, None, tmp)
         if clean: print('FAIL  %s: undamaged dump already violates: %s' % (name, clean[0])); bad = 1; continue
         v = run(path, arch, hook, tmp)
