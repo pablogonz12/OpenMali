@@ -53,14 +53,14 @@ struct mali_hwctx {
    size_t ovf_off, ovf_last;
    uint32_t meta_sz[16];          /* byte size of each meta_sh[] upload (dedupe on re-bind) */
    int light_pending;             /* see mali_env.light_pending */
-   struct mali_hw hw;             /* what mali_cmd/mali_meta singletons are bound to while this device is the current one */
+   struct mali_hw hw;             /* command recording and submit use the command buffer's device */
    struct mali_meta_dev md;
    struct mali_fprof fp;          /* M15: MALI_FRAME_PROF; off (all no-ops) unless the env var asks for it */
    struct mali_hwctx *below;      /* previously current device (stack of live devices) */
 };
 
-/* mali_cmd.c / mali_meta.c keep process-global bindings to ONE device. dEQP (and apps) create short-lived extra devices
- * while the main one stays alive: destroying the extra one must re-bind the singletons to the one below it, not unbind them
+/* mali_meta.c still keeps a process-global binding to ONE device. dEQP (and apps) create short-lived extra devices
+ * while the main one stays alive: destroying the extra one must re-bind it to the one below it, not unbind it
  * (that made vkCreateEvent/meta allocations of the surviving device fail with VK_ERROR_OUT_OF_DEVICE_MEMORY). */
 static pthread_mutex_t g_bind_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct mali_hwctx *g_cur;

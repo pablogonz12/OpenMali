@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 #include "mali_cmd.h"
+#include "mali_queue.h"
 #include "mali_image.h"
 #include "mali_meta.h"
 #include "mali_meta_vk.h"

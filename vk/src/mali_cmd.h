@@ -8,7 +8,7 @@
  * (vk_common_CmdBeginRenderPass2 -> CmdBeginRendering) once the device advertises it. Viewport/scissor are taken from the runtime's
  * dynamic graphics state (vk_common_CmdSetViewport/Scissor).
  *
- * Seams (installed by wiring code, see R3-PLAN.md "M8"): mali_cmd_set_hw (descriptor memory + submit), mali_cmd_set_res (pipeline,
+ * Seams (installed by wiring code, see R3-PLAN.md "M8"): per-device hardware (descriptor memory + submit), mali_cmd_set_res (pipeline,
  * image and shader resolvers; M5/M6 own those objects). */
 #ifndef MALI_CMD_H
 #define MALI_CMD_H
