@@ -67,6 +67,8 @@ void *mali_suballoc_alloc(struct mali_suballoc *sa, enum mali_bo_site site, uint
                           uint64_t *va);
 /* Gives a range back; it is reused once every submission made before this call has retired. */
 void mali_suballoc_free(struct mali_suballoc *sa, void *cpu);
+/* The same, naming the site (only the MALI_BO_SUBALLOC=0 path needs it, for the per-site counters). */
+void mali_suballoc_free_site(struct mali_suballoc *sa, enum mali_bo_site site, void *cpu);
 /* The BO that holds `cpu` (for bo_wrote / bo_host_dirty marks: a mark on a range is a mark on its chunk). */
 struct mali_bo *mali_suballoc_bo_of(struct mali_suballoc *sa, const void *cpu, size_t *off);
 bool mali_suballoc_is_on(const struct mali_suballoc *sa);

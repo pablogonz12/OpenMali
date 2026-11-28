@@ -119,6 +119,9 @@ struct mali_backend_ops {
    int (*submit_cs)(struct mali_kdev *kdev, const uint64_t *cs, unsigned ninstr);
    /* Wait until *counter_cpu >= target (a CQS word the CS increments). 0, -ETIMEDOUT, -EIO (GPU fault). */
    int (*wait_counter)(struct mali_kdev *kdev, const volatile uint64_t *counter_cpu, uint64_t target, int timeout_ms);
+   /* Fake backend only (golden dumps, NULL on kbase): live = 1: [va, va+size) is a driver suballocation (named SUB<n> in the
+    * dumps); live = 0: the suballocation at va was freed; live = 2: the BO at va only hosts suballocations (hidden). */
+   void (*bo_note_sub)(struct mali_kdev *kdev, uint64_t va, size_t size, uint32_t flags, int live);
    int (*heap_create)(struct mali_kdev *kdev, uint32_t chunk_size, uint32_t initial, uint32_t max, struct mali_heap *out);
    void (*heap_destroy)(struct mali_kdev *kdev, struct mali_heap *heap);
 };

@@ -382,7 +382,7 @@ rm -f "$GDIR/geom.jsonl"
 if [ "$SAN" = 1 ]; then
    echo "skip  build-t_*.sh tests (not sanitized)"
 else
-   for t in afbc arena bbox bc cmd compile desc hmask image memsync meta qpool query txf txf_cc; do run "t_$t" 0 "$V/tests/build-t_$t.sh"; done
+   for t in afbc arena bbox bc cmd compile desc hmask image memsync meta qpool query suballoc txf txf_cc; do run "t_$t" 0 "$V/tests/build-t_$t.sh"; done
    for t in bc bopool cmd compile desc image memsync meta qpool query txf txf_cc; do run "t_$t" 0 "$V/tests/build-t_$t.sh"; done
    # Unity 2023.2 capability probe: every format it hands to vkCreateImage, and the swapchain contract (surface rows only when the tree
    # has a WSI platform; the plain build skips them with a message, the x11 run is tests/xwsi-host.sh's job).
