@@ -962,7 +962,8 @@ test_descriptor_bind_points(VkCommandPool pool)
    CmdDraw(cb, 3, 1, 0, 0);
    mali_CmdEndRendering(cb);
    DFN(EndCommandBuffer);
-   CHECK(EndCommandBuffer(cb) == VK_SUCCESS && m->nframes == 2, "bind points: expected dispatch and draw");
+   CHECK(EndCommandBuffer(cb) == VK_SUCCESS && m->nframes == 2 && m->frames[1].ndraws == 1,
+         "bind points: expected dispatch and draw");
    if (m->nframes == 2 && m->frames[1].ndraws) {
       const struct mali_rec *draw = &m->frames[1].draws[0];
       CHECK(m->frames[0].disp.nsets == 1 && m->frames[0].disp.set_va[0] == b.va &&
