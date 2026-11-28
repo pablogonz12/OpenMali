@@ -42,6 +42,12 @@ export MALI_DIRTY_CHECK=1   # trap: build_draw_descs aborts when the record-time
 # X4 6/6), so the honest count is 3/49 where main's 47-row list read 3.
 DXVK_MISSING=3
 DXVK_MISSING_MSAA=$DXVK_MISSING
+# The same mechanism for every DirectX threshold (tools/feature-matrix-dx, vk/FEATURE-MATRIX-DIRECTX.md): missing requirement rows
+# per consumer:level in today's vulkaninfo --json of v10/v11/v13. DXVK 3.1.1/master device = DXVK_MISSING (geometryShader,
+# shaderCullDistance, descriptorIndexing); 2.7.1 also needs VK_KHR_pipeline_library. A change in either direction fails: lower a
+# number only with the test that backs the new feature (vk/FEATURE-BACKLOG-DIRECTX.md names the package per row).
+FMDX_EXPECT="dxvk-2.7.1:device=$((DXVK_MISSING + 1)) dxvk-3.1.1:device=$DXVK_MISSING dxvk-master:device=$DXVK_MISSING d3d11:11_0=1 d3d11:11_1=1 d3d11:12_0=2 d3d11:12_1=2 dxgi:format=1 vkd3d:device=11 vkd3d:11_1=1 vkd3d:12_0=2 vkd3d:12_1=1 vkd3d:12_2=1 vkd3d:SM6.0=1 vkd3d:SM6.2=1 vkd3d:SM6.6=1"
+FMDX="$V/../tools/feature-matrix-dx"
 LOADER_ENV="VK_DRIVER_FILES=$OUT/mali_icd.json VK_ICD_FILENAMES=$OUT/mali_icd.json VK_LOADER_LAYERS_DISABLE=~all~"
 
 run() { # name, expected exit status, command...
@@ -439,9 +445,21 @@ if command -v vulkaninfo >/dev/null; then
    if [ $rc -eq 0 ] && grep -q "Mali-G925 MC11 (mali-own, fake backend)" <<<"$out"; then echo "ok    vulkaninfo --summary"; else echo "FAIL  vulkaninfo --summary (exit $rc)"; fail=1; echo "$out" | tail -20; fi
    out=$(env $LOADER_ENV MALI_BACKEND=fake MALI_FAKE_GPU=v11 vulkaninfo 2>&1); rc=$?
    if [ $rc -eq 0 ] && grep -q "maxImageDimension2D" <<<"$out"; then echo "ok    vulkaninfo (full)"; else echo "FAIL  vulkaninfo full (exit $rc)"; fail=1; echo "$out" | tail -20; fi
+   # DirectX feature matrix on the freshly built ICD: every threshold's missing count must equal FMDX_EXPECT
+   for g in v10 v11 v13; do
+      rm -f "$OUT/fmdx-$g.json"
+      env $LOADER_ENV MALI_BACKEND=fake MALI_FAKE_GPU=$g timeout 120 vulkaninfo --json=0 --output "$OUT/fmdx-$g.json" >/dev/null 2>&1
+      run "feature-matrix-dx $g" 0 timeout 120 python3 -I "$FMDX/fmdx.py" check "$OUT/fmdx-$g.json" --expect "$FMDX_EXPECT"
+   done
 else
    echo "skip  vulkaninfo (not installed)"
 fi
+
+# DirectX matrix tool: falsification on the committed captures, and the committed document is what the tool generates from them
+run "feature-matrix-dx selftest" 0 timeout 120 python3 -I "$FMDX/fmdx.py" selftest
+run "feature-matrix-dx committed captures" 0 timeout 120 python3 -I "$FMDX/fmdx.py" check "$FMDX"/data/vi-v1{0,1,3}.json --expect "$FMDX_EXPECT"
+fmdx_doc=$(timeout 120 python3 -I "$FMDX/fmdx.py" markdown "$FMDX"/data/vi-v1{0,1,3}.json "$FMDX"/data/phone/x4-1128-031240.txt "$FMDX"/data/phone/cmf-1128-031509.txt 2>&1)
+if [ "$fmdx_doc" = "$(cat "$V/FEATURE-MATRIX-DIRECTX.md")" ]; then echo "ok    FEATURE-MATRIX-DIRECTX.md current"; else echo "FAIL  FEATURE-MATRIX-DIRECTX.md differs from fmdx.py markdown (regenerate it)"; fail=1; fi
 
 # progress diagram (docs/progress.svg) is current: derived from the tree, offline, well under a second
 if [ -n "${MALI_SKIP_PROGRESS_CHECK:-}" ]; then echo "skip  progress diagram (CI refreshes it on main)"
