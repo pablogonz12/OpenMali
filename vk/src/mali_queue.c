@@ -643,6 +643,17 @@ mali_present_fence_ok(struct mali_device *dev)
 
 static VkResult mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint32_t *imported);
 
+/* MALI_SUBMIT_DBG: the one line a phone log needs to tie a lost submit to its VkDevice (two live devices in one
+ * process: the X8 ANGLE failure logged the backend's line only, without saying whose submit it was). */
+static void
+submit_lost_log(struct mali_device *dev, struct vk_queue *vq, const char *step, int rc, uint32_t cb, uint32_t ncb)
+{
+   if (!getenv("MALI_SUBMIT_DBG"))
+      return;
+   fprintf(stderr, "mali_vk: submit lost: device #%u VkDevice=%p kdev=%p queue=%p step=%s rc=%d cmdbuf=%u/%u\n",
+           dev->serial, (void *)dev, (void *)dev->kdev, (void *)vq, step, rc, cb, ncb);
+}
+
 /* A submission that loses the queue still signals what it was to signal, except the signals that already took the
  * GPU fence (index < imported): those complete with the work. Waiters (a present's acquire, a fence wait) would
  * otherwise block on a sync that nothing completes; with the queue lost they then observe DEVICE_LOST instead of
@@ -691,8 +702,10 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
             continue;
       }
       VkResult r = vk_sync_wait(&dev->vk, w->sync, w->wait_value, VK_SYNC_WAIT_COMPLETE, UINT64_MAX);
-      if (r != VK_SUCCESS)
+      if (r != VK_SUCCESS) {
+         submit_lost_log(dev, vq, "wait", r, 0, submit->command_buffer_count);
          return vk_queue_set_lost(vq, "queue wait failed: %d", r);
+      }
    }
 
    double p1 = prof_now();
@@ -702,8 +715,10 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
    for (uint32_t i = 0; i < submit->command_buffer_count; i++) {
       VkResult cr = mali_cmd_submit(submit->command_buffers[i]);
       if (cr == VK_ERROR_DEVICE_LOST && getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: frame submit lost\n");
-      if (cr == VK_ERROR_DEVICE_LOST)
+      if (cr == VK_ERROR_DEVICE_LOST) {
+         submit_lost_log(dev, vq, "frame", cr, i, submit->command_buffer_count);
          return vk_queue_set_lost(vq, "frame submit failed");
+      }
       if (cr != VK_SUCCESS)
          return vk_error(vq, cr);
    }
@@ -722,6 +737,7 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
       r = be->submit_signal(dev->kdev, &fd);
    if (r != 0) {
       if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: submit_signal failed: %d\n", r);
+      submit_lost_log(dev, vq, "signal", r, submit->command_buffer_count, submit->command_buffer_count);
       return vk_queue_set_lost(vq, "queue submit failed: %d", r);
    }
 
@@ -754,8 +770,10 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
     * semaphore as signal (an app's fence-only submit has no waits, so it is not counted). */
    if (dev->hw && dev->hw->fp.on && submit->command_buffer_count == 0 && submit->wait_count > 0 && submit->signal_count > 0)
       mali_fprof_present(&dev->hw->fp);
-   if (res != VK_SUCCESS)
-      return vk_queue_set_lost(vq, "queue signal import failed: %d", res); /* GPU work is in flight, its fence is lost */
+   if (res != VK_SUCCESS) {
+      submit_lost_log(dev, vq, "signal_import", res, submit->command_buffer_count, submit->command_buffer_count);
+      return vk_queue_set_lost(vq, "queue signal import failed: %d", res);
+   } /* GPU work is in flight, its fence is lost */
    if (getenv("MALI_PROF")) {
       double p3 = prof_now();
       prof_acc[0] += p1 - p0; prof_acc[1] += p2 - p1; prof_acc[2] += p3 - p2;

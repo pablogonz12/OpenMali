@@ -73,6 +73,7 @@ struct mali_device {
    int32_t mem_count;         /* live VkDeviceMemory, vs maxMemoryAllocationCount */
    struct mali_hwctx *hw;     /* M9: per-device frame resources (mali_queue.c) */
    int present_fence_fd;      /* dup of the last submission's sync_file: the CPU-side present paths wait it (-1 = none) */
+   unsigned serial;           /* process-wide creation index: names this VkDevice in MALI_SUBMIT_DBG lines */
 };
 
 VK_DEFINE_HANDLE_CASTS(mali_instance, vk.base, VkInstance, VK_OBJECT_TYPE_INSTANCE)
