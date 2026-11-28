@@ -36,6 +36,63 @@
  * supported". Steam's CEF then never creates its UI window (webhelper restarts every 10 s). Thus 128 with TF, the 1.0
  * minimums with MALI_EXPERIMENTAL_TF=0, i.e. the same GL capability set a pre-UBO build had. Once the opt-out is deleted
  * (next release) both numbers become unconditional. */
+/* driverVersion. Arm's blob encodes rXpYz as (X << 22) | (Y << 12) | z, which is bit for bit VK_MAKE_VERSION(X, Y, z), and ANGLE reads
+ * every vendorID 0x13b5 device that way (ANGLE chromium/6478 driver_utils.cpp:308-315 ParseARMDriverVersion). It then treats anything
+ * below r44p1 as having broken extended dynamic state (vk_renderer.cpp:4721-4723) and turns off supportsExtendedDynamicState/2 and
+ * every use*DynamicState feature (vk_renderer.cpp:4735-4774), so each state combination becomes its own monolithic pipeline compiled
+ * at draw time. Our old 0.1.0 read as "r0p1". The other Arm thresholds in that file are r38p1 (disallowMixedDepthStencilLoadOpNoneAndLoad,
+ * :4303) and r43 (useNonZeroStencilWriteMaskStaticState, :4918); the only "newer is buggy" rule (r46+, :4723) applies only to
+ * job-manager Malis, which ANGLE recognises by maxDrawIndirectCount <= 1, and we report 0xffff. ANGLE main applies all of these to
+ * the Arm blob only (driverID != MESA_PANVK, IsMesaPanVK), so the value is inert there. DXVK, vkd3d-proton, zink and gamescope compare
+ * driverVersion only for NVIDIA, RADV/AMD and Imagination.
+ *
+ * Default: Arm-style "r(64 + M)p(m)-(p)" for mali-open M.m.p, i.e. r64p1 for 0.1.0 = 0x10001000 (VK_MAKE_VERSION 64.1.0). It clears
+ * every lower threshold above with room (the newest Arm-blob threshold in ANGLE main is r52), is not a shipping Arm release, and
+ * decodes back to our own version (major - 64). MALI_DRIVER_VERSION=<major.minor.patch> (VK_MAKE_VERSION fields) or a raw number
+ * (0x... or decimal) overrides it for A/B; MALI_DRIVER_VERSION=legacy or 0.1.0 gives the old value. Anything unparsable is ignored. */
+#define MALI_OPEN_VERSION_MAJOR 0
+#define MALI_OPEN_VERSION_MINOR 1
+#define MALI_OPEN_VERSION_PATCH 0
+#define MALI_DRIVER_VERSION_ARM_OFFSET 64
+#define MALI_DRIVER_VERSION_LEGACY VK_MAKE_VERSION(0, 1, 0)
+
+static uint32_t
+mali_driver_version(void)
+{
+   const uint32_t def = VK_MAKE_VERSION(MALI_DRIVER_VERSION_ARM_OFFSET + MALI_OPEN_VERSION_MAJOR, MALI_OPEN_VERSION_MINOR,
+                                        MALI_OPEN_VERSION_PATCH);
+   const char *e = getenv("MALI_DRIVER_VERSION");
+   if (!e || !*e)
+      return def;
+   if (!strcmp(e, "legacy"))
+      return MALI_DRIVER_VERSION_LEGACY;
+   char *end = NULL;
+   if (strchr(e, '.')) {
+      /* three decimal fields within the VK_MAKE_VERSION widths (10/10/12 bits) */
+      unsigned long f[3];
+      const char *s = e;
+      for (int i = 0; i < 3; i++) {
+         if (*s < '0' || *s > '9')
+            return def;
+         errno = 0;
+         f[i] = strtoul(s, &end, 10);
+         if (errno || end == s || *end != (i < 2 ? '.' : '\0'))
+            return def;
+         s = end + 1;
+      }
+      if (f[0] > 1023 || f[1] > 1023 || f[2] > 4095)
+         return def;
+      return VK_MAKE_VERSION(f[0], f[1], f[2]);
+   }
+   if (*e < '0' || *e > '9')
+      return def;
+   errno = 0;
+   unsigned long long v = strtoull(e, &end, 0);
+   if (errno || end == e || *end != '\0' || v > UINT32_MAX)
+      return def;
+   return (uint32_t)v;
+}
+
 static void
 mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
 {
@@ -47,7 +104,7 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
 
    *p = (struct vk_properties){
       .apiVersion = MALI_DEVICE_API_VERSION,
-      .driverVersion = VK_MAKE_API_VERSION(0, 0, 1, 0),
+      .driverVersion = mali_driver_version(),   /* Arm-style r64p1 by default, see mali_driver_version() */
       .vendorID = MALI_VENDOR_ID_ARM,
       .deviceID = gpu->gpu_id >> 16,
       .deviceType = VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU,

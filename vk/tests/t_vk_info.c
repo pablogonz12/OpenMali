@@ -61,6 +61,8 @@ static const char *const core_dev[] = {
 
 static const char *g_icd;
 static VkInstance inst;
+/* --expect-driver-version: the driverVersion this run must report (check.sh runs the default and the MALI_DRIVER_VERSION forms) */
+static uint32_t g_want_drv = 0x10001000u;   /* Arm-style r64p1 = mali-open 0.1.0 (mali_physical_device.c mali_driver_version) */
 
 static void
 eq(const char *name, uint64_t a, uint64_t b)
@@ -74,6 +76,7 @@ main(int argc, char **argv)
    for (int i = 1; i < argc; i++) {
       if (!strcmp(argv[i], "--direct") && i + 1 < argc) g_icd = argv[++i];
       else if (!strcmp(argv[i], "--dump")) g_dump = 1;
+      else if (!strcmp(argv[i], "--expect-driver-version") && i + 1 < argc) g_want_drv = (uint32_t)strtoul(argv[++i], NULL, 0);
    }
    if (!g_icd) { printf("usage: t_vk_info --direct <icd.so> [--dump]\n"); return 2; }
    void *lib = dlopen(g_icd, RTLD_NOW | RTLD_LOCAL);
@@ -118,6 +121,9 @@ main(int argc, char **argv)
    CHECK(VK_API_VERSION_MAJOR(pr.properties.apiVersion) == 1 && VK_API_VERSION_MINOR(pr.properties.apiVersion) == 3,
          "apiVersion %x", pr.properties.apiVersion);
    CHECK(pr.properties.vendorID == 0x13b5, "vendor");
+   /* ANGLE decodes Arm versions as major = v >> 22 (ParseARMDriverVersion) and treats < r44p1 as extended-dynamic-state-buggy */
+   CHECK(pr.properties.driverVersion == g_want_drv, "driverVersion 0x%x, want 0x%x (Arm r%up%u)", pr.properties.driverVersion, g_want_drv,
+         pr.properties.driverVersion >> 22, (pr.properties.driverVersion >> 12) & 0x3ff);
    eq("driverID", p12.driverID, drv.driverID);
    CHECK(drv.driverID != 0 && drv.driverName[0], "driver id/name");
    CHECK(!strcmp(drv.driverName, "mali-own"), "driverName '%s'", drv.driverName);

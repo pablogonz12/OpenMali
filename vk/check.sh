@@ -60,6 +60,10 @@ run "direct v13"         0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 "$OUT/t_icd" --di
 run "direct no backend"  0 -u MALI_BACKEND "$OUT/t_icd" --direct "$OUT/libvulkan_mali.so" --expect-none
 run "direct bad fake gpu" 0 MALI_BACKEND=fake MALI_FAKE_GPU=v99 "$OUT/t_icd" --direct "$OUT/libvulkan_mali.so" --expect-none
 for g in v11 v13; do run "vk_info $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so"; done
+# driverVersion (mali_physical_device.c mali_driver_version): default Arm-style r64p1, MALI_DRIVER_VERSION dotted / raw / legacy, junk ignored
+for dv in "1.2.3 0x00402003" "0x0b001000 0x0b001000" "legacy 0x1000" "0.1.0 0x1000" "44.1.0 0x0b001000" "1024.0.0 0x10001000" "r44p1 0x10001000" "1.2 0x10001000" "12abc 0x10001000"; do
+   set -- $dv; run "vk_info v11 MALI_DRIVER_VERSION=$1" 0 MALI_DRIVER_VERSION=$1 MALI_BACKEND=fake MALI_FAKE_GPU=v11 "$OUT/t_vk_info" --direct "$OUT/libvulkan_mali.so" --expect-driver-version $2
+done
 # RUNG2 state sweep (samplers / blend / depth-stencil). The fake backend executes nothing, so the host side checks that
 # every case builds its Vulkan state, sampler and pipeline and that the case table is complete; the pixel verdicts are
 # hardware-only (vk/tests/build-t_state_sweep.sh native; notes/state-sweep.md).
