@@ -1,0 +1,489 @@
+#!/usr/bin/env python3
+"""latfps - frames actually PRESENTED for one Android layer, from `dumpsys SurfaceFlinger --latency`.
+
+  latfps collect <phone> [--seconds 30] [--interval 0.3] [--layer REGEX] --out DIR
+  latfps analyze DIR [--hz N]          one JSON line, also written to DIR/analysis.json
+  latfps reps DIR1 DIR2 DIR3 [--hz N]  median rep + spread; UNSTABLE when reps differ by > 20 % of the median
+  latfps selftest                      synthetic dumps with exact expected numbers; never contacts a phone
+
+collect: `dumpsys SurfaceFlinger --list`, pick the layer (exactly one match of --layer, else the default: a layer
+named `droiddeck_wayland_game*`, else the session's `SurfaceView[<pkg>/...](BLAST)*`; ids change, so it is resolved
+again on every run), `--latency-clear "<name>"`, then ONE shell loop on the phone polls `--latency "<name>"` every
+--interval s for --seconds s. Each dump lands in DIR/raw.txt after a marker `@@POLL <i> <phone wall ns> host=<host s>`
+(the host time is stamped as the marker arrives). `dumpsys display` is saved before and after (display-before.txt,
+display-after.txt). Every phone command goes through `$M/bin/ddc <phone> adb ...` (LATFPS_DDC overrides it in tests)
+and is bounded by a host `timeout`; each dumpsys inside the loop by the phone's `timeout`.
+
+analyze: line 1 of a dump = refresh period (ns); each row = desiredPresent, actualPresent, frameReady (ns). Only
+actualPresent is used; 0 (cleared/empty slot), <0 (invalid fence) and INT64_MAX (fence still pending) are dropped;
+polls are merged by sort + dedupe. A frame takes the refresh period of the first poll that showed it.
+  frames, duration_s, displayed_fps = (N-1)/(t_last-t_first)  [gaps included: the wall-clock rate]
+  active_fps = intervals/time without the gaps > 250 ms; median/p90/p99 interval (ms, nearest rank, gaps excluded)
+  missed_vsyncs = sum(round(d/P) - 1) over non-gap intervals; share of intervals at 1/2/3/4+ periods
+  gaps_over_250ms {count, total_s}; refresh_hz_before/after (first/last poll), display state before/after
+Verdict OK, or a rejection (exit 1, no fps is to be reported): RING_GAP (two consecutive polls that both hold
+presented rows share none: the 127-row ring wrapped between them, frames were lost; 127 rows = 0.88 s at 144 Hz),
+NO_FRAMES (< 2 presented frames; also what an unmatched layer name looks like), DUPLICATE_LAYER_NAME (a poll had
+> 127 rows: SurfaceFlinger dumped two layers of that name), FPS_ABOVE_PANEL (displayed_fps > panel Hz + 2; panel Hz =
+--hz, else the highest refresh rate seen). REFRESH_CHANGED (the period line moved during the run) is a flag, not a
+rejection: the numbers stay per-frame-period correct, but say so with the result.
+
+VERIFIED FROM AOSP SOURCE (frameworks/native, main + android14/15-release, read 2026-11-28):
+  FrameTracker.h NUM_FRAME_RECORDS = 128; dumpStats prints the 127 oldest-to-newest slots after mOffset as
+  "desired\\tactual\\tready"; a new slot starts at INT64_MAX and stays so until its fence signals; clearStats zeroes
+  every slot. SurfaceFlinger::dumpStats prints the vsync period first (A14/15: getVsyncPeriodFromHWC, main: the
+  pacesetter's) and matches the layer by EXACT getName(); --list prints getDebugName() on A13/A14 but
+  `RequestedLayerState{<name> parentId=.. z=..}` on A15+ (both are parsed here).
+ASSUMPTIONS NOT VERIFIED (each needs the phone run below):
+  - the vendor SurfaceFlinger (HyperOS / MTK, Nothing OS) behaves like AOSP, and FrameTracker is fed for the
+    session's BLAST layer (if every row stays 0 the result is NO_FRAMES: try --layer on another candidate);
+  - present-fence timestamps are as accurate as the vendor HWC makes them (vendor-dependent: some HWCs signal the
+    fence at retire, some at a fixed offset; intervals are right if the offset is constant, absolute times are not);
+  - the period line follows the ACTIVE refresh rate under HyperOS's dynamic refresh / VRR (REFRESH_CHANGED relies on
+    it); the `dumpsys display` keys kept in display_* differ per vendor and are informational only;
+  - toybox `sleep` takes fractions and `date +%s%N` works in `adb shell` (true on AOSP toybox).
+VALIDATION STILL OWED ON HARDWARE: a fixed-rate control that submits exactly 60 and then exactly 120 frames/s
+(e.g. a vsync-locked test app), filmed with a camera at >= 240 fps; latfps must agree with the film within 1 %.
+Until then this is a better proxy, not ground truth. A number is 3 reps x 30 s combined with `latfps reps`.
+Exit: 0 OK, 1 rejected/UNSTABLE, 2 usage, 3 layer not resolved, 4 phone command failed.
+"""
+import argparse
+import json
+import math
+import os
+from pathlib import Path
+import re
+import shlex
+import statistics
+import subprocess
+import sys
+import tempfile
+import time
+
+M = Path(os.environ.get("M", Path(os.environ.get("MALI_LAB_ROOT", Path.home() / ".local/share/mali-phone-lab"))))
+INT64_MAX = 2**63 - 1
+RING_ROWS = 127
+GAP_NS = 250_000_000
+UNSTABLE_PCT = 20.0
+
+
+# ---------------------------------------------------------------- phone side (collect)
+def ddc_cmd():
+    return os.environ.get("LATFPS_DDC") or str(M / "bin/ddc")
+
+
+def phone_sh(phone, script, timeout):
+    """One `adb shell` through ddc, bounded on the host. Raises on failure."""
+    p = subprocess.run([ddc_cmd(), phone, "adb", "shell", script], text=True, capture_output=True, timeout=timeout)
+    if p.returncode != 0:
+        raise RuntimeError("phone command failed (rc=%s): %s" % (p.returncode, (p.stderr or p.stdout).strip()[-300:]))
+    return p.stdout.replace("\r\n", "\n")
+
+
+_DEBUG_ATTR = re.compile(r"(?: (?:parentId|relativeParentId|mirrorId|z|layerStack)=\S*| !handle)+$")
+
+
+def layer_names(text):
+    """Names from `dumpsys SurfaceFlinger --list`: plain lines (A13/A14) or RequestedLayerState{name ...} (A15+)."""
+    out = []
+    for line in text.replace("\r\n", "\n").split("\n"):
+        line = line.rstrip()
+        if not line.strip() or line.startswith("Display ") or line.endswith(" layers"):
+            continue
+        m = re.match(r"^\s*RequestedLayerState\{(.*)\}$", line)
+        if m:
+            line = _DEBUG_ATTR.sub("", m.group(1))
+        out.append(line)
+    return out
+
+
+def pick_layer(names, package, regex=None):
+    """-> (name, candidates). name is None unless exactly one candidate matches."""
+    if regex:
+        cands = [n for n in names if re.search(regex, n)]
+    else:
+        cands = [n for n in names if n.startswith("droiddeck_wayland_game")]
+        if not cands and package:
+            pre = "SurfaceView[%s/" % package
+            cands = [n for n in names if n.startswith(pre) and "(BLAST)" in n]
+    cands = list(dict.fromkeys(cands))
+    return (cands[0] if len(cands) == 1 else None), cands
+
+
+def phone_package(phone):
+    """Column 3 of M/phones.conf (the DroidDeck package); nothing else is read from it."""
+    conf = M / "phones.conf"
+    try:
+        for line in conf.read_text().splitlines():
+            f = line.split("|")
+            if len(f) >= 3 and f[0].strip() == phone:
+                return f[2].strip()
+    except OSError:
+        pass
+    return None
+
+
+def poll_script(name, seconds, interval):
+    n = max(1, int(round(seconds / interval)))
+    q = shlex.quote(name)
+    return ("i=0; while [ $i -lt %d ]; do echo \"@@POLL $i $(date +%%s%%N)\"; "
+            "timeout 5 dumpsys SurfaceFlinger --latency %s; sleep %s; i=$((i+1)); done; echo @@END"
+            % (n, q, interval))
+
+
+def collect(a):
+    out = Path(a.out)
+    out.mkdir(parents=True, exist_ok=True)
+    try:
+        lst = phone_sh(a.phone, "dumpsys SurfaceFlinger --list", 30)
+    except (RuntimeError, subprocess.TimeoutExpired) as e:
+        print(json.dumps({"verdict": "PHONE_ERROR", "error": str(e)})); return 4
+    (out / "layers.txt").write_text(lst)
+    name, cands = pick_layer(layer_names(lst), phone_package(a.phone), a.layer)
+    if not name:
+        print(json.dumps({"verdict": "LAYER_UNRESOLVED", "layer_regex": a.layer, "candidates": cands,
+                          "hint": "pass --layer REGEX matching exactly one name (see layers.txt)"}))
+        return 3
+    (out / "layer.txt").write_text(name + "\n")
+    meta = {"phone": a.phone, "layer": name, "candidates": cands, "seconds": a.seconds, "interval": a.interval,
+            "host_start": time.time()}
+    try:
+        (out / "display-before.txt").write_text(phone_sh(a.phone, "dumpsys display", 30))
+        phone_sh(a.phone, "dumpsys SurfaceFlinger --latency-clear %s" % shlex.quote(name), 30)
+        with open(out / "raw.txt", "w") as raw:
+            p = subprocess.Popen([ddc_cmd(), a.phone, "adb", "shell", poll_script(name, a.seconds, a.interval)],
+                                 text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            deadline = time.time() + a.seconds + 60
+            ended = False
+            for line in p.stdout:
+                line = line.replace("\r", "")
+                if line.startswith("@@POLL "):
+                    line = "%s host=%.3f\n" % (line.rstrip("\n"), time.time())
+                if line.startswith("@@END"):
+                    ended = True
+                raw.write(line)
+                if time.time() > deadline:
+                    p.kill(); break
+            try:
+                rc = p.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                p.kill(); rc = -9
+            if rc != 0 or not ended:
+                raise RuntimeError("poll loop failed (rc=%s, ended=%s): %s" % (rc, ended, p.stderr.read()[-300:]))
+        (out / "display-after.txt").write_text(phone_sh(a.phone, "dumpsys display", 30))
+    except (RuntimeError, subprocess.TimeoutExpired, OSError) as e:
+        meta["error"] = str(e)
+        (out / "meta.json").write_text(json.dumps(meta, indent=1))
+        print(json.dumps({"verdict": "PHONE_ERROR", "error": str(e), "dir": str(out)})); return 4
+    meta["host_end"] = time.time()
+    (out / "meta.json").write_text(json.dumps(meta, indent=1))
+    res = analyze_dir(out, a.hz)
+    print(json.dumps(res))
+    return 0 if res["verdict"] == "OK" else 1
+
+
+# ---------------------------------------------------------------- analysis (host only)
+def parse_raw(text):
+    """-> list of polls {period, rows[(desired, actual, ready)], marker}."""
+    polls, cur = [], None
+    for line in text.replace("\r\n", "\n").split("\n"):
+        if line.startswith("@@POLL"):
+            cur = {"marker": line, "period": None, "rows": []}
+            polls.append(cur)
+            continue
+        if cur is None or line.startswith("@@"):
+            continue
+        f = line.split()
+        if not f:
+            continue
+        try:
+            v = [int(x) for x in f]
+        except ValueError:
+            continue
+        if len(v) == 1 and cur["period"] is None and not cur["rows"]:
+            cur["period"] = v[0]
+        elif len(v) == 3:
+            cur["rows"].append(tuple(v))
+    return polls
+
+
+def valid(t):
+    return 0 < t < INT64_MAX
+
+
+def nearest_rank(sorted_vals, q):
+    return sorted_vals[max(0, math.ceil(q * len(sorted_vals)) - 1)]
+
+
+DISPLAY_KEYS = re.compile(r"(mActiveModeId|mActiveRenderFrameRate|renderFrameRate|mRefreshRateInZone|"
+                          r"mDefaultModeId|mUserPreferredModeId|refreshRate=|peakRefreshRate)[^,\n]{0,60}")
+
+
+def display_state(path):
+    try:
+        t = Path(path).read_text(errors="replace")
+    except OSError:
+        return None
+    return sorted({m.group(0).strip() for m in DISPLAY_KEYS.finditer(t)})[:12]
+
+
+def analyze_polls(polls, hz=None):
+    res = {"polls": len(polls)}
+    reasons, flags = [], []
+    seen, first_p = {}, {}
+    prev, pending_last = None, 0
+    periods = [p["period"] for p in polls if p["period"]]
+    for i, p in enumerate(polls):
+        if len(p["rows"]) > RING_ROWS and "DUPLICATE_LAYER_NAME" not in reasons:
+            reasons.append("DUPLICATE_LAYER_NAME")
+        acts = {r[1] for r in p["rows"] if valid(r[1])}
+        if prev and acts and not (prev & acts):
+            if "RING_GAP" not in reasons:
+                reasons.append("RING_GAP")
+                res["ring_gap_at_poll"] = i
+        for t in acts:
+            if t not in seen:
+                seen[t] = True
+                first_p[t] = p["period"] or (periods[0] if periods else None)
+        if acts:
+            prev = acts
+        if i == len(polls) - 1:
+            pending_last = sum(1 for r in p["rows"] if r[1] == INT64_MAX)
+    t = sorted(seen)
+    res["frames"] = len(t)
+    res["pending_at_end"] = pending_last
+    if periods:
+        res["refresh_hz_before"] = round(1e9 / periods[0], 2)
+        res["refresh_hz_after"] = round(1e9 / periods[-1], 2)
+        if any(abs(x - periods[0]) > 0.01 * periods[0] for x in periods):
+            flags.append("REFRESH_CHANGED")
+            res["refresh_hz_seen"] = sorted({round(1e9 / x, 2) for x in periods})
+    if len(t) < 2:
+        reasons.append("NO_FRAMES")
+    else:
+        span = t[-1] - t[0]
+        d = [(b - a, first_p[b]) for a, b in zip(t, t[1:])]
+        gaps = [x for x, _ in d if x > GAP_NS]
+        live = [(x, per) for x, per in d if x <= GAP_NS]
+        res["duration_s"] = round(span / 1e9, 3)
+        res["displayed_fps"] = round((len(t) - 1) / (span / 1e9), 2)
+        res["gaps_over_250ms"] = {"count": len(gaps), "total_s": round(sum(gaps) / 1e9, 3)}
+        if live:
+            ms = sorted(x / 1e6 for x, _ in live)
+            res["active_fps"] = round(len(live) / (sum(x for x, _ in live) / 1e9), 2)
+            res["interval_ms"] = {"median": round(statistics.median(ms), 3), "p90": round(nearest_rank(ms, 0.90), 3),
+                                  "p99": round(nearest_rank(ms, 0.99), 3)}
+            ks = [max(1, round(x / per)) if per else None for x, per in live]
+            if all(k is not None for k in ks):
+                res["missed_vsyncs"] = sum(k - 1 for k in ks)
+                n = len(ks)
+                res["periods_share_pct"] = {
+                    "1": round(100.0 * sum(k == 1 for k in ks) / n, 2), "2": round(100.0 * sum(k == 2 for k in ks) / n, 2),
+                    "3": round(100.0 * sum(k == 3 for k in ks) / n, 2), "4+": round(100.0 * sum(k >= 4 for k in ks) / n, 2)}
+        panel = hz or (max(1e9 / x for x in periods) if periods else None)
+        if panel:
+            res["panel_hz"] = round(panel, 2)
+            if res["displayed_fps"] > panel + 2:
+                reasons.append("FPS_ABOVE_PANEL")
+    res["flags"] = flags
+    res["reasons"] = reasons
+    res["verdict"] = reasons[0] if reasons else "OK"
+    return res
+
+
+def analyze_dir(d, hz=None):
+    d = Path(d)
+    raw = d / "raw.txt"
+    if not raw.is_file():
+        return {"dir": str(d), "verdict": "NO_DATA", "reasons": ["NO_DATA"], "flags": []}
+    res = {"dir": str(d)}
+    try:
+        res["layer"] = (d / "layer.txt").read_text().strip()
+    except OSError:
+        pass
+    res.update(analyze_polls(parse_raw(raw.read_text(errors="replace")), hz))
+    for k, f in (("display_before", "display-before.txt"), ("display_after", "display-after.txt")):
+        s = display_state(d / f)
+        if s is not None:
+            res[k] = s
+    (d / "analysis.json").write_text(json.dumps(res, indent=1) + "\n")
+    return res
+
+
+def reps_summary(results):
+    out = {"reps": [{"dir": r.get("dir"), "verdict": r["verdict"], "displayed_fps": r.get("displayed_fps")}
+                    for r in results]}
+    bad = [r for r in results if r["verdict"] != "OK"]
+    if bad:
+        out["verdict"] = "REJECTED"; out["reasons"] = sorted({x for r in bad for x in r["reasons"]}); return out
+    v = [r["displayed_fps"] for r in results]
+    med = statistics.median(v)
+    spread = max(v) - min(v)
+    out.update({"median_fps": round(med, 2), "spread_fps": round(spread, 2),
+                "spread_pct": round(100.0 * spread / med, 2) if med else None, "values": v})
+    flags = sorted({f for r in results for f in r.get("flags", [])})
+    if flags:
+        out["flags"] = flags
+    if len(v) < 3:
+        out["verdict"] = "TOO_FEW_REPS"
+    elif med and spread > UNSTABLE_PCT / 100.0 * med:
+        out["verdict"] = "UNSTABLE"; del out["median_fps"]   # unstable: report the three values, no median
+    else:
+        out["verdict"] = "OK"
+        mr = min(results, key=lambda r: abs(r["displayed_fps"] - med))
+        out["median_rep"] = mr
+    return out
+
+
+# ---------------------------------------------------------------- selftest (synthetic dumps)
+def synth(frames, poll_times, period_at, ready_lag=2_000_000, pending_ns=None, clear_at=0):
+    """Fake --latency dumps. frames: sorted present times (ns). A frame is in the ring once latched (one period
+    before present) and shows INT64_MAX until poll time passes its present + pending_ns (fence not yet read)."""
+    out = []
+    for i, pt in enumerate(poll_times):
+        P = period_at(pt)
+        pend = P if pending_ns is None else pending_ns
+        latched = [f for f in frames if clear_at <= f - P <= pt]
+        ring = latched[-RING_ROWS:]
+        rows = [(0, 0, 0)] * (RING_ROWS - len(ring))
+        for f in ring:
+            act = f if f + pend <= pt else INT64_MAX
+            rows.append((f - P, act, f - ready_lag))
+        out.append("@@POLL %d %d host=%.3f\n%d\n%s\n" % (i, pt, pt / 1e9, P, "\n".join("%d\t%d\t%d" % r for r in rows)))
+    return "".join(out) + "@@END\n"
+
+
+def polls_every(start, end, step):
+    t, out = start, []
+    while t <= end:
+        out.append(t); t += step
+    return out
+
+
+def selftest():
+    S = 1_000_000_000
+    P120, P60, P144 = 8_333_333, 16_666_667, 6_944_444
+    ok = []
+
+    def run(name, text, hz=None, **exp):
+        r = analyze_polls(parse_raw(text), hz)
+        for k, v in exp.items():
+            got = r.get(k)
+            if isinstance(v, dict):
+                got = {kk: (got or {}).get(kk) for kk in v}
+            assert got == v, "%s: %s = %r, want %r\n%s" % (name, k, got, v, json.dumps(r))
+        ok.append(name)
+        return r
+
+    polls = polls_every(S // 2, 11 * S, 300_000_000)
+    f60 = [S + i * 2 * P120 for i in range(600)]                       # 60 fps on a 120 Hz panel
+    run("steady60@120", synth(f60, polls, lambda t: P120), frames=600, displayed_fps=60.0, missed_vsyncs=599,
+        verdict="OK", periods_share_pct={"1": 0.0, "2": 100.0}, interval_ms={"median": 16.667},
+        gaps_over_250ms={"count": 0, "total_s": 0.0}, refresh_hz_before=120.0, flags=[])
+    f120 = [S + i * P120 for i in range(1200)]
+    run("steady120", synth(f120, polls, lambda t: P120), frames=1200, displayed_fps=120.0, missed_vsyncs=0,
+        verdict="OK", periods_share_pct={"1": 100.0}, interval_ms={"median": 8.333, "p99": 8.333})
+    # 144 Hz, present jitter of +-0.3 ms, and every 10th frame skips a vsync
+    f144, v = [], 0
+    for i in range(1000):
+        f144.append(S + v * P144 + (0, 300_000, -300_000)[i % 3])
+        v += 2 if i % 10 == 9 else 1
+    run("jitter144", synth(f144, polls_every(S // 2, 9 * S, 300_000_000), lambda t: P144), frames=1000,
+        missed_vsyncs=99, verdict="OK", periods_share_pct={"1": 90.09, "2": 9.91, "3": 0.0, "4+": 0.0},
+        displayed_fps=131.02, interval_ms={"median": 7.244, "p90": 7.244, "p99": 14.189}, refresh_hz_before=144.0)
+    # ring gap: one 1.2 s pause between polls at 144 Hz (> 127 frames) must reject the rep
+    gp = polls_every(S // 2, 3 * S, 300_000_000) + polls_every(4_200_000_000, 7 * S, 300_000_000)
+    run("ring_gap", synth([S + i * P144 for i in range(800)], gp, lambda t: P144), verdict="RING_GAP")
+    # pending fences: rows stay INT64_MAX for 40 ms after present; the last poll's pending rows are not counted
+    fp = [S + i * P120 for i in range(300)]
+    last = fp[-1] + 10_000_000
+    run("pending", synth(fp, polls_every(S // 2, S // 2 + 9 * 300_000_000, 300_000_000) + [last], lambda t: P120,
+                         pending_ns=40_000_000), frames=296, pending_at_end=4, missed_vsyncs=0, verdict="OK")
+    # duplicates: the same frames polled twice as often still count once
+    run("duplicates", synth(f120, polls_every(S // 2, 11 * S, 150_000_000), lambda t: P120), frames=1200,
+        displayed_fps=120.0, verdict="OK")
+    # idle gap of 1 s in a 120 Hz run: reported apart, not in the percentiles or the missed vsyncs
+    fi = [S + i * P120 for i in range(240)] + [S + 239 * P120 + S + i * P120 for i in range(240)]
+    run("idle_gap", synth(fi, polls_every(S // 2, 7 * S, 300_000_000), lambda t: P120), frames=480,
+        gaps_over_250ms={"count": 1, "total_s": 1.0}, missed_vsyncs=0, active_fps=120.0, displayed_fps=96.12,
+        interval_ms={"median": 8.333, "p99": 8.333}, verdict="OK")
+    # refresh 120 -> 60 Hz at 4 s, the app follows the panel: all intervals at 1 period, flagged
+    sw = 4 * S
+    fr = [S + i * P120 for i in range(360)]
+    fr += [fr[-1] + (i + 1) * P60 for i in range(180)]
+    sw = fr[359] + P120 // 2
+    run("refresh_change", synth(fr, polls_every(S // 2, 8 * S, 300_000_000), lambda t: P120 if t < sw else P60),
+        frames=540, flags=["REFRESH_CHANGED"], refresh_hz_before=120.0, refresh_hz_after=60.0, verdict="OK",
+        missed_vsyncs=0, periods_share_pct={"1": 100.0})
+    # an unmatched layer name: SurfaceFlinger prints only the period line
+    run("no_layer", "@@POLL 0 1 host=0\n8333333\n\n@@END\n", verdict="NO_FRAMES")
+    # two layers of one name: 254 rows in a poll
+    two = synth(f120[:300], [3 * S], lambda t: P120).replace("@@END\n", "")
+    body = two.split("\n", 2)[2]
+    run("dup_name", two + body + "@@END\n", reasons=["DUPLICATE_LAYER_NAME"])
+    run("above_panel", synth(f120, polls, lambda t: P120), hz=60, verdict="FPS_ABOVE_PANEL")
+    # --list parsing, A14 names and A15 debug strings, and the resolver
+    a14 = ("Display 0 (active) HWC layers:\nSurfaceView[com.x.y/com.x.y.SessionActivity]#91\n"
+           "SurfaceView[com.x.y/com.x.y.SessionActivity](BLAST)#92\nStatusBar#40\n")
+    a15 = ("RequestedLayerState{SurfaceView[com.x.y/com.x.y.SessionActivity](BLAST)#92 parentId=91 z=-2}\n"
+           "RequestedLayerState{Task=12#55 parentId=3 !handle}\nRequestedLayerState{droiddeck_wayland_game 1#300 parentId=7}\n")
+    assert layer_names(a14)[1:] == ["SurfaceView[com.x.y/com.x.y.SessionActivity](BLAST)#92", "StatusBar#40"], layer_names(a14)
+    assert layer_names(a15) == ["SurfaceView[com.x.y/com.x.y.SessionActivity](BLAST)#92", "Task=12#55",
+                                "droiddeck_wayland_game 1#300"], layer_names(a15)
+    assert pick_layer(layer_names(a14), "com.x.y")[0] == "SurfaceView[com.x.y/com.x.y.SessionActivity](BLAST)#92"
+    assert pick_layer(layer_names(a15), "com.x.y")[0] == "droiddeck_wayland_game 1#300"
+    assert pick_layer(layer_names(a14), "com.x.y", r"SurfaceView")[0] is None
+    assert len(pick_layer(layer_names(a14), "com.x.y", r"SurfaceView")[1]) == 2
+    assert pick_layer(layer_names(a14), "com.other")[0] is None
+    assert "'SurfaceView[a/b](BLAST)#9'" in poll_script("SurfaceView[a/b](BLAST)#9", 30, 0.3)
+    assert "-lt 100 " in poll_script("x", 30, 0.3)
+    ok.append("layer_list")
+    # reps: stable, unstable (> 20 % of the median), one rejected rep
+    mk = lambda f, v="OK": {"verdict": v, "displayed_fps": f, "reasons": [] if v == "OK" else [v], "flags": []}
+    r = reps_summary([mk(60.0), mk(61.0), mk(59.5)])
+    assert r["verdict"] == "OK" and r["median_fps"] == 60.0 and r["spread_fps"] == 1.5, r
+    r = reps_summary([mk(60.0), mk(80.0), mk(58.0)])
+    assert r["verdict"] == "UNSTABLE" and "median_fps" not in r and r["values"] == [60.0, 80.0, 58.0], r
+    r = reps_summary([mk(60.0), mk(None, "RING_GAP"), mk(60.0)])
+    assert r["verdict"] == "REJECTED" and r["reasons"] == ["RING_GAP"], r
+    ok.append("reps")
+    # analyze_dir end to end on a temp dir
+    with tempfile.TemporaryDirectory() as td:
+        Path(td, "raw.txt").write_text(synth(f120, polls, lambda t: P120))
+        Path(td, "display-before.txt").write_text("  mActiveModeId=2, mActiveRenderFrameRate=120.0\n")
+        r = analyze_dir(td)
+        assert r["verdict"] == "OK" and r["display_before"] and Path(td, "analysis.json").is_file(), r
+    ok.append("analyze_dir")
+    print("latfps selftest: OK %d cases (%s)" % (len(ok), " ".join(ok)))
+    return 0
+
+
+def main(argv):
+    ap = argparse.ArgumentParser(prog="latfps", description=__doc__.split("\n")[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    c = sub.add_parser("collect")
+    c.add_argument("phone"); c.add_argument("--seconds", type=float, default=30.0)
+    c.add_argument("--interval", type=float, default=0.3); c.add_argument("--layer")
+    c.add_argument("--out", required=True); c.add_argument("--hz", type=float)
+    an = sub.add_parser("analyze"); an.add_argument("dir"); an.add_argument("--hz", type=float)
+    rp = sub.add_parser("reps"); rp.add_argument("dirs", nargs="+"); rp.add_argument("--hz", type=float)
+    sub.add_parser("selftest")
+    a = ap.parse_args(argv)
+    if a.cmd == "selftest":
+        return selftest()
+    if a.cmd == "collect":
+        if not (0.05 <= a.interval <= 0.6) or a.seconds <= 0:
+            print("--interval must be 0.05..0.6 s (the ring holds 0.88 s at 144 Hz) and --seconds > 0", file=sys.stderr)
+            return 2
+        return collect(a)
+    if a.cmd == "analyze":
+        r = analyze_dir(a.dir, a.hz); print(json.dumps(r)); return 0 if r["verdict"] == "OK" else 1
+    rs = []
+    for d in a.dirs:
+        r = analyze_dir(d, a.hz)
+        rs.append(r)
+    s = reps_summary(rs); print(json.dumps(s)); return 0 if s["verdict"] == "OK" else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
