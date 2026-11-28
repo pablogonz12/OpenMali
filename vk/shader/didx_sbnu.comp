@@ -1,0 +1,11 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+// t_desc descidx: sb array, index nonuniformEXT(lane & 3) (twin of didx_sbdyn.comp)
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0, std430) buffer S { uint d[]; } ssbo[];
+layout(set = 0, binding = 3, std430) buffer O { uint r[]; } o;
+void main() {
+  uint t = gl_LocalInvocationIndex;
+  int i = int(t & 3u);
+  o.r[t] = ssbo[nonuniformEXT(i)].d[t];
+}

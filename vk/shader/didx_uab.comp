@@ -1,0 +1,24 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+// descriptorIndexing probe (t_vk_feat didxuab): the sub-features vk.xml ties to descriptorIndexing beyond sampled images.
+// Runtime-sized SSBO array (layout count 8, PARTIALLY_BOUND, only 0..3 written), uniform and storage texel buffer arrays,
+// every binding UPDATE_AFTER_BIND and written after vkCmdBindDescriptorSets. di = dynamically uniform index (o.dyn),
+// nu = divergent index (lane & 3). Results: o.r[t*5+k]; writes: ssbo[].d[64+t] (non-uniform), stb[].texel(64+t) (dynamic).
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0, std430) buffer S { uint d[]; } ssbo[];
+layout(set = 0, binding = 1) uniform usamplerBuffer utb[4];
+layout(set = 0, binding = 2, r32ui) uniform uimageBuffer stb[4];
+layout(set = 0, binding = 3, std430) buffer O { uint dyn; uint pad[3]; uint r[]; } o;
+void main() {
+  uint t = gl_LocalInvocationIndex;
+  int di = int(o.dyn);
+  int nu = int(t & 3u);
+  uint b = t * 5u;
+  o.r[b + 0u] = ssbo[di].d[t];
+  o.r[b + 1u] = ssbo[nonuniformEXT(nu)].d[t];
+  o.r[b + 2u] = texelFetch(utb[di], int(t)).x;
+  o.r[b + 3u] = texelFetch(utb[nonuniformEXT(nu)], int(t)).x;
+  o.r[b + 4u] = imageLoad(stb[di], int(t)).x;
+  ssbo[nonuniformEXT(nu)].d[64u + t] = 0x5000u + t * 8u + uint(nu);
+  imageStore(stb[di], int(64u + t), uvec4(0x6000u + t));
+}

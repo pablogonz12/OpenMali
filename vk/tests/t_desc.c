@@ -592,6 +592,151 @@ test_compile(unsigned arch)
    vk_descriptor_set_layout_unref(&g_dev, &l1->vk);
 }
 
+/* ---- descriptorIndexing (the vk.xml minimum set): what the driver must do beyond the sampled-image subset ----
+ * (1) update-after-bind is an in-place write: the GPU reads the set at its va (resource table entry = set va/bytes,
+ *     mali_cs_emit.c kb_draw_resource), so a write after the bind must change the bytes at that va and nothing else;
+ * (2) partially bound: unwritten elements stay the all-zero Null Descriptor;
+ * (3) a UAB storage binding makes the set start with wrote_full (its writes can follow the bind that copied the M15 marks);
+ *     a non-UAB or non-storage UAB layout must not (negative: it would cost a full sweep for nothing);
+ * (4) storage-buffer and uniform-texel-buffer arrays compile with dynamic and non-uniform indices, and nonuniformEXT changes the
+ *     code (Mesa's nir_lower_non_uniform_access waterfall): the twins differ only in the qualifier. */
+static struct mali_dsl *
+mk_layout_flags(unsigned arch, uint32_t n, const VkDescriptorSetLayoutBinding *b, const VkDescriptorBindingFlags *fl)
+{
+   VkDescriptorSetLayoutBindingFlagsCreateInfo bf = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
+                                                      .bindingCount = n, .pBindingFlags = fl };
+   VkDescriptorSetLayoutCreateInfo ci = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .pNext = fl ? &bf : NULL,
+                                          .flags = fl ? VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT : 0,
+                                          .bindingCount = n, .pBindings = b };
+   struct mali_dsl *d = NULL;
+   VkResult r = mali_dsl_create(&g_dev, arch, &ci, &d);
+   CHECK(r == VK_SUCCESS, "layout create %d", r);
+   return d;
+}
+
+static int
+compile_cs(unsigned arch, const char *spv, const struct mali_compile_layout *l, struct mali_compiled *c)
+{
+   struct spv s = load(spv);
+   if (!s.w) return -1;
+   struct mali_compile_opts o = { .arch = arch, .stage = MALI_STAGE_COMPUTE, .spirv = s.w, .spirv_words = s.n, .layout = l, .cache_dir = "" };
+   char err[256] = "";
+   int r = mali_compile(&o, c, err, sizeof err);
+   CHECK(r == 0, "%s compile v%u: %s", spv, arch, err);
+   free(s.w);
+   return r;
+}
+
+static void
+test_descidx(unsigned arch)
+{
+   printf("descriptorIndexing: UAB in place, partially bound, M15 sweep, non-uniform lowering, v%u\n", arch);
+   const VkShaderStageFlags cs = VK_SHADER_STAGE_COMPUTE_BIT;
+   VkDescriptorSetLayoutBinding b[] = {
+      { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 8, .stageFlags = cs },
+      { .binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, .descriptorCount = 4, .stageFlags = cs },
+      { .binding = 2, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, .descriptorCount = 4, .stageFlags = cs },
+      { .binding = 3, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1, .stageFlags = cs },
+   };
+   const VkDescriptorBindingFlags uab = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT | VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+                                        VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT;
+   const VkDescriptorBindingFlags fl[4] = { uab, uab, uab, 0 };
+   struct mali_dsl *lu = mk_layout_flags(arch, 4, b, fl), *ln = mk_layout_flags(arch, 4, b, NULL);
+   /* only a sampled image is UAB: not a storage binding, so no sweep */
+   VkDescriptorSetLayoutBinding bs = { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .descriptorCount = 4, .stageFlags = cs };
+   const VkDescriptorBindingFlags fs1 = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+   struct mali_dsl *ls = mk_layout_flags(arch, 1, &bs, &fs1);
+   if (!lu || !ln || !ls) return;
+   CHECK(lu->uab_storage && !ln->uab_storage && !ls->uab_storage, "uab_storage: uab %d plain %d sampled-only %d", lu->uab_storage,
+         ln->uab_storage, ls->uab_storage);
+   CHECK(!memcmp(lu->vk.blake3, ln->vk.blake3, sizeof lu->vk.blake3), "binding flags do not change the lowering hash (same shader code)");
+
+   VkDescriptorPoolSize ps[] = { { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 18 }, { VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 8 },
+                                 { VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 8 }, { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 4 } };
+   VkDescriptorPoolCreateInfo pi = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 3, .poolSizeCount = 4, .pPoolSizes = ps,
+                                     .flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT };
+   VkDescriptorPool pool = VK_NULL_HANDLE;
+   CHECK(mali_create_descriptor_pool(&g_dev, arch, &pi, NULL, &pool) == VK_SUCCESS, "uab pool");
+   VkDescriptorSet su = VK_NULL_HANDLE, sn = VK_NULL_HANDLE, ss = VK_NULL_HANDLE;
+   CHECK(alloc_n(pool, 1, lu, &su) == VK_SUCCESS && alloc_n(pool, 1, ln, &sn) == VK_SUCCESS && alloc_n(pool, 1, ls, &ss) == VK_SUCCESS, "uab sets");
+   struct mali_dset *u = mali_dset_from_handle(su), *n = mali_dset_from_handle(sn), *s = mali_dset_from_handle(ss);
+   if (!u || !n || !s) return;
+   CHECK(u->wrote_full && !n->wrote_full && !s->wrote_full, "wrote_full at allocation: uab %d plain %d sampled-only %d", u->wrote_full,
+         n->wrote_full, s->wrote_full);
+   /* "bind": what vkCmdBindDescriptorSets hands the GPU (mali_cmd.c: set_va/set_bytes) */
+   const uint64_t va0 = u->va;
+   const uint32_t bytes0 = u->bytes;
+   const uint8_t *gpu = (const uint8_t *)(uintptr_t)va0;   /* fake mem ops: va is the host address */
+   CHECK(bytes0 == (8 + 4 + 4 + 1) * MALI_DESC_SLOT_SIZE, "set bytes %u", bytes0);
+   static const uint8_t zero[MALI_DESC_SLOT_SIZE];
+   int allzero = 1;
+   for (uint32_t k = 0; k < bytes0; k++) allzero &= gpu[k] == 0;
+   CHECK(allzero, "fresh UAB set reads as Null Descriptors everywhere");
+   /* update after bind: SSBO element 5 (partially bound: 0..4, 6, 7 never written) and texel element 2 */
+   g_buf_va = 0x7f0000300000ull; g_buf_size = 256;
+   VkDescriptorBufferInfo bi = { (VkBuffer)(uintptr_t)0x1, 0, VK_WHOLE_SIZE };
+   VkBufferView bv = (VkBufferView)(uintptr_t)0x2;
+   VkWriteDescriptorSet w[2] = {
+      { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = su, .dstBinding = 0, .dstArrayElement = 5, .descriptorCount = 1,
+        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &bi },
+      { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = su, .dstBinding = 1, .dstArrayElement = 2, .descriptorCount = 1,
+        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, .pTexelBufferView = &bv } };
+   mali_update_descriptor_sets(&g_dev, 2, w, 0, NULL);
+   CHECK(u->va == va0 && u->bytes == bytes0, "an update does not move the set (the bound va stays valid)");
+   struct mali_hw_desc want;
+   mali_pack_buffer(arch, &want, 0x7f0000300000ull, 256);
+   CHECK(!memcmp(gpu + 5 * MALI_DESC_SLOT_SIZE, &want, sizeof want), "SSBO[5] written in place at the bound va");
+   for (uint32_t e = 0; e < 8; e++)
+      if (e != 5) CHECK(!memcmp(gpu + e * MALI_DESC_SLOT_SIZE, zero, sizeof zero), "SSBO[%u] (unwritten, partially bound) stays the Null Descriptor", e);
+   uint8_t ab[MALI_DESC_SLOT_SIZE];
+   memset(ab, 0xab, sizeof ab);   /* r_bview */
+   CHECK(!memcmp(gpu + (8 + 2) * MALI_DESC_SLOT_SIZE, ab, sizeof ab), "texel buffer [2] written in place");
+   CHECK(!memcmp(gpu + (8 + 1) * MALI_DESC_SLOT_SIZE, zero, sizeof zero), "texel buffer [1] unwritten stays null");
+   CHECK(u->wrote_full, "UAB set keeps its sweep after an update");
+   mali_destroy_descriptor_pool(&g_dev, pool, NULL);
+
+   /* (4) lowering: both twins compile; nonuniformEXT must change the code */
+   struct vk_pipeline_layout pl;
+   memset(&pl, 0, sizeof pl);
+   pl.set_count = 1; pl.set_layouts[0] = &lu->vk;
+   struct mali_flat_layout flat;
+   CHECK(mali_pipeline_layout_flatten(&pl, &flat) == VK_SUCCESS, "flatten");
+   static const char *const pair[2][2] = { { "didx_sbnu.comp.spv", "didx_sbdyn.comp.spv" }, { "didx_tbnu.comp.spv", "didx_tbdyn.comp.spv" } };
+   for (int k = 0; k < 2; k++) {
+      struct mali_compiled cn, cd;
+      int r1 = compile_cs(arch, pair[k][0], &flat.c, &cn), r2 = compile_cs(arch, pair[k][1], &flat.c, &cd);
+      if (r1 == 0 && r2 == 0) {
+         /* the binary is padded, so the size alone can hide the waterfall: compare the bytes */
+         CHECK(cn.bin_size != cd.bin_size || memcmp(cn.bin, cd.bin, cn.bin_size), "%s: non-uniform code (%u B) equals the dynamic twin's: no waterfall",
+               pair[k][0], cn.bin_size);
+         if (g_verbose) printf("  %s %u B vs %s %u B\n", pair[k][0], cn.bin_size, pair[k][1], cd.bin_size);
+      }
+      if (r1 == 0) mali_compiled_free(&cn);
+      if (r2 == 0) mali_compiled_free(&cd);
+   }
+   struct mali_compiled cu;
+   if (compile_cs(arch, "didx_uab.comp.spv", &flat.c, &cu) == 0) mali_compiled_free(&cu);   /* the t_vk_feat didxuab shader */
+   /* negative: the same shader against a layout without the texel bindings must fail, not silently read table garbage */
+   struct mali_compile_layout nobind = flat.c;
+   struct mali_lbinding nb[4];
+   memcpy(nb, flat.c.set[0].b, sizeof nb);
+   nb[1].type = MALI_DT_NONE;
+   nobind.set[0].b = nb;
+   {
+      struct spv sp = load("didx_tbnu.comp.spv");
+      struct mali_compiled c;
+      char err[256] = "";
+      struct mali_compile_opts o = { .arch = arch, .stage = MALI_STAGE_COMPUTE, .spirv = sp.w, .spirv_words = sp.n, .layout = &nobind, .cache_dir = "" };
+      int r = sp.w ? mali_compile(&o, &c, err, sizeof err) : -1;
+      CHECK(r != 0 && strstr(err, "binding"), "texel array without its binding must fail: %d %s", r, err);
+      if (r == 0) mali_compiled_free(&c);
+      free(sp.w);
+   }
+   vk_descriptor_set_layout_unref(&g_dev, &lu->vk);
+   vk_descriptor_set_layout_unref(&g_dev, &ln->vk);
+   vk_descriptor_set_layout_unref(&g_dev, &ls->vk);
+}
+
 /* ---- sampler descriptor words: the part of audit-descriptors.md #4 that is a pure bit convention ----
  * The hardware compares in the opposite order to Vulkan's compareOp (Mesa says so at pan_encoder.h:161-175, "The hardware compares in
  * the wrong order, so we have to flip before encoding. Yes, really." and uses it for the sampler at pan_cmdstream.c:147-152 /
@@ -670,6 +815,8 @@ main(int argc, char **argv)
    test_sampler_words();
    test_compile(11);
    test_compile(13);
+   test_descidx(11);
+   test_descidx(13);
    clock_gettime(CLOCK_MONOTONIC, &b);
    printf("%s (%d failures, %.2f s)\n", g_fail ? "FAIL" : "PASS", g_fail, (b.tv_sec - a.tv_sec) + (b.tv_nsec - a.tv_nsec) * 1e-9);
    return g_fail != 0;

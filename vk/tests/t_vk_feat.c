@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only spill|firstinst|provoking|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|tf_reject|tf_write|tf_default|tf_inactive|tf_reset|tf_multi|tf_overflow|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|quadsize|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|samplerate|dparams|gather|gatherlim|fsstore|memmodel|robust2|imgmax] [--robust2]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only spill|firstinst|provoking|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|tf_reject|tf_write|tf_default|tf_inactive|tf_reset|tf_multi|tf_overflow|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|quadsize|didxbuf|didxuab|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|samplerate|dparams|gather|gatherlim|fsstore|memmodel|robust2|imgmax] [--robust2]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -2441,6 +2441,129 @@ run_comp(struct tgt *t, const char *spv, int n, const VkDescriptorType *types, s
    return 1;
 }
 
+/* didxuab: the descriptorIndexing minimum set beyond sampled images (didx_uab.comp). Runtime-sized SSBO array (layout count 8,
+ * PARTIALLY_BOUND, elements 4..7 never written or used), uniform and storage texel buffer arrays, every binding UPDATE_AFTER_BIND
+ * in an UPDATE_AFTER_BIND pool, and every descriptor written AFTER vkCmdBindDescriptorSets + vkCmdDispatch, before the submit.
+ * Indices: dynamically uniform (o.dyn = 2) and divergent non-uniform (lane & 3). Explicit only (--only didxuab): keeps the
+ * vk_feat goldens. Values are checked on hardware; the fake backend runs the API path (device with the umbrella enabled,
+ * layout/pool flags, record-then-update order, pipeline compile). */
+static VkBool32 g_didxuab;
+static int
+test_didxuab(void)
+{
+   if (!g_didxuab) { printf("{\"test\":\"didxuab\",\"skipped\":\"descriptorIndexing not advertised\",\"ok\":true}\n"); return 1; }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   enum { NT = 64, SW = 192, TW = 128 };
+   struct hbuf sb[4], ut[4], st[4], ob;
+   VkBufferView uv[4], sv[4];
+   for (int i = 0; i < 4; i++) {
+      if (!hbuf_create(&sb[i], SW * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) || !hbuf_create(&ut[i], NT * 4, VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT) ||
+          !hbuf_create(&st[i], TW * 4, VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT)) return 0;
+      uint32_t *s = (uint32_t *)(void *)sb[i].p, *u = (uint32_t *)(void *)ut[i].p, *x = (uint32_t *)(void *)st[i].p;
+      for (int j = 0; j < SW; j++) s[j] = j < NT ? 0xB000u + i * 256 + j : 0xEEEEEEEEu;
+      for (int j = 0; j < NT; j++) u[j] = 0xC000u + i * 0x100u + j;
+      for (int j = 0; j < TW; j++) x[j] = j < NT ? 0xD000u + i * 0x100u + j : 0xEEEEEEEEu;
+      VkBufferViewCreateInfo bvi = {.sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, .buffer = ut[i].b, .format = VK_FORMAT_R32_UINT, .range = VK_WHOLE_SIZE};
+      CHECK(CreateBufferView(dev, &bvi, NULL, &uv[i]) == VK_SUCCESS, "uniform texel view %d", i);
+      bvi.buffer = st[i].b;
+      CHECK(CreateBufferView(dev, &bvi, NULL, &sv[i]) == VK_SUCCESS, "storage texel view %d", i);
+   }
+   const size_t osz = 16 + NT * 5 * 4;
+   if (!hbuf_create(&ob, osz, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return 0;
+   memset(ob.p, 0xEE, osz);
+   ((uint32_t *)(void *)ob.p)[0] = 2;   /* dyn index */
+   const VkShaderStageFlags cs = VK_SHADER_STAGE_COMPUTE_BIT;
+   VkDescriptorSetLayoutBinding lb[4] = {
+      {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8, cs, NULL}, {1, VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 4, cs, NULL},
+      {2, VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 4, cs, NULL}, {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, cs, NULL}};
+   const VkDescriptorBindingFlags uab = VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT;
+   VkDescriptorBindingFlags bfl[4] = {uab | VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT, uab, uab, uab};
+   VkDescriptorSetLayoutBindingFlagsCreateInfo bf = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO, .bindingCount = 4, .pBindingFlags = bfl};
+   VkDescriptorSetLayoutCreateInfo dli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .pNext = &bf,
+                                          .flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT, .bindingCount = 4, .pBindings = lb};
+   VkDescriptorSetLayout dsl;
+   CHECK(CreateDescriptorSetLayout(dev, &dli, NULL, &dsl) == VK_SUCCESS, "dsl");
+   VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 9}, {VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 4}, {VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 4}};
+   VkDescriptorPoolCreateInfo dpi = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT,
+                                     .maxSets = 1, .poolSizeCount = 3, .pPoolSizes = ps};
+   VkDescriptorPool dp;
+   CHECK(CreateDescriptorPool(dev, &dpi, NULL, &dp) == VK_SUCCESS, "dp");
+   VkDescriptorSetAllocateInfo dai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = dp, .descriptorSetCount = 1, .pSetLayouts = &dsl};
+   VkDescriptorSet ds;
+   CHECK(AllocateDescriptorSets(dev, &dai, &ds) == VK_SUCCESS, "ds");
+   VkPipelineLayoutCreateInfo pli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dsl};
+   VkPipelineLayout lay;
+   CHECK(CreatePipelineLayout(dev, &pli, NULL, &lay) == VK_SUCCESS, "layout");
+   VkShaderModule m = load_spv("didx_uab.comp.spv");
+   CHECK(m, "shader didx_uab.comp.spv");
+   VkComputePipelineCreateInfo cpi = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = lay,
+      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = cs, .module = m, .pName = "main"}};
+   VkPipeline pipe;
+   VkResult r = CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpi, NULL, &pipe);
+   DestroyShaderModule(dev, m, NULL);
+   CHECK(r == VK_SUCCESS, "pipeline didx_uab = %d", r);
+   if (r != VK_SUCCESS) return 0;
+
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
+   CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, lay, 0, 1, &ds, 0, NULL);   /* the set is still empty here */
+   CmdDispatch(cb, 1, 1, 1);
+   VkMemoryBarrier mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT, .dstAccessMask = VK_ACCESS_HOST_READ_BIT};
+   CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
+   /* update after bind: everything is written now, after the bind and the dispatch were recorded */
+   VkDescriptorBufferInfo sbi[4], obi = {ob.b, 0, VK_WHOLE_SIZE};
+   for (int i = 0; i < 4; i++) sbi[i] = (VkDescriptorBufferInfo){sb[i].b, 0, SW * 4};
+   VkWriteDescriptorSet w[4] = {
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 0, .descriptorCount = 4, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = sbi},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 1, .descriptorCount = 4, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, .pTexelBufferView = uv},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 2, .descriptorCount = 4, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, .pTexelBufferView = sv},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 3, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &obi}};
+   UpdateDescriptorSets(dev, 4, w, 0, NULL);
+   if (!cb_submit(&t, cb)) return 0;
+
+   if (!g_fake) {
+      const uint32_t *o = (const uint32_t *)(const void *)ob.p + 4;
+      int bad[7] = {0};
+      uint32_t first[7] = {0};
+#define UBAD(c, got) do { if (!(bad[c]++)) first[c] = (got); } while (0)
+      for (int tt = 0; tt < NT; tt++) {
+         uint32_t nu = tt & 3, di = 2;
+         uint32_t want[5] = {0xB000u + di * 256 + tt, 0xB000u + nu * 256 + tt, 0xC000u + di * 0x100u + tt, 0xC000u + nu * 0x100u + tt,
+                             0xD000u + di * 0x100u + tt};
+         for (int k = 0; k < 5; k++) if (o[tt * 5 + k] != want[k]) UBAD(k, o[tt * 5 + k]);
+         for (uint32_t i = 0; i < 4; i++) {
+            uint32_t ws = i == nu ? 0x5000u + tt * 8u + nu : 0xEEEEEEEEu;   /* non-uniform SSBO write lands only in sb[nu] */
+            uint32_t wt = i == di ? 0x6000u + tt : 0xEEEEEEEEu;             /* dynamic storage texel store lands only in st[di] */
+            uint32_t gs = ((const uint32_t *)(const void *)sb[i].p)[64 + tt], gt = ((const uint32_t *)(const void *)st[i].p)[64 + tt];
+            if (gs != ws) UBAD(5, gs);
+            if (gt != wt) UBAD(6, gt);
+         }
+      }
+#undef UBAD
+      static const char *nm[7] = {"ssbo_dyn", "ssbo_nonuniform", "utb_dyn", "utb_nonuniform", "stb_dyn_load", "ssbo_nonuniform_write", "stb_dyn_store"};
+      int tot = 0;
+      for (int k = 0; k < 7; k++) {
+         tot += bad[k];
+         printf("{\"didxuab\":\"%s\",\"bad\":%d,\"first\":\"0x%x\"}\n", nm[k], bad[k], first[k]);
+      }
+      CHECK(tot == 0, "%d wrong results", tot);
+      printf("{\"test\":\"didxuab\",\"bad\":%d,\"ok\":%s}\n", tot, tot ? "false" : "true");
+   } else printf("{\"test\":\"didxuab\",\"skipped\":\"values: fake backend (device, UAB layout/pool, record-then-update, compile ran)\",\"ok\":true}\n");
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   DestroyDescriptorPool(dev, dp, NULL);
+   DestroyDescriptorSetLayout(dev, dsl, NULL);
+   for (int i = 0; i < 4; i++) {
+      DestroyBufferView(dev, uv[i], NULL); DestroyBufferView(dev, sv[i], NULL);
+      hbuf_destroy(&sb[i]); hbuf_destroy(&ut[i]); hbuf_destroy(&st[i]);
+   }
+   hbuf_destroy(&ob);
+   tgt_destroy(&t);
+   return 1;
+}
+
 /* didxbuf: hardware probe for dynamic + non-uniform indexing of arrays of UBOs, SSBOs and storage images (didx_buf.comp).
  * Runs only when the device advertises (and we enable) shader{Uniform,Storage}BufferArray{Dynamic,NonUniform}Indexing and
  * StorageImageArray{Dynamic,NonUniform}Indexing, or when MALI_TEST_FORCE_DIDX_BUF=1 runs it anyway WITHOUT enabling the bits (the driver
@@ -4119,6 +4242,12 @@ main(int argc, char **argv)
    g_bda = f12.bufferDeviceAddress;
    g_didx = f12.runtimeDescriptorArray && f12.shaderSampledImageArrayNonUniformIndexing && f12.descriptorBindingPartiallyBound &&
             f12.descriptorBindingSampledImageUpdateAfterBind && f12.descriptorBindingUpdateUnusedWhilePending;
+   g_didxuab = f12.descriptorIndexing && f12.runtimeDescriptorArray && f12.descriptorBindingPartiallyBound &&
+               g_feat.shaderStorageBufferArrayDynamicIndexing && f12.shaderStorageBufferArrayNonUniformIndexing &&
+               f12.shaderUniformTexelBufferArrayDynamicIndexing && f12.shaderUniformTexelBufferArrayNonUniformIndexing &&
+               f12.shaderStorageTexelBufferArrayDynamicIndexing && f12.descriptorBindingStorageBufferUpdateAfterBind &&
+               f12.descriptorBindingUniformTexelBufferUpdateAfterBind && f12.descriptorBindingStorageTexelBufferUpdateAfterBind &&
+               f12.descriptorBindingUpdateUnusedWhilePending;
    {
       const char *fe = getenv("MALI_TEST_FORCE_DIDX_BUF");   /* test-only: probe the lowering before the bits are advertised */
       g_dbuf_force = fe && *fe == '1';
@@ -4239,6 +4368,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("didx")) ok &= test_didx();
    if (ok && CASE_ON("quadsize")) ok &= test_quadsize();
    if (ok && CASE_ON("didxbuf")) ok &= test_didxbuf();
+   if (ok && g_only && CASE_ON("didxuab")) ok &= test_didxuab();   /* explicit only: keeps the vk_feat goldens */
    if (ok && CASE_ON("nulld")) ok &= test_nulld();
    if (ok && CASE_ON("robust2")) ok &= test_robust2();
    if (ok && CASE_ON("scalar")) ok &= test_scalar();

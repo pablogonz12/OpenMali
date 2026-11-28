@@ -271,6 +271,38 @@ main(int argc, char **argv)
             "uab sampled image limits >= 500000");
       CHECK(p12.maxPerStageDescriptorUpdateAfterBindSamplers >= 500000 && p12.maxDescriptorSetUpdateAfterBindSamplers >= 500000, "uab sampler limits >= 500000");
    }
+   /* descriptorIndexing: the registry ties a minimum set to it (vk.xml `<require depends="VkPhysicalDeviceVulkan12Features::
+    * descriptorIndexing">`, plus descriptorBindingInlineUniformBlockUpdateAfterBind with inlineUniformBlock) and the limits table
+    * gives the minimums (500000; UBO 12 / 72; input attachments and inline blocks 4). DXVK 3.1.1 requires the umbrella
+    * (dxvk_device_info.cpp:878). The extras vkd3d-proton wants are not claimed: asserted false so a flip needs its test. */
+   CHECK(f12.descriptorIndexing, "descriptorIndexing advertised (DXVK 3.1.1 device creation)");
+   if (f12.descriptorIndexing) {
+      CHECK(f2.features.shaderSampledImageArrayDynamicIndexing && f2.features.shaderStorageBufferArrayDynamicIndexing &&
+            f12.shaderUniformTexelBufferArrayDynamicIndexing && f12.shaderStorageTexelBufferArrayDynamicIndexing &&
+            f12.shaderSampledImageArrayNonUniformIndexing && f12.shaderStorageBufferArrayNonUniformIndexing &&
+            f12.shaderUniformTexelBufferArrayNonUniformIndexing && f12.descriptorBindingSampledImageUpdateAfterBind &&
+            f12.descriptorBindingStorageImageUpdateAfterBind && f12.descriptorBindingStorageBufferUpdateAfterBind &&
+            f12.descriptorBindingUniformTexelBufferUpdateAfterBind && f12.descriptorBindingStorageTexelBufferUpdateAfterBind &&
+            f12.descriptorBindingUpdateUnusedWhilePending && f12.descriptorBindingPartiallyBound && f12.runtimeDescriptorArray,
+            "descriptorIndexing: every sub-feature of the vk.xml minimum set");
+      CHECK(!f13.inlineUniformBlock || f13.descriptorBindingInlineUniformBlockUpdateAfterBind, "descriptorIndexing + inlineUniformBlock -> inline UAB");
+      CHECK(p12.maxUpdateAfterBindDescriptorsInAllPools >= 500000 && p12.maxPerStageDescriptorUpdateAfterBindSamplers >= 500000 &&
+            p12.maxPerStageDescriptorUpdateAfterBindUniformBuffers >= 12 && p12.maxPerStageDescriptorUpdateAfterBindStorageBuffers >= 500000 &&
+            p12.maxPerStageDescriptorUpdateAfterBindSampledImages >= 500000 && p12.maxPerStageDescriptorUpdateAfterBindStorageImages >= 500000 &&
+            p12.maxPerStageDescriptorUpdateAfterBindInputAttachments >= 4 && p12.maxPerStageUpdateAfterBindResources >= 500000 &&
+            p12.maxDescriptorSetUpdateAfterBindSamplers >= 500000 && p12.maxDescriptorSetUpdateAfterBindUniformBuffers >= 72 &&
+            p12.maxDescriptorSetUpdateAfterBindUniformBuffersDynamic >= 8 && p12.maxDescriptorSetUpdateAfterBindStorageBuffers >= 500000 &&
+            p12.maxDescriptorSetUpdateAfterBindStorageBuffersDynamic >= 4 && p12.maxDescriptorSetUpdateAfterBindSampledImages >= 500000 &&
+            p12.maxDescriptorSetUpdateAfterBindStorageImages >= 500000 && p12.maxDescriptorSetUpdateAfterBindInputAttachments >= 4,
+            "descriptorIndexing: update-after-bind limits >= the Vulkan minimums");
+      CHECK(p13.maxPerStageDescriptorUpdateAfterBindInlineUniformBlocks >= 4 && p13.maxDescriptorSetUpdateAfterBindInlineUniformBlocks >= 4,
+            "descriptorIndexing + inlineUniformBlock: inline UAB limits >= 4 (got %u / %u)", p13.maxPerStageDescriptorUpdateAfterBindInlineUniformBlocks,
+            p13.maxDescriptorSetUpdateAfterBindInlineUniformBlocks);
+   }
+   CHECK(!f12.shaderStorageImageArrayNonUniformIndexing && !f12.shaderStorageTexelBufferArrayNonUniformIndexing &&
+         !f12.shaderUniformBufferArrayNonUniformIndexing && !f12.shaderInputAttachmentArrayNonUniformIndexing &&
+         !f12.descriptorBindingUniformBufferUpdateAfterBind && !f12.descriptorBindingVariableDescriptorCount,
+         "vkd3d-proton descriptor extras stay unclaimed until their tests exist (WP-12)");
    eq("timelineSemaphore", f12.timelineSemaphore, ftl.timelineSemaphore);
    eq("hostQueryReset", f12.hostQueryReset, fhq.hostQueryReset);
    eq("synchronization2", f13.synchronization2, fs2.synchronization2);
@@ -306,6 +338,7 @@ main(int argc, char **argv)
          offsetof(VkPhysicalDeviceFeatures, samplerAnisotropy),         /* t_vk_feat aniso */
          offsetof(VkPhysicalDeviceFeatures, imageCubeArray),
          offsetof(VkPhysicalDeviceFeatures, shaderSampledImageArrayDynamicIndexing), /* t_vk_feat didx */
+         offsetof(VkPhysicalDeviceFeatures, shaderStorageBufferArrayDynamicIndexing), /* t_vk_feat didxuab, t_desc descidx */
          offsetof(VkPhysicalDeviceFeatures, fillModeNonSolid),         /* t_vk_draw --only poly */
          offsetof(VkPhysicalDeviceFeatures, multiViewport),            /* t_vk_draw --only multivp */
          offsetof(VkPhysicalDeviceFeatures, wideLines),                 /* t_vk_feat wide */            /* t_vk_feat cubearray */
@@ -338,18 +371,30 @@ main(int argc, char **argv)
                      di0 = (unsigned)((const VkBool32 *)&f12.runtimeDescriptorArray - b), di1 = (unsigned)((const VkBool32 *)&f12.shaderSampledImageArrayNonUniformIndexing - b),
                      di2 = (unsigned)((const VkBool32 *)&f12.descriptorBindingPartiallyBound - b), di3 = (unsigned)((const VkBool32 *)&f12.descriptorBindingSampledImageUpdateAfterBind - b),
                      di4 = (unsigned)((const VkBool32 *)&f12.descriptorBindingUpdateUnusedWhilePending - b),
+                     /* descriptorIndexing minimum set: t_vk_feat didxuab (values on hardware), t_desc descidx (lowering, UAB in place) */
+                     dix = (unsigned)((const VkBool32 *)&f12.descriptorIndexing - b),
+                     dx0 = (unsigned)((const VkBool32 *)&f12.shaderUniformTexelBufferArrayDynamicIndexing - b),
+                     dx1 = (unsigned)((const VkBool32 *)&f12.shaderStorageTexelBufferArrayDynamicIndexing - b),
+                     dx2 = (unsigned)((const VkBool32 *)&f12.shaderStorageBufferArrayNonUniformIndexing - b),
+                     dx3 = (unsigned)((const VkBool32 *)&f12.shaderUniformTexelBufferArrayNonUniformIndexing - b),
+                     dx4 = (unsigned)((const VkBool32 *)&f12.descriptorBindingStorageImageUpdateAfterBind - b),
+                     dx5 = (unsigned)((const VkBool32 *)&f12.descriptorBindingStorageBufferUpdateAfterBind - b),
+                     dx6 = (unsigned)((const VkBool32 *)&f12.descriptorBindingUniformTexelBufferUpdateAfterBind - b),
+                     dx7 = (unsigned)((const VkBool32 *)&f12.descriptorBindingStorageTexelBufferUpdateAfterBind - b),
                      s8 = (unsigned)((const VkBool32 *)&f12.storageBuffer8BitAccess - b), i8 = (unsigned)((const VkBool32 *)&f12.shaderInt8 - b),   /* t_vk_feat int8 */
                      sbl = (unsigned)((const VkBool32 *)&f12.scalarBlockLayout - b), ubs = (unsigned)((const VkBool32 *)&f12.uniformBufferStandardLayout - b); /* t_vk_feat scalar/ubostd */ /* t_vk_feat didx */ /* t_vk_feat bda */ /* t_vk_feat mirror */
       for (unsigned i = 0; i < (sizeof(f12) - 16) / 4; i++)
-         CHECK(!b[i] || i == imgl || i == tl || i == hq || i == mc || i == bda || i == vmm || i == vmd || i == di0 || i == di1 || i == di2 || i == di3 || i == di4 || i == sbl || i == ubs || i == s8 || i == i8, "vk12 feature #%u advertised without a test", i);
+         CHECK(!b[i] || i == imgl || i == tl || i == hq || i == mc || i == bda || i == vmm || i == vmd || i == di0 || i == di1 || i == di2 || i == di3 || i == di4 ||
+                i == dix || i == dx0 || i == dx1 || i == dx2 || i == dx3 || i == dx4 || i == dx5 || i == dx6 || i == dx7 || i == sbl || i == ubs || i == s8 || i == i8, "vk12 feature #%u advertised without a test", i);
       const VkBool32 *d = (const VkBool32 *)((const char *)&f13 + 16);
       const unsigned s2 = (unsigned)((const VkBool32 *)&f13.synchronization2 - d), dr = (unsigned)((const VkBool32 *)&f13.dynamicRendering - d),
                      m4i = (unsigned)((const VkBool32 *)&f13.maintenance4 - d), pdi = (unsigned)((const VkBool32 *)&f13.privateData - d),
                      zi = (unsigned)((const VkBool32 *)&f13.shaderZeroInitializeWorkgroupMemory - d),   /* t_vk_feat zinit */
                      dm = (unsigned)((const VkBool32 *)&f13.shaderDemoteToHelperInvocation - d), idp = (unsigned)((const VkBool32 *)&f13.shaderIntegerDotProduct - d),   /* t_vk_feat intdot */
-                     sgc = (unsigned)((const VkBool32 *)&f13.subgroupSizeControl - d), cfs = (unsigned)((const VkBool32 *)&f13.computeFullSubgroups - d), iub = (unsigned)((const VkBool32 *)&f13.inlineUniformBlock - d);   /* t_vk_feat demote */
+                     sgc = (unsigned)((const VkBool32 *)&f13.subgroupSizeControl - d), cfs = (unsigned)((const VkBool32 *)&f13.computeFullSubgroups - d), iub = (unsigned)((const VkBool32 *)&f13.inlineUniformBlock - d),
+                     iuab = (unsigned)((const VkBool32 *)&f13.descriptorBindingInlineUniformBlockUpdateAfterBind - d);   /* t_vk_feat didxuab (descriptorIndexing + inlineUniformBlock) */   /* t_vk_feat demote */
       for (unsigned i = 0; i < (sizeof(f13) - 16) / 4; i++)
-         CHECK(!d[i] || i == s2 || i == dr || i == m4i || i == pdi || i == zi || i == dm || i == idp || i == sgc || i == cfs || i == iub, "vk13 feature #%u advertised without a test", i);
+         CHECK(!d[i] || i == s2 || i == dr || i == m4i || i == pdi || i == zi || i == dm || i == idp || i == sgc || i == cfs || i == iub || i == iuab, "vk13 feature #%u advertised without a test", i);
    }
 
    /* ---- queue + format consistency ---- */

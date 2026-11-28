@@ -44,6 +44,10 @@ struct mali_dsl {
    struct mali_lbinding *b;     /* nbindings entries */
    VkSampler *imm;              /* immutable samplers */
    struct vk_ycbcr_conversion_state *ycbcr;   /* conversion of each immutable sampler that has one (index = b->ycbcr_off + element), else NULL */
+   /* descriptorIndexing: a storage buffer / storage image / storage texel buffer binding has UPDATE_AFTER_BIND. Its writes can
+    * land after vkCmdBindDescriptorSets, i.e. after the bind copied the set's M15 write marks into the command buffer, so a set
+    * of this layout starts with wrote_full (one full device->CPU sweep at the next wait instead of a missed CSYNC). */
+   bool uab_storage;
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(mali_dsl, vk.base, VkDescriptorSetLayout, VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT)
 
