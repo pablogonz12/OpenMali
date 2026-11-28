@@ -53,6 +53,11 @@ run() { # name, expected exit status, command...
    if [ $verbose = 1 ] || [ $rc -ne "$want" ]; then echo "$out" | sed 's/^/        /'; fi
 }
 
+run "feature-matrix selftest" 0 python3 -I "$V/tests/feature-matrix-selftest.py"
+for g in v10 v11 v13; do
+   run "feature-matrix $g" 0 bash "$V/tests/feature-matrix.sh" "$OUT" "$g"
+done
+
 run "loader v11"         0 $LOADER_ENV MALI_BACKEND=fake MALI_FAKE_GPU=v11 "$OUT/t_icd" --expect-name "Mali-G615"
 run "loader v13"         0 $LOADER_ENV MALI_BACKEND=fake MALI_FAKE_GPU=v13 "$OUT/t_icd" --expect-name "Mali-G925"
 run "direct v11"         0 MALI_BACKEND=fake MALI_FAKE_GPU=v11 "$OUT/t_icd" --direct "$OUT/libvulkan_mali.so" --expect-name "Mali-G615"
