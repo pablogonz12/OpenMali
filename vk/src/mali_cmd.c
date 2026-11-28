@@ -1922,6 +1922,21 @@ mali_CmdExecuteCommands(VkCommandBuffer h, uint32_t n, const VkCommandBuffer *cb
 #define PASS_ATT_ACCESS (VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | \
                          VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT)
 
+/* Stages a merged pass still orders: per-sample attachment work, which rasterization order keeps in submission order inside
+ * one pass. Any other stage in a barrier between two passes is an execution dependency between whole passes (a WAR on a
+ * buffer the first pass' fragment shader read and the second pass' vertex shader writes needs nothing more), which one
+ * tiler + fragment pass interleaves per tile. In the first scope TOP_OF_PIPE is no stage and in the second BOTTOM_OF_PIPE
+ * is none (synchronization2); the other way round each means ALL_COMMANDS. */
+#define PASS_ATT_STAGES (VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | \
+                         VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT)
+
+static bool
+att_stages(VkPipelineStageFlags2 src, VkPipelineStageFlags2 dst)
+{
+   return !(src & ~(VkPipelineStageFlags2)(PASS_ATT_STAGES | VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT)) &&
+          !(dst & ~(VkPipelineStageFlags2)(PASS_ATT_STAGES | VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT));
+}
+
 static bool
 att_layout(VkImageLayout l)
 {
@@ -1945,16 +1960,21 @@ mali_cmd_barrier(VkCommandBuffer h, const VkDependencyInfo *info)
    CMD(h);
    if (!cmd->pm_open || !info)
       return;
+   /* A parked pass without draws (loadOp clears only, or a parked vkCmdClearColorImage) ran no shader, so only the
+    * access rule matters for it: the usual TRANSFER -> COLOR_ATTACHMENT_OUTPUT barrier after a clear still folds. */
+   const bool drew = cmd->pm.ndraws != 0;
    bool keep = !info->bufferMemoryBarrierCount;
    for (uint32_t i = 0; keep && i < info->memoryBarrierCount; i++) {
       const VkMemoryBarrier2 *b = &info->pMemoryBarriers[i];
       /* Access masks can be empty while stage masks still impose an execution
        * dependency. Do not erase that boundary by combining the passes. */
-      keep = b->srcAccessMask && b->dstAccessMask && !(b->dstAccessMask & ~(VkAccessFlags2)PASS_ATT_ACCESS);
+      keep = b->srcAccessMask && b->dstAccessMask && !(b->dstAccessMask & ~(VkAccessFlags2)PASS_ATT_ACCESS) &&
+             (!drew || att_stages(b->srcStageMask, b->dstStageMask));
    }
    for (uint32_t i = 0; keep && i < info->imageMemoryBarrierCount; i++) {
       const VkImageMemoryBarrier2 *b = &info->pImageMemoryBarriers[i];
       keep = b->srcAccessMask && b->dstAccessMask && !(b->dstAccessMask & ~(VkAccessFlags2)PASS_ATT_ACCESS) &&
+             (!drew || att_stages(b->srcStageMask, b->dstStageMask)) &&
              b->srcQueueFamilyIndex == b->dstQueueFamilyIndex &&
              (b->oldLayout == b->newLayout || att_layout(b->newLayout));
    }
