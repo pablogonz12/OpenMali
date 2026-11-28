@@ -62,6 +62,14 @@ struct mali_cmd_res_ops {
 void mali_cmd_set_res(const struct mali_cmd_res_ops *ops);
 void mali_cmd_set_hw(const struct mali_hw *hw);   /* copied; NULL clears. Without it submit returns VK_ERROR_FEATURE_NOT_PRESENT */
 
+struct mali_cmd_descriptors {
+   unsigned nsets;
+   uint64_t set_va[MALI_CMD_SETS];
+   uint32_t set_bytes[MALI_CMD_SETS];
+   unsigned ndyn;
+   uint32_t dyn_desc[MALI_MAX_DYN][8];
+};
+
 struct mali_cmd_buffer {
    struct vk_command_buffer vk;
 
@@ -85,11 +93,7 @@ struct mali_cmd_buffer {
    uint32_t vb_size[MALI_MAX_VB];
    uint32_t vb_stride[MALI_MAX_VB];   /* stride from vkCmdBindVertexBuffers2/3KHR setStride (used when the pipeline's VERTEX_INPUT_BINDING_STRIDE is dynamic) */
    uint8_t push[2][MALI_PUSH_MAX];
-   unsigned nsets;
-   uint64_t set_va[MALI_CMD_SETS];
-   uint32_t set_bytes[MALI_CMD_SETS];
-   unsigned ndyn;                       /* dynamic buffer descriptors (offset applied), table-0 entry MALI_DYN_BUF_START + i */
-   uint32_t dyn_desc[MALI_MAX_DYN][8];
+   struct mali_cmd_descriptors descriptors[2]; /* graphics, compute; dynamic offsets are packed at bind time */
    uint64_t ib_va;       /* bound index buffer, offset applied (0 = none) */
    uint32_t ib_bytes;
    const uint8_t *ib_cpu;   /* CPU view of ib_va (NULL = unmapped) */

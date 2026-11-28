@@ -24,6 +24,7 @@
 #include "mali_descriptor.h"
 #include "vk_buffer.h"
 #include "vk_command_buffer.h"
+#include "vk_pipeline_layout.h"
 
 #include "kbase.h"
 #include "kbase_uapi.h"
@@ -929,6 +930,50 @@ ls_ui_frame(VkCommandPool pool, VkAttachmentLoadOp op, const char *tag)
    CHECK(r == VK_SUCCESS, "ui_like_%s: submit %d", tag, r);
 }
 
+static void
+test_descriptor_bind_points(VkCommandPool pool)
+{
+   VkCommandBuffer cb;
+   struct mali_cmd_buffer *m = mali_cmd_buffer_from_vk(new_cmd(pool, &cb));
+   struct mali_dsl layout = {.dyn_count = 1};
+   struct mali_dyn_buf a_dyn = {.va = 0x100000, .size = 1024}, b_dyn = {.va = 0x200000, .size = 1024};
+   struct mali_dset a = {.layout = &layout, .va = 0x300000, .bytes = 64, .dyn = &a_dyn, .arch = ARCH};
+   struct mali_dset b = {.layout = &layout, .va = 0x400000, .bytes = 96, .dyn = &b_dyn, .arch = ARCH};
+   a.base.type = b.base.type = VK_OBJECT_TYPE_DESCRIPTOR_SET;
+   struct vk_pipeline_layout pl = {.base = {.type = VK_OBJECT_TYPE_PIPELINE_LAYOUT}, .set_count = 1};
+   pl.set_layouts[0] = &layout.vk;
+   VkPipelineLayout pipeline_layout = vk_pipeline_layout_to_handle(&pl);
+   VkDescriptorSet as = mali_dset_to_handle(&a), bs = mali_dset_to_handle(&b);
+   uint32_t ao = 64, bo = 128;
+   struct mali_hw_desc ad, bd;
+   mali_dyn_buf_pack(ARCH, &ad, &a_dyn, ao);
+   mali_dyn_buf_pack(ARCH, &bd, &b_dyn, bo);
+   mali_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &as, 1, &ao);
+   mali_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout, 0, 1, &bs, 1, &bo);
+   struct mali_compiled cs = {.bin_size = 4};
+   m->cs = &cs;
+   mali_CmdDispatch(cb, 1, 1, 1);
+   VkRenderingAttachmentInfo ca;
+   VkRenderingInfo ri = rendering_info(&ca, true);
+   mali_CmdBeginRendering(cb, &ri);
+   DFN(CmdBindPipeline);
+   DFN(CmdDraw);
+   CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipeline)(uintptr_t)1);
+   CmdDraw(cb, 3, 1, 0, 0);
+   mali_CmdEndRendering(cb);
+   DFN(EndCommandBuffer);
+   CHECK(EndCommandBuffer(cb) == VK_SUCCESS && m->nframes == 2, "bind points: expected dispatch and draw");
+   if (m->nframes == 2 && m->frames[1].ndraws) {
+      const struct mali_rec *draw = &m->frames[1].draws[0];
+      CHECK(m->frames[0].disp.nsets == 1 && m->frames[0].disp.set_va[0] == b.va &&
+            m->frames[0].disp.ndyn == 1 && !memcmp(m->frames[0].disp.dyn_desc[0], bd.w, sizeof bd.w),
+            "compute did not retain set B and its dynamic offset");
+      CHECK(draw->bind && draw->bind->nsets == 1 && draw->bind->set_va[0] == a.va &&
+            draw->dyn && draw->dyn->n == 1 && !memcmp(draw->dyn->d[0], ad.w, sizeof ad.w),
+            "graphics did not retain set A and its dynamic offset");
+   }
+}
+
 int main(int argc, char **argv)
 {
    int scene = 1;
@@ -989,6 +1034,7 @@ int main(int argc, char **argv)
    VkCommandPool pool;
    CHECK(CreateCommandPool(dev, &pci, NULL, &pool) == VK_SUCCESS, "CreateCommandPool");
    if (extra) {
+      test_descriptor_bind_points(pool);
       test_resolve_mismatched_view(pool);
       test_stencil_store_recording(pool);
    }
