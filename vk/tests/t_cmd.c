@@ -417,6 +417,7 @@ static void fill_compiled(void)
    g_fs.nimm = FS_UNI_NIMM;
    g_fs.push_const_bytes = g_fp_bytes;
    g_fs.imm = g_fimm;
+   g_fs.fs_can_fpk = 1;   /* the uniform-colour FS has no discard / depth / coverage write (pan_compiler.c can_fpk) */
 }
 
 static int setup_kb(void)
@@ -721,6 +722,115 @@ test_ringwrap(void)
    return g_fail ? 1 : 0;
 }
 
+/* ---- v13 audit against the pinned PanVK (panvk_vX_cmd_draw.c, panvk_cmd_draw.h): per-draw register values of one direct
+ * frame build. Register numbers: v13.xml "IDVS SR" / v11.xml "IDVS SR". ---- */
+#if ARCH == 13
+enum { AR_SC = 42, AR_ZLO = 46, AR_ZHI = 47, AR_DCD0 = 57, AR_RUN = 12 };
+#else
+enum { AR_SC = 42, AR_ZLO = 44, AR_ZHI = 45, AR_DCD0 = 57, AR_RUN = 6 };
+#endif
+
+/* Builds a one-draw frame and returns the register file as the first RUN_IDVS(2) sees it (MOVE32 op 2, MOVE48 op 1). */
+static int
+audit_regs(const struct mali_draw *d, uint32_t *r)
+{
+   struct mali_hw hw = make_hw();
+   struct mali_frame f = {0};
+   f.width = 1558;
+   f.height = 720;
+   f.area[2] = 1558;
+   f.area[3] = 720;
+   f.has_colour = true;
+   f.colour.va = 0x100000;
+   f.colour.row_stride = 1558 * 4;
+   f.colour.clear = f.colour.store = true;
+   if (mali_frame_add_draw(&f, d))
+      return -1;
+   uint64_t *cs = NULL;
+   unsigned n = 0;
+   hw.job_begin(hw.user);
+   int rc = mali_frame_build(&hw, &f, &cs, &n);
+   mali_frame_finish(&f);
+   if (rc)
+      return rc;
+   memset(r, 0, 128 * sizeof *r);
+   rc = -2;
+   for (unsigned i = 0; i < n; i++) {
+      unsigned op = (unsigned)(cs[i] >> 56), a = (unsigned)(cs[i] >> 48) & 0xff;
+      if (op == 2 && a < 128)
+         r[a] = (uint32_t)cs[i];
+      else if (op == 1 && a + 1 < 128) {
+         r[a] = (uint32_t)cs[i];
+         r[a + 1] = (uint32_t)(cs[i] >> 32) & 0xffff;
+      } else if (op == AR_RUN) {
+         rc = 0;
+         break;
+      }
+   }
+   free(cs);
+   return rc;
+}
+
+static void
+audit_draw(struct mali_draw *d)
+{
+   memset(d, 0, sizeof *d);
+   d->dirty = MALI_D_ALL;
+   d->gfx.vs = &g_vs;
+   d->gfx.fs = &g_fs;
+   d->gfx.vs_va = 0x200000;
+   d->gfx.fs_va = 0x200400;
+   d->gfx.samples = 1;
+   d->fx.set = true;
+   d->fx.depth_clip = true;
+   d->fx.wmask = 0xf;
+   d->count = 3;
+   d->instance_count = 1;
+   d->vp[2] = 1558; d->vp[3] = 720; d->vp[5] = 1;
+   d->sc[2] = 1558; d->sc[3] = 720;
+}
+
+static void
+test_v13_audit(void)
+{
+   struct mali_draw d;
+   uint32_t r[128];
+   const uint32_t fpk0 = g_fs.fs_can_fpk, wg0 = g_fs.writes_global;
+   float lo, hi;
+
+   /* DCD0 Allow Forward Pixel To Kill = fs.can_fpk && ... (panvk_vX_cmd_draw.c:2507), To Be Killed = !writes_global (:2512).
+    * A discarding opaque draw that may kill what is under it leaves the clear colour where it discards. */
+   audit_draw(&d);
+   g_fs.fs_can_fpk = 1;
+   g_fs.writes_global = 0;
+   CHECK(audit_regs(&d, r) == 0 && (r[AR_DCD0] & 3u) == 3u, "audit: opaque can_fpk FS: DCD0 %08x wants FPK kill + killed", r[AR_DCD0]);
+   g_fs.fs_can_fpk = 0;
+   CHECK(audit_regs(&d, r) == 0 && !(r[AR_DCD0] & 1u), "audit: FS that cannot FPK (discard): DCD0 %08x allows forward pixel kill", r[AR_DCD0]);
+   g_fs.fs_can_fpk = 1;
+   g_fs.writes_global = 1;
+   CHECK(audit_regs(&d, r) == 0 && !(r[AR_DCD0] & 2u), "audit: FS with side effects: DCD0 %08x lets it be killed", r[AR_DCD0]);
+   g_fs.fs_can_fpk = fpk0;
+   g_fs.writes_global = wg0;
+
+   /* Scissor box: each field CLAMP(v, 0, UINT16_MAX) (panvk_vX_cmd_draw.c:897-900); an unclamped max x spills into max y. */
+   audit_draw(&d);
+   d.sc[2] = 70000;
+   d.sc[3] = 101;
+   CHECK(audit_regs(&d, r) == 0 && r[AR_SC + 1] == (0xffffu | (100u << 16)), "audit: scissor 70000x101: max word %08x, want %08x",
+         r[AR_SC + 1], 0xffffu | (100u << 16));
+
+   /* Depth range: z_min = MIN2(minDepth, maxDepth), z_max = MAX2 (panvk_cmd_draw.h:285-292); a reversed range left as is
+    * gives min > max, and with Low/High Depth Cull set every primitive is culled. */
+   audit_draw(&d);
+   d.vp[4] = 1.0f;
+   d.vp[5] = 0.0f;
+   CHECK(audit_regs(&d, r) == 0, "audit: reversed depth range build");
+   memcpy(&lo, &r[AR_ZLO], 4);
+   memcpy(&hi, &r[AR_ZHI], 4);
+   CHECK(lo == 0.0f && hi == 1.0f, "audit: reversed depth range: clamp [%g, %g], want [0, 1]", lo, hi);
+   printf("{\"test\":\"v13_audit\",\"arch\":%d,\"pass\":%s}\n", ARCH, g_fail ? "false" : "true");
+}
+
 /* VK_EXT_provoking_vertex: the mode reaches both hardware copies of "First provoking vertex" (FBD word 11 bit 14, tiler ctx word 2 bit 18) */
 static void
 test_provoking(VkCommandPool pool, VkBuffer vbh)
@@ -955,6 +1065,7 @@ int main(int argc, char **argv)
       test_ringwrap();
       return g_fail ? 1 : 0;
    }
+   test_v13_audit();
 
    /* ---- ICD bring-up (instance -> device), as t_icd ---- */
    extern PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance, const char *);

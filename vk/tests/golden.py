@@ -202,7 +202,7 @@ def check_tiler(c, lo):
         c.dev.heap_page[r['id']] = page
 
 
-def rules_idvs2(evs):
+def rules_idvs2(evs, mem=None):
     """R-CS for v13's RUN_IDVS2 (op 12), which decode_stream.py does not know: flags word (V13-NEXT.md: malloc_enable bit 33 set, stage [51:48] = 0,
     no v11 'fragment SRT select' bit 38), FAU count byte (kb_cs_move48 truncation) for FAU_v r8 / FAU_f r10, tiler context 64-byte aligned."""
     errs = []
@@ -216,6 +216,25 @@ def rules_idvs2(evs):
             if (v & ((1 << 56) - 1)) and not v >> 56: errs.append('%s: %s r%d has pointer but zero count byte' % (where, nm, reg))
         t = ds.pair(r, 40)
         if t and t % 64: errs.append('%s: tiler_ctx r40 = 0x%x not 64-byte aligned' % (where, t))
+        # R-BOX (v13 audit vs panvk_vX_cmd_draw.c prepare_vp): SCISSOR_BOX r42:43 and VIEWPORT_HIGH r44:45 are min/max u16 boxes,
+        # VIEWPORT_LOW r46/r47 = [MIN2, MAX2] of the depth range (panvk_depth_range). An inverted box or depth range lands nothing.
+        for nm, reg in (('SCISSOR_BOX', 42), ('VIEWPORT_HIGH', 44)):
+            a, b = r.get(reg, 0), r.get(reg + 1, 0)
+            if (a & 0xffff) > (b & 0xffff) or (a >> 16) > (b >> 16):
+                errs.append('%s: R-BOX %s r%d:%d min (%d,%d) > max (%d,%d)' % (where, nm, reg, reg + 1, a & 0xffff, a >> 16, b & 0xffff, b >> 16))
+        zlo, zhi = (struct.unpack('<f', struct.pack('<I', r.get(x, 0) & 0xffffffff))[0] for x in (46, 47))
+        if zlo > zhi: errs.append('%s: R-BOX VIEWPORT_LOW depth range [%g, %g] inverted' % (where, zlo, zhi))
+    if mem is None: return errs
+    for e in evs:   # R-TILE: the tiler context's Effective Tile Size (w2 23:20) must equal the FBD's (w11 12:9), pan_desc.c / cmd_draw.c:1260
+        if e['op'] != 7: continue
+        fbd = ds.pair(e['regs'], 40) & MASK48 & ~63
+        if not fbd: continue
+        w = struct.unpack('<16I', mem.read(fbd, 64))
+        tc = (w[14] | w[15] << 32) & MASK48 & ~63
+        if not tc: continue
+        t2 = struct.unpack('<4I', mem.read(tc, 16))[2]
+        if (t2 >> 20) & 15 != (w[11] >> 9) & 15:
+            errs.append('ins %d(RUN_FRAGMENT): R-TILE tiler ctx Effective Tile Size log2 %d != FBD %d' % (e['i'], (t2 >> 20) & 15, (w[11] >> 9) & 15))
     return errs
 
 
@@ -268,7 +287,7 @@ def process(path, outpath, hook=None):
                 else:
                     out.append('  %3d %-14s %016x' % (ev['i'], ev['name'], w))
                 if op in ds.RUNS: render_job(c, ev, ev['name'])
-            for msg in ds.rules(dict(mem=d.mem), evs, arch) + rules_idvs2(evs):
+            for msg in ds.rules(dict(mem=d.mem), evs, arch) + rules_idvs2(evs, d.mem):
                 if 'scoreboard re-select' in msg:   # advisory: mixed compute+draw streams trip it, hardware dEQP passes them
                     warn.add(msg.split(': ', 1)[1] if ': ' in msg else msg); continue
                 viol.append('RULE R-CS: dev%d kick %d: %s' % (d.n, n, msg))
