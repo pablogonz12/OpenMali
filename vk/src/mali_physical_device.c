@@ -487,7 +487,8 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .EXT_vertex_attribute_divisor = true, .KHR_vertex_attribute_divisor = true,   /* t_vk_feat divisor */
       .KHR_shader_integer_dot_product = true, /* t_vk_feat intdot */
       .KHR_maintenance6 = true,              /* t_cmd: BindDescriptorSets2/PushConstants2 == 1.0 forms */
-      .EXT_extended_dynamic_state = true,   /* core 1.3 setters (runtime-tracked, read in mali_cmd.c snapshot); t_vk_draw dyn cull/depth/stencil/topology, t_angle_seq procaddr */
+      .EXT_extended_dynamic_state = true,
+      .KHR_index_type_uint8 = true, .EXT_index_type_uint8 = true,   /* t_vk_feat idx8: PRIMITIVE_FLAGS index type 1 (genxml v10/v12/v13 "Index Type" UINT8), restart 0xff */   /* core 1.3 setters (runtime-tracked, read in mali_cmd.c snapshot); t_vk_draw dyn cull/depth/stencil/topology, t_angle_seq procaddr */
       .EXT_memory_budget = true,             /* t_dxvk_caps: budget/usage track vkAllocateMemory */
       .KHR_calibrated_timestamps = true,     /* t_dxvk_caps: device/monotonic/raw domains */
       .EXT_image_view_min_lod = true,        /* t_image view_min_lod; t_dxvk_caps name == feature */
@@ -589,6 +590,7 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .provokingVertexLast = true, /* mali_cmd.c snapshot_draw -> frame.provoking_last -> FBD/tiler ctx bit cleared */
       .depthClipEnable = true,     /* mali_cmd.c: vk_rasterization_state_depth_clip_enable -> ZSD depth_clip */
       .extendedDynamicState = true,
+      .indexTypeUint8 = true,      /* t_vk_feat idx8 (+ tests/idx8-flags.py on the CS dump): mali_cmd.c ib_size 1 -> mali_cs_emit.c idx_type_bits */
       .maintenance5 = true,        /* t_vk_feat maint5 */
       .shaderExpectAssume = true,  /* t_dxvk_caps */
       .maintenance6 = true,

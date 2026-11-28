@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only spill|firstinst|provoking|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|tf_reject|tf_write|tf_default|tf_inactive|tf_reset|tf_multi|tf_overflow|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|quadsize|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|samplerate|dparams|gather|gatherlim|fsstore|memmodel|robust2|imgmax] [--robust2]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only spill|firstinst|provoking|idx32|idx8|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|tf_reject|tf_write|tf_default|tf_inactive|tf_reset|tf_multi|tf_overflow|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|quadsize|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|samplerate|dparams|gather|gatherlim|fsstore|memmodel|robust2|imgmax] [--robust2]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -40,6 +40,7 @@ static int g_modless;  /* VK_KHR_maintenance5 (test maint5): stages carry a chai
 static int g_ib2;      /* test maint5: vkCmdBindIndexBuffer2KHR instead of vkCmdBindIndexBuffer */
 static int g_cbc, g_cbc_nofmt; static uint32_t g_cbc_max;   /* EXT_custom_border_color: features and maxCustomBorderColorSamplers */
 static int g_m5;       /* maintenance5 feature advertised */
+static int g_idx8;     /* VK_KHR_index_type_uint8: indexTypeUint8 advertised */
 static int g_div, g_div0; static uint32_t g_div_max;   /* EXT/KHR_vertex_attribute_divisor: instance-rate divisor, zero divisor, maxVertexAttribDivisor */
 static const VkPipelineVertexInputStateCreateInfo *g_vi;   /* make_pipe: vertex input state override (test divisor) */
 static PFN_vkCmdBindIndexBuffer2KHR g_cbib2;
@@ -55,6 +56,7 @@ static int g_expect_xfb_fail;   /* make_pipe: a transform-feedback shader must b
 static VkBool32 g_lr_rect, g_lr_bres, g_lr_smooth, g_lr_stip_rect, g_lr_stip_bres, g_lr_stip_smooth;   /* VK_EXT_line_rasterization features */
 
 #define CASE_ON(n) (!g_only || !strcmp(g_only, n))
+#define CASE_ONLY(n) (g_only && !strcmp(g_only, n))   /* opt-in cases: not in the default run, so the shared vk_feat goldens stay as they are */
 #define CHECK(c, ...)                                                                              \
    do {                                                                                            \
       if (!(c)) {                                                                                  \
@@ -678,6 +680,50 @@ test_idx32(void)
       printf("{\"test\":\"idx32\",\"coverage\":%u,\"ok\":true}\n", cov);
    } else {
       printf("{\"test\":\"idx32\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   }
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   hbuf_destroy(&ib);
+   tgt_destroy(&t);
+   return 1;
+}
+
+/* VK_KHR/EXT_index_type_uint8 (ANGLE supportsIndexTypeUint8: GL_UNSIGNED_BYTE indices without a uint16 conversion pass). The same two
+ * triangles as idx32 from 8-bit indices: a list draw (firstIndex 0) and one at firstIndex 3 with firstInstance 2, plus an indexed indirect
+ * draw. Host: tests/idx8-flags.py checks the dumped PRIMITIVE_FLAGS index type (bits 10:8 = 1, UINT8) of every IDVS draw; pixels on hardware. */
+static int
+test_idx8(void)
+{
+   CHECK(g_idx8, "indexTypeUint8 not advertised");
+   if (!g_idx8) return 0;
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   if (!make_pipe(&t, "inst.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe)) return 0;
+   struct hbuf ib;
+   if (!hbuf_create(&ib, 256, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT)) return 0;
+   const uint8_t idx[8] = {0, 1, 2, 0x10, 0x11, 0x12, 0, 0};
+   memcpy(ib.p, idx, sizeof idx);
+   const VkDrawIndexedIndirectCommand ind = {.indexCount = 3, .instanceCount = 1, .firstIndex = 0, .vertexOffset = 0, .firstInstance = 0};
+   memcpy((uint8_t *)ib.p + 64, &ind, sizeof ind);
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   begin_pass(cb, &t, pipe);
+   BIND_IB(cb, ib.b, 0, VK_INDEX_TYPE_UINT8_KHR);
+   CmdDrawIndexed(cb, 3, 1, 0, 0, 0);          /* vertex 0..2, x -1..-0.5 */
+   CmdDrawIndexed(cb, 3, 1, 3, -0x10, 2);      /* indices 0x10.., firstInstance 2: x 0..0.5 */
+   CmdDrawIndexedIndirect(cb, ib.b, 64, 1, 20);   /* first triangle again, through the indirect path */
+   CmdEndRenderPass(cb);
+   if (!cb_submit(&t, cb)) return 0;
+   if (!g_fake) {
+      uint32_t cov = coverage(&t);
+      CHECK(abs((int)cov - 4096) <= 4096 / 50, "coverage %u expected 4096", cov);
+      CHECK(red_at(&t, 21, 117), "first triangle missing");
+      CHECK(red_at(&t, 149, 117), "second triangle missing");
+      printf("{\"test\":\"idx8\",\"coverage\":%u,\"ok\":true}\n", cov);
+   } else {
+      printf("{\"test\":\"idx8\",\"pixels\":\"hardware only; CS checked by idx8-flags.py\",\"ok\":true}\n");
    }
    DestroyPipeline(dev, pipe, NULL);
    DestroyPipelineLayout(dev, lay, NULL);
@@ -4093,6 +4139,9 @@ main(int argc, char **argv)
       g_cbc_max = cbp.maxCustomBorderColorSamplers;
    }
    g_m5 = fm5.maintenance5;
+   { VkPhysicalDeviceIndexTypeUint8FeaturesKHR q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_KHR};
+     VkPhysicalDeviceFeatures2 q2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &q};
+     ((PFN_vkGetPhysicalDeviceFeatures2)gipa(inst, "vkGetPhysicalDeviceFeatures2"))(pd, &q2); g_idx8 = q.indexTypeUint8; }
    g_null = rb2.nullDescriptor;
    g_rb2 = rb2.robustBufferAccess2;
    VkPhysicalDeviceVulkan13Features f13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
@@ -4170,7 +4219,9 @@ main(int argc, char **argv)
       ftf.geometryStreams = q.geometryStreams;
    }
    if (g_tf) { ftf.pNext = e2.pNext; e2.pNext = &ftf; }
-   const char *dexts[8]; uint32_t ndx = 0;
+   VkPhysicalDeviceIndexTypeUint8FeaturesKHR ei8 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INDEX_TYPE_UINT8_FEATURES_KHR, .pNext = e2.pNext, .indexTypeUint8 = VK_TRUE};
+   if (g_idx8) e2.pNext = &ei8;
+   const char *dexts[16]; uint32_t ndx = 0;
    if (g_pv_last) dexts[ndx++] = "VK_EXT_provoking_vertex";
    if (g_div || g_div0) dexts[ndx++] = "VK_EXT_vertex_attribute_divisor";
    if (g_lr_rect) dexts[ndx++] = "VK_EXT_line_rasterization";
@@ -4179,6 +4230,7 @@ main(int argc, char **argv)
    if (rb2.nullDescriptor) dexts[ndx++] = "VK_EXT_robustness2";
    dexts[ndx++] = "VK_EXT_private_data";
    if (g_tf) dexts[ndx++] = "VK_EXT_transform_feedback";
+   if (g_idx8) dexts[ndx++] = "VK_KHR_index_type_uint8";
    e13.privateData = f13.privateData;
    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &e2, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi,
                             .enabledExtensionCount = ndx, .ppEnabledExtensionNames = dexts};
@@ -4210,6 +4262,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("firstinst")) ok &= test_firstinst();
    if (ok && CASE_ON("mdilimit")) ok &= test_mdilimit();
    if (ok && CASE_ON("idx32")) ok &= test_idx32();
+   if (ok && CASE_ONLY("idx8")) ok &= test_idx8();
    if (ok && CASE_ON("aniso")) ok &= test_aniso();
    if (ok && CASE_ON("mirror")) ok &= test_mirror();
    if (ok && CASE_ON("cbc")) ok &= test_cbc();

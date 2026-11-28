@@ -304,6 +304,15 @@ for g in v11 v13; do
    golden vk_feat $g --spv-dir "$V/shader"
    GOLD_MSAA=1 golden vk_meta $g
 done
+# VK_KHR/EXT_index_type_uint8 (ANGLE supportsIndexTypeUint8): t_vk_feat --only idx8 draws from 8-bit indices (direct + indirect); the
+# dumped CS must carry PRIMITIVE_FLAGS index type UINT8 on every draw (tests/idx8-flags.py). Pixels are checked on hardware.
+for g in v10 v11 v13; do
+   name=idx8-$g; rm -f "$GDIR/$name.jsonl" "$GDIR/$name.txt"
+   out=$(MALI_FAKE_DUMP="$GDIR/$name.jsonl" MALI_BACKEND=fake MALI_FAKE_GPU=$g timeout -k 5 120 "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only idx8 2>&1); rc=$?
+   if [ $rc -ne 0 ] || ! grep -q '"pass":true' <<<"$out"; then echo "FAIL  idx8 $g (test exit $rc)"; echo "$out" | tail -8 | sed 's/^/        /'; fail=1; continue; fi
+   out=$(GOLDEN_ARCH=${g#v} timeout -k 5 120 python3 -I "$V/tests/golden.py" "$GDIR/$name.jsonl" "$GDIR/$name.txt" 2>&1) || { echo "FAIL  rules idx8 $g"; echo "$out" | head -20 | sed 's/^/        /'; fail=1; continue; }
+   if out=$(python3 -I "$V/tests/idx8-flags.py" "$GDIR/$name.txt" 2>&1); then echo "ok    idx8 $g ($out)"; else echo "FAIL  idx8 $g: $out"; fail=1; fi
+done
 # Mutable-format views (VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT): a render pass renders with the VIEW's format, not the image's.
 # PanVK takes the colour attachment format from the image view (panvk_vX_cmd_draw.c:159,171) and its blend conversion format
 # from that (:794). The fake backend has no shader interpreter, so t_vk_draw's pixel checks are hardware-only; what it does
