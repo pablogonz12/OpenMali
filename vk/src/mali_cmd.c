@@ -170,8 +170,7 @@ reset_state(struct mali_cmd_buffer *cmd)
    /* the TF range is recording state like the bindings above: a reset buffer that kept the old handles would patch a
     * freed buffer's address into the next draw (mali_cmd.c: the XFB patch below), so it goes with the push block. */
    memset(&cmd->tf, 0, sizeof cmd->tf);
-   cmd->nsets = 0;
-   cmd->ndyn = 0;
+   memset(cmd->descriptors, 0, sizeof cmd->descriptors);
    cmd->occ_va = 0;
    cmd->occ_mode = 0;
    cmd->dirty = MALI_D_ALL;
@@ -318,6 +317,11 @@ mali_CmdBindDescriptorSets(VkCommandBuffer h, VkPipelineBindPoint bp, VkPipeline
 {
    CMD(h);
    VK_FROM_HANDLE(vk_pipeline_layout, pl, layout);
+   if (bp != VK_PIPELINE_BIND_POINT_GRAPHICS && bp != VK_PIPELINE_BIND_POINT_COMPUTE) {
+      unsupported(cmd, "descriptor bind point");
+      return;
+   }
+   struct mali_cmd_descriptors *binding = &cmd->descriptors[bp == VK_PIPELINE_BIND_POINT_COMPUTE];
    uint32_t used = 0;
    for (uint32_t i = 0; i < n; i++) {
       unsigned s = first + i;
@@ -344,24 +348,28 @@ mali_CmdBindDescriptorSets(VkCommandBuffer h, VkPipelineBindPoint bp, VkPipeline
             }
             struct mali_hw_desc hd;
             mali_dyn_buf_pack(ds->arch, &hd, &ds->dyn[k], dyn[used++]);
-            if (memcmp(cmd->dyn_desc[start + k], hd.w, sizeof hd.w)) {
-               memcpy(cmd->dyn_desc[start + k], hd.w, sizeof hd.w);
-               cmd->dirty |= MALI_D_DYNBUF;
+            if (memcmp(binding->dyn_desc[start + k], hd.w, sizeof hd.w)) {
+               memcpy(binding->dyn_desc[start + k], hd.w, sizeof hd.w);
+               if (bp == VK_PIPELINE_BIND_POINT_GRAPHICS)
+                  cmd->dirty |= MALI_D_DYNBUF;
             }
-            if (start + k + 1 > cmd->ndyn) {
-               cmd->ndyn = start + k + 1;
-               cmd->dirty |= MALI_D_BIND;
+            if (start + k + 1 > binding->ndyn) {
+               binding->ndyn = start + k + 1;
+               if (bp == VK_PIPELINE_BIND_POINT_GRAPHICS)
+                  cmd->dirty |= MALI_D_BIND;
             }
          }
       }
-      if (cmd->set_va[s] != ds->va || cmd->set_bytes[s] != ds->bytes) {
-         cmd->set_va[s] = ds->va;
-         cmd->set_bytes[s] = ds->bytes;
-         cmd->dirty |= MALI_D_BIND;
+      if (binding->set_va[s] != ds->va || binding->set_bytes[s] != ds->bytes) {
+         binding->set_va[s] = ds->va;
+         binding->set_bytes[s] = ds->bytes;
+         if (bp == VK_PIPELINE_BIND_POINT_GRAPHICS)
+            cmd->dirty |= MALI_D_BIND;
       }
-      if (s + 1 > cmd->nsets) {
-         cmd->nsets = s + 1;
-         cmd->dirty |= MALI_D_BIND;
+      if (s + 1 > binding->nsets) {
+         binding->nsets = s + 1;
+         if (bp == VK_PIPELINE_BIND_POINT_GRAPHICS)
+            cmd->dirty |= MALI_D_BIND;
       }
    }
 }
@@ -463,6 +471,7 @@ mali_CmdPushConstants2KHR(VkCommandBuffer h, const VkPushConstantsInfoKHR *info)
 static bool
 snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, uint32_t inst, uint32_t first, uint32_t first_inst)
 {
+   const struct mali_cmd_descriptors *binding = &cmd->descriptors[0];
    const struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
    const int32_t *a = cmd->cur.area;
    struct mali_frame *fr = &cmd->cur;
@@ -496,11 +505,11 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
       .count = count, .instance_count = inst, .first_vertex = first, .first_instance = first_inst,
    };
    if (m & (MALI_D_BIND | MALI_D_DYNBUF)) {
-      struct mali_bdyn *bd = mali_frame_blk(fr, sizeof *bd + cmd->ndyn * sizeof bd->d[0]);
+      struct mali_bdyn *bd = mali_frame_blk(fr, sizeof *bd + binding->ndyn * sizeof bd->d[0]);
       if (!bd)
          return false;
-      bd->n = cmd->ndyn;
-      memcpy(bd->d, cmd->dyn_desc, cmd->ndyn * sizeof bd->d[0]);
+      bd->n = binding->ndyn;
+      memcpy(bd->d, binding->dyn_desc, binding->ndyn * sizeof bd->d[0]);
       d->dyn = bd;
    }
    if (m & MALI_D_BIND) {
@@ -510,10 +519,10 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
       memcpy(bb->vb_va, cmd->vb_va, sizeof bb->vb_va);
       memcpy(bb->vb_size, cmd->vb_size, sizeof bb->vb_size);
       memcpy(bb->vb_stride, cmd->vb_stride, sizeof bb->vb_stride);
-      bb->nsets = cmd->nsets;
-      memcpy(bb->set_va, cmd->set_va, sizeof bb->set_va);
-      memcpy(bb->set_bytes, cmd->set_bytes, sizeof bb->set_bytes);
-      bb->ndyn = cmd->ndyn;
+      bb->nsets = binding->nsets;
+      memcpy(bb->set_va, binding->set_va, sizeof bb->set_va);
+      memcpy(bb->set_bytes, binding->set_bytes, sizeof bb->set_bytes);
+      bb->ndyn = binding->ndyn;
       d->bind = bb;
    }
    /* VK_EXT_transform_feedback: the pipeline reserves 32 B after the app's push constants for the four XFB buffer
@@ -968,11 +977,12 @@ record_dispatch(struct mali_cmd_buffer *cmd, uint32_t x, uint32_t y, uint32_t z,
    f.disp.cs = cmd->cs;
    f.disp.cs_va = cmd->cs_va;
    memcpy(f.disp.push, cmd->push_cs, sizeof f.disp.push);
-   f.disp.nsets = cmd->nsets;
-   memcpy(f.disp.set_va, cmd->set_va, sizeof f.disp.set_va);
-   memcpy(f.disp.set_bytes, cmd->set_bytes, sizeof f.disp.set_bytes);
-   f.disp.ndyn = cmd->ndyn;
-   memcpy(f.disp.dyn_desc, cmd->dyn_desc, sizeof f.disp.dyn_desc);
+   const struct mali_cmd_descriptors *binding = &cmd->descriptors[1];
+   f.disp.nsets = binding->nsets;
+   memcpy(f.disp.set_va, binding->set_va, sizeof f.disp.set_va);
+   memcpy(f.disp.set_bytes, binding->set_bytes, sizeof f.disp.set_bytes);
+   f.disp.ndyn = binding->ndyn;
+   memcpy(f.disp.dyn_desc, binding->dyn_desc, sizeof f.disp.dyn_desc);
    f.disp.groups[0] = x;
    f.disp.groups[1] = y;
    f.disp.groups[2] = z;
