@@ -1201,7 +1201,7 @@ test_stale(void)
  * Needs execution, so it prints SKIP on the fake backend and is meant for the guest (see the note by the check.sh
  * entry). */
 static int
-test_modrt(void)
+test_modrt_transfer(void)
 {
    const uint64_t linear = 0;
    const VkClearColorValue col = {.float32 = {0.25f, 0.5f, 0.75f, 1.0f}};   /* 64,128,191,255 */
@@ -1320,6 +1320,8 @@ test_modrt(void)
    return 1;
 }
 
+#include "t_modrt_matrix.h"
+
 int
 main(int argc, char **argv)
 {
@@ -1360,7 +1362,8 @@ main(int argc, char **argv)
    if (!gipa || !negotiate || negotiate(&iv)) { printf("{\"fail\":\"icd entry\"}\n"); return 1; }
 
    PFN_vkCreateInstance CreateInstance = (PFN_vkCreateInstance)gipa(NULL, "vkCreateInstance");
-   const VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .apiVersion = (g_only && !strcmp(g_only, "wsiimg")) ? VK_API_VERSION_1_1 : VK_API_VERSION_1_0};
+   int modrt = g_only && !strcmp(g_only, "modrt");
+   const VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .apiVersion = modrt ? VK_API_VERSION_1_3 : (g_only && !strcmp(g_only, "wsiimg")) ? VK_API_VERSION_1_1 : VK_API_VERSION_1_0};
    VkInstanceCreateInfo ici = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app};
    const char *iext[] = {"VK_KHR_get_physical_device_properties2", "VK_KHR_external_memory_capabilities",
                          "VK_KHR_external_semaphore_capabilities", "VK_KHR_external_fence_capabilities"};
@@ -1391,9 +1394,10 @@ main(int argc, char **argv)
                           /* only enabled for --only wsiimg */
                           "VK_EXT_image_drm_format_modifier", "VK_KHR_sampler_ycbcr_conversion", "VK_KHR_maintenance1"};
    int wsiimg = g_only && !strcmp(g_only, "wsiimg");
-   VkPhysicalDeviceTimelineSemaphoreFeatures tf = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES, .timelineSemaphore = VK_TRUE};
+   VkPhysicalDeviceDynamicRenderingFeatures dr = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES, .dynamicRendering = VK_TRUE};
+   VkPhysicalDeviceTimelineSemaphoreFeatures tf = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES, .pNext = modrt ? &dr : NULL, .timelineSemaphore = VK_TRUE};
    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &tf, .queueCreateInfoCount = 1,
-                            .pQueueCreateInfos = &qi, .enabledExtensionCount = wsiimg ? 11 : 8, .ppEnabledExtensionNames = dext};
+                             .pQueueCreateInfos = &qi, .enabledExtensionCount = wsiimg ? 11 : modrt ? 9 : 8, .ppEnabledExtensionNames = dext};
    if (CreateDevice(pd, &di, NULL, &dev) != VK_SUCCESS) { printf("{\"fail\":\"CreateDevice\"}\n"); return 1; }
 #define LOAD(n) n = (PFN_vk##n)GDPA(dev, "vk" #n); if (!n) { printf("{\"fail\":\"missing vk" #n "\"}\n"); return 1; }
    DEV_FNS(LOAD)
@@ -1417,7 +1421,11 @@ main(int argc, char **argv)
    if (ok && g_only && !strcmp(g_only, "isync"))
       ok &= test_isync(getenv("MALI_FAKE_SLOW_US") ? (uint32_t)atoi(getenv("MALI_FAKE_SLOW_US")) : 150000u);
    if (ok && g_only && !strcmp(g_only, "stale")) ok &= test_stale();
-   if (ok && g_only && !strcmp(g_only, "modrt")) ok &= test_modrt();
+   if (ok && modrt) {
+      int transfer_ok = test_modrt_transfer();
+      int matrix_ok = test_modrt_matrix(GDPA);
+      ok &= transfer_ok && matrix_ok;
+   }
    if (ok && CASE_ON("idle")) ok &= test_idle();
    if (ok && CASE_ON("binary")) ok &= test_binary();
    if (ok && CASE_ON("timeline")) ok &= test_timeline(500);
