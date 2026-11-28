@@ -254,6 +254,7 @@ struct mali_att {
    uint32_t surface_stride;               /* MSAA (frame.samples 4): bytes per sample plane of the multisampled image (samples consecutive) */
    uint64_t resolve_va;                   /* colour, MSAA: single-sample resolve target (hardware "Average" writeback); 0 = store the samples (Layered) */
    uint32_t resolve_row_stride;
+   bool load;                             /* loadOp LOAD (the old contents are preloaded: draw or pre-frame shader, mali_cmd.c) */
 };
 
 struct mali_frame {
@@ -286,6 +287,10 @@ struct mali_frame {
    unsigned colour_slot;   /* which of the render pass's colour attachment slots this frame renders (a null-slot pass may start
                             * at 1); CmdClearAttachments only clears that one */
    const struct mali_bpipe *cur_pipe;     /* the effective pipe of the last record (records are deltas) */
+   unsigned npreload;                     /* draws[0..npreload) are LOAD preload draws (MALI_PRELOAD=draw|fastdraw), not the app's */
+   /* MALI_PRELOAD hw: the preload "draws" of a LOAD, run as the frame descriptor's pre-frame shaders instead of geometry:
+    * [0] colour (Pre Frame 0), [1] depth/stencil (Pre Frame 1). Blocks of `pool`; NULL = none. */
+   const struct mali_draw *pre_fs[2];
 };
 
 struct mali_rec *mali_frame_draw_slot(struct mali_frame *f);   /* next draw slot (uninitialised), NULL on ENOMEM; commit with f->ndraws++ */
@@ -316,6 +321,10 @@ void mali_fbd_bounds(const struct mali_env *env, const struct mali_frame *f, uin
 /* mali_render.c: framebuffer descriptor (v11 and v13) and per-frame blocks. out: 256 B (KB_FB_DESC_SIZE_ZS), 64-aligned. */
 int mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uint8_t *out, uint64_t tiler_ctx_va,
                          uint64_t sample_locations_va);
+/* mali_render.c, MALI_PASS_STATS=1: once per second on stderr, the LOAD counters of the passes built since the last line
+ * (preload_passes, preload_load_passes, preload_pixels, preload_sparse_passes = passes whose geometry covers < 25 % of the
+ * render area's tiles, and the same for LOAD passes only). Called once per built render pass. */
+void mali_preload_stats_note(const struct mali_env *env, const struct mali_frame *f);
 /* Converts a 0..1 float to an 8-bit UNORM clear channel (round to nearest, clamped). */
 uint8_t mali_unorm8(float c);
 

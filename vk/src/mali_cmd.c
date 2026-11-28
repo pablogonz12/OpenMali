@@ -1268,6 +1268,7 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
    f->colour.row_stride = t.row_stride;
    f->colour.clear = ca->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR;
    f->colour.store = ca->storeOp == VK_ATTACHMENT_STORE_OP_STORE;
+   f->colour.load = load;
    if (f->colour.clear)
       memcpy(f->colour.clear_color, ca->clearValue.color.float32, sizeof f->colour.clear_color);
    if (f->samples == 4) {
@@ -1385,6 +1386,7 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       f->zs.clear = da->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR;
       f->zs.clear_depth = da->clearValue.depthStencil.depth;
       f->zs.store = da->storeOp == VK_ATTACHMENT_STORE_OP_STORE;
+      f->zs.load = zload;
    }
    if (ri->pStencilAttachment && ri->pStencilAttachment->imageView) {
       if (g_res.image_view_mem)
@@ -1421,6 +1423,7 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       f->st.clear = sa->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR;
       f->st.clear_stencil = (uint8_t)sa->clearValue.depthStencil.stencil;
       f->st.store = sa->storeOp == VK_ATTACHMENT_STORE_OP_STORE;
+      f->st.load = sload;
    }
    struct { bool on; enum mali_preload_kind kind; const struct mali_preload_src *src; const char *what; } pre[2] = {
       { load, MALI_PRELOAD_COLOUR, &psrc, "colour loadOp LOAD (preload shader)" },
@@ -1441,6 +1444,8 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       d.vp[0] = (float)f->area[0]; d.vp[1] = (float)f->area[1]; d.vp[2] = (float)f->area[2]; d.vp[3] = (float)f->area[3]; d.vp[5] = 1.0f;
       if (mali_frame_add_draw(f, &d))
          vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
+      else
+         f->npreload++;
    }
    cmd->dirty = MALI_D_ALL;   /* the preload draws above are not snapshots of the bound state */
    cmd->in_render = true;

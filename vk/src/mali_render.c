@@ -8,6 +8,9 @@
  * FBD word 12 bits 31:28 are NOT set on v13 (they fault the queue, V13-NEXT2.md). */
 #include <errno.h>
 #include <math.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <time.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -233,6 +236,109 @@ mali_fbd_bounds(const struct mali_env *env, const struct mali_frame *f, uint32_t
    out[0] = (uint32_t)minx; out[1] = (uint32_t)miny; out[2] = (uint32_t)maxx; out[3] = (uint32_t)maxy;
 }
 
+/* MALI_PASS_STATS=1 (see mali_cs_emit.h). Fields carry a preload_ prefix so they stay apart from other pass counters. */
+static struct {
+   pthread_mutex_t m;
+   struct timespec t0;
+   unsigned long passes, load_passes, sparse, sparse_load;
+   unsigned long long pixels;
+} g_pst = { .m = PTHREAD_MUTEX_INITIALIZER };
+
+static void
+pst_print_locked(void)
+{
+   fprintf(stderr, "mali preload_stats: preload_passes=%lu preload_load_passes=%lu preload_pixels=%llu "
+           "preload_sparse_passes=%lu preload_sparse_load_passes=%lu\n", g_pst.passes, g_pst.load_passes, g_pst.pixels,
+           g_pst.sparse, g_pst.sparse_load);
+   g_pst.passes = g_pst.load_passes = g_pst.sparse = g_pst.sparse_load = 0;
+   g_pst.pixels = 0;
+}
+
+/* the last (partial) second of a run: a short process would otherwise print nothing */
+__attribute__((destructor)) static void
+pst_flush(void)
+{
+   pthread_mutex_lock(&g_pst.m);
+   if (g_pst.passes)
+      pst_print_locked();
+   pthread_mutex_unlock(&g_pst.m);
+}
+
+void
+mali_preload_stats_note(const struct mali_env *env, const struct mali_frame *f)
+{
+   const char *e = getenv("MALI_PASS_STATS");
+   if (!e || e[0] != '1' || !f->width || !f->height)
+      return;
+   /* render area clipped to the attachment */
+   long x0 = 0, y0 = 0, x1 = f->width, y1 = f->height;
+   if (f->area[2] > 0 && f->area[3] > 0) {
+      x0 = f->area[0] < 0 ? 0 : f->area[0];
+      y0 = f->area[1] < 0 ? 0 : f->area[1];
+      x1 = (long)f->area[0] + f->area[2];
+      y1 = (long)f->area[1] + f->area[3];
+      if (x1 > (long)f->width) x1 = f->width;
+      if (y1 > (long)f->height) y1 = f->height;
+   }
+   if (x1 <= x0 || y1 <= y0)
+      return;
+   const bool cl = f->has_colour && f->colour.load, zl = (f->has_zs && f->zs.load) || (f->has_st && f->st.load);
+   const unsigned long long spp = f->samples > 1 ? f->samples : 1;
+   const unsigned long long px = (unsigned long long)(x1 - x0) * (unsigned long long)(y1 - y0) * spp * ((cl ? 1u : 0u) + (zl ? 1u : 0u));
+   /* tiles of the render area touched by an app draw (viewport ∩ scissor ∩ area; one rect per distinct pipe block) */
+   const long step = 1L << (mali_fbd_tile_log2(env, f) / 2);
+   const long tx0 = x0 / step, ty0 = y0 / step, tw = (x1 - 1) / step - tx0 + 1, th = (y1 - 1) / step - ty0 + 1;
+   unsigned long touched = 0;
+   uint8_t *bm = calloc((size_t)(tw * th), 1);
+   if (bm) {
+      const struct mali_bpipe *last = NULL;
+      for (unsigned i = f->npreload; i < f->ndraws; i++) {
+         const struct mali_bpipe *bp = f->draws[i].pipe;
+         if (!bp || bp == last)
+            continue;
+         last = bp;
+         long rx0 = (long)bp->vp[0], ry0 = (long)bp->vp[1], rx1 = (long)(bp->vp[0] + bp->vp[2]), ry1 = (long)(bp->vp[1] + bp->vp[3]);
+         if (rx1 < rx0) { long t = rx0; rx0 = rx1; rx1 = t; }
+         if (ry1 < ry0) { long t = ry0; ry0 = ry1; ry1 = t; }   /* negative viewport height */
+         if (bp->sc[2] > 0 && bp->sc[3] > 0) {
+            if (bp->sc[0] > rx0) rx0 = bp->sc[0];
+            if (bp->sc[1] > ry0) ry0 = bp->sc[1];
+            if ((long)bp->sc[0] + bp->sc[2] < rx1) rx1 = (long)bp->sc[0] + bp->sc[2];
+            if ((long)bp->sc[1] + bp->sc[3] < ry1) ry1 = (long)bp->sc[1] + bp->sc[3];
+         }
+         if (rx0 < x0) rx0 = x0;
+         if (ry0 < y0) ry0 = y0;
+         if (rx1 > x1) rx1 = x1;
+         if (ry1 > y1) ry1 = y1;
+         if (rx1 <= rx0 || ry1 <= ry0)
+            continue;
+         for (long ty = ry0 / step; ty <= (ry1 - 1) / step; ty++)
+            for (long tx = rx0 / step; tx <= (rx1 - 1) / step; tx++) {
+               uint8_t *b = &bm[(ty - ty0) * tw + (tx - tx0)];
+               touched += !*b;
+               *b = 1;
+            }
+      }
+      free(bm);
+   }
+   const bool sparse = touched * 4 < (unsigned long)(tw * th);
+   struct timespec now;
+   clock_gettime(CLOCK_MONOTONIC, &now);
+   pthread_mutex_lock(&g_pst.m);
+   if (!g_pst.t0.tv_sec && !g_pst.t0.tv_nsec)
+      g_pst.t0 = now;
+   g_pst.passes++;
+   g_pst.load_passes += (cl || zl) ? 1u : 0u;
+   g_pst.pixels += px;
+   g_pst.sparse += sparse ? 1u : 0u;
+   g_pst.sparse_load += sparse && (cl || zl) ? 1u : 0u;
+   if (now.tv_sec - g_pst.t0.tv_sec >= 1) {
+      pst_print_locked();
+      g_pst.t0 = now;
+   }
+   pthread_mutex_unlock(&g_pst.m);
+}
+
 int
 mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uint8_t *out, uint64_t tiler_ctx_va,
                      uint64_t sample_locations_va)
@@ -241,6 +347,7 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
 
    if (!f->width || !f->height)
       return -EINVAL;
+   mali_preload_stats_note(env, f);
    memset(&p, 0, sizeof p);
    p.width = f->width;
    p.height = f->height;
