@@ -50,6 +50,14 @@ struct mali_kdev {
    /* MEM_SYNC sweep counters (mali_kbase_sync.h), guarded by bo_lock like the sweeps that update them */
    struct mali_sync_counter sc[MALI_SYNC_K_N][MALI_SYNC_DIR_N];
    uint64_t stats_t0;       /* start of the current MALI_SYNC_STATS=1 print interval (ns), 0 = none yet */
+   /* MALI_SYNC_* switches, read once per device (sync_env_load); written only under bo_lock */
+   struct sync_cfg {
+      bool sync_all;   /* MALI_SYNC_ALL=1: every device->CPU sync sweeps every BO (M15 escape hatch) */
+      bool track_off;  /* MALI_SYNC_TRACK=0: same, under its older name */
+      bool dirty;      /* MALI_SYNC_DIRTY (default on): CPU->device only for user BOs the CPU may have written */
+      bool prof;       /* MALI_PROF set: the legacy every-600-sweeps BO dump */
+      bool stats;      /* MALI_SYNC_STATS=1: one counter line per second of sweep activity */
+   } cfg;
 
    /* Free list of recently freed VkDeviceMemory BOs (HOSTLAZY only), oldest first; guarded by bo_lock. A hit skips MEM_ALLOC + mmap (+ the zero/flush of a
     * CACHED BO) and the matching MEM_FREE + munmap. Pooled BOs are not in bos[] (no MEM_SYNC for them). */
@@ -68,6 +76,40 @@ struct mali_kdev {
 /* MALI_SUBMIT_DBG bits (hardware diagnosis, default 0). */
 #define DBG_PAD128  0x20u /* 128-byte submissions (ring accounting with another size) */
 #define DBG_VERBOSE 0x80u /* on a failed submit print queue state and the ring around CS_EXTRACT */
+
+/* Builds that link libkbase's fake kernel (backend_fake.c defines this test hook; the .so never does) re-read the
+ * MALI_SYNC_* switches at every sweep, so a host test can flip them with setenv. On the real kernel they are read once. */
+extern unsigned kb_fake_memsync_count(uint64_t va) __attribute__((weak));
+
+static bool
+env_is(const char *name, char c)
+{
+   const char *e = getenv(name);
+   return e && e[0] == c;
+}
+
+/* bo_lock held (or the device not yet shared). */
+static void
+sync_env_load_locked(struct mali_kdev *k)
+{
+   struct sync_cfg c = {
+      .sync_all = env_is("MALI_SYNC_ALL", '1'),
+      .track_off = env_is("MALI_SYNC_TRACK", '0'),
+      .dirty = !env_is("MALI_SYNC_DIRTY", '0'),
+      .prof = getenv("MALI_PROF") != NULL,
+      .stats = env_is("MALI_SYNC_STATS", '1'),
+   };
+   if (memcmp(&c, &k->cfg, sizeof c))
+      k->cfg = c;
+}
+
+void
+mali_kbase_sync_env_reload(struct mali_kdev *k)
+{
+   pthread_mutex_lock(&k->bo_lock);
+   sync_env_load_locked(k);
+   pthread_mutex_unlock(&k->bo_lock);
+}
 
 static bool k_int_nocoh_default;   /* arch 11: driver-internal BOs without COHERENT_LOCAL/MEM_SYNC */
 static int int_nocoh = -1;
@@ -161,6 +203,7 @@ kbase_device_create(const struct mali_gpu_info *gpu, struct mali_kdev **out)
    pthread_mutex_init(&k->submit_lock, NULL);
    pthread_mutex_init(&k->wait_lock, NULL);
    pthread_mutex_init(&k->bo_lock, NULL);
+   sync_env_load_locked(k);
    {
       const char *pe = getenv("MALI_BO_POOL_MB");
       k->pool_max = pe ? (size_t)strtoul(pe, NULL, 10) << 20 : POOL_DEFAULT_BYTES;
@@ -815,18 +858,19 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
     * instead of being skipped. MALI_SYNC_ALL=1 restores the old full sweep for A/B; a mark the front end could
     * not place (bo_wrote(NULL)) sweeps everything once. The CPU->device direction (op 1) is unchanged. */
    const bool dev2cpu = op == 2;
-   const char *e = getenv("MALI_SYNC_ALL"), *t = getenv("MALI_SYNC_TRACK");   /* read per call: the tests flip them */
    const uint64_t t_start = sync_now_ns();
    struct mali_sync_counter *sc = &k->sc[sel == SYNC_COLD ? MALI_SYNC_K_COLD : sel == SYNC_HOT ? MALI_SYNC_K_HOT
                                          : sel == SYNC_POLL ? MALI_SYNC_K_POLL : MALI_SYNC_K_WAIT]
                                         [dev2cpu ? MALI_SYNC_D2C : MALI_SYNC_C2D];
    pthread_mutex_lock(&k->bo_lock);
+   if (kb_fake_memsync_count)
+      sync_env_load_locked(k);   /* fake-kernel test build: the tests flip the switches between sweeps */
    sc->calls++;
    sc->visited += k->nbos;
-   bool sweep_all = dev2cpu && (k->sync_all_pending || (e && e[0] == '1') || (t && t[0] == '0'));
+   bool sweep_all = dev2cpu && (k->sync_all_pending || k->cfg.sync_all || k->cfg.track_off);
    k->sync_all_pending = false;
    static unsigned prof_calls;
-   if (getenv("MALI_PROF") && ++prof_calls == 600) {
+   if (k->cfg.prof && ++prof_calls == 600) {
       unsigned n = 0;
       for (unsigned i = 0; i < k->nbos; i++) if (!k->bos[i]->host_lazy && !(k->bos[i]->flags & KB_BO_NOCOH)) { n++; fprintf(stderr, "PROF/memsync bo size %zu flags %x hot %d dmabuf %d\n", k->bos[i]->size, k->bos[i]->flags, k->bos[i]->hot, k->bos[i]->dmabuf_fd >= 0); }
       fprintf(stderr, "PROF/memsync nbos=%u non-lazy=%u\n", k->nbos, n);
@@ -847,12 +891,8 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
        * write it between this check and the next submit without telling us. Driver-internal BOs (arena, heap, geo, sync,
        * TLS, CS) are not covered by the rule at all - they keep the per-submit sync - since only the front end knows who
        * writes them. MALI_SYNC_DIRTY=0 restores the old "sync every mapped BO at every submit". */
-      if (!dev2cpu && b->user_mem) {
-         const char *dd = getenv("MALI_SYNC_DIRTY");
-         if (!dd || dd[0] != '0')
-            if (!b->cpu_dirty && !b->cpu_mapped)
-               continue;
-      }
+      if (!dev2cpu && b->user_mem && k->cfg.dirty && !b->cpu_dirty && !b->cpu_mapped)
+         continue;
       uint64_t wrote = 0;
       /* Imports are not marked per submission (the front end marks BOs it renders into), so a write-counter
        * check would either skip them or claim them synced before their submission completes: sync a foreign
@@ -875,8 +915,7 @@ mem_sync_bos(struct mali_kdev *k, unsigned op, enum sync_sel sel)
    }
    const uint64_t t_end = sync_now_ns();
    sc->ns += t_end - t_start;
-   const char *st = getenv("MALI_SYNC_STATS");
-   if (st && st[0] == '1')
+   if (k->cfg.stats)
       sync_stats_tick(k, t_end);
    pthread_mutex_unlock(&k->bo_lock);
 }
