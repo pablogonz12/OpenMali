@@ -218,13 +218,22 @@ int kb_fake_gpu_write(uint64_t va, size_t off, const void *src, size_t len)
 bool kb_fake_incoherent(uint64_t va) { struct region *r = find_region(va); return r && r->shadow; }
 
 struct synccnt { uint64_t va; unsigned n; };
-static struct synccnt syncs[256];
-static int nsync;
+/* per-VA MEM_SYNC counts: open-addressing hash (t_synclists syncs thousands of distinct BOs) */
+#define NSYNC_SLOTS 65536u
+static struct synccnt syncs[NSYNC_SLOTS];
+static struct synccnt *sync_slot(uint64_t va, bool add)
+{
+	for (unsigned h = (unsigned)((va >> 12) * 2654435761u) & (NSYNC_SLOTS - 1), n = 0; n < NSYNC_SLOTS; n++, h = (h + 1) & (NSYNC_SLOTS - 1)) {
+		if (syncs[h].va == va) return &syncs[h];
+		if (!syncs[h].va) { if (!add) return NULL; syncs[h].va = va; return &syncs[h]; }
+	}
+	return NULL;
+}
 static unsigned n_mem_alloc, n_mem_free;
 unsigned kb_fake_mem_alloc_count(void) { return n_mem_alloc; }   /* test hooks (t_bopool.c) */
 unsigned kb_fake_mem_free_count(void) { return n_mem_free; }
 unsigned kb_fake_memsync_count(uint64_t va);   /* test hook (t_memsync.c) */
-unsigned kb_fake_memsync_count(uint64_t va) { for (int i = 0; i < nsync; i++) if (syncs[i].va == va) return syncs[i].n; return 0; }
+unsigned kb_fake_memsync_count(uint64_t va) { struct synccnt *c = sync_slot(va, false); return c ? c->n : 0; }
 
 int ioctl(int fd, unsigned long req, ...)
 {
@@ -325,8 +334,7 @@ int ioctl(int fd, unsigned long req, ...)
 			if (m->type == 2) memcpy(r->cpu, r->shadow, r->len);
 			else if (m->type == 1) memcpy(r->shadow, r->cpu, r->len);
 		}
-		for (int i = 0; i < nsync; i++) if (syncs[i].va == m->handle) { syncs[i].n++; OK; }
-		if (nsync < 256) syncs[nsync++] = (struct synccnt){ m->handle, 1 };
+		{ struct synccnt *c = sync_slot(m->handle, true); if (c) c->n++; }
 		OK;
 	}
 	default: errno = ENOTTY; return -1;
