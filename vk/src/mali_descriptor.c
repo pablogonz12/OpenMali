@@ -261,6 +261,123 @@ dset_free(struct vk_device *dev, struct mali_dset *s)
    vk_object_free(dev, NULL, s);
 }
 
+static void write_immutable(struct mali_dset *s);
+
+/* ---- VK_KHR_push_descriptor: transient sets ---- */
+#define MALI_PUSH_CHUNK (64u * 1024u)   /* a 32-descriptor layout needs at most 32 * MALI_YCBCR_SLOTS slots (3 KiB) */
+
+struct mali_push_chunk {
+   struct mali_push_chunk *next;
+   uint8_t *cpu;
+   uint64_t va;
+   uint32_t cap, used;
+};
+
+/* Carve `bytes` (a multiple of the 32-byte slot) out of the newest chunk, or start a new chunk. */
+static VkResult
+push_carve(struct vk_device *dev, struct mali_push_arena *a, uint32_t bytes, uint8_t **cpu, uint64_t *va)
+{
+   struct mali_push_chunk *c = a->chunks;
+   if (!c || c->cap - c->used < bytes) {
+      /* a reset leaves older chunks behind the newest one: reuse the first that is large enough before allocating */
+      struct mali_push_chunk **link = &a->chunks;
+      while (*link && (*link)->cap - (*link)->used < bytes)
+         link = &(*link)->next;
+      if (*link) {
+         c = *link;
+         *link = c->next;
+      } else {
+         c = vk_zalloc(&dev->alloc, sizeof *c, 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+         if (!c)
+            return VK_ERROR_OUT_OF_HOST_MEMORY;
+         c->cap = bytes > MALI_PUSH_CHUNK ? bytes : MALI_PUSH_CHUNK;
+         c->cpu = mem_alloc(dev, c->cap, &c->va);
+         if (!c->cpu) {
+            vk_free(&dev->alloc, c);
+            return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+         }
+         a->nchunks++;
+      }
+      c->next = a->chunks;
+      a->chunks = c;
+   }
+   *cpu = c->cpu + c->used;
+   *va = c->va + c->used;
+   c->used += bytes;
+   return VK_SUCCESS;
+}
+
+VkResult
+mali_push_set_create(struct vk_device *dev, unsigned arch, struct mali_push_arena *a, struct mali_dsl *l, const struct mali_dset *prev,
+                     struct mali_dset **out)
+{
+   *out = NULL;
+   if (a->nsets == a->capsets) {
+      unsigned nc = a->capsets ? a->capsets * 2 : 16;
+      struct mali_dset **ns = vk_realloc(&dev->alloc, a->sets, nc * sizeof *ns, 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+      if (!ns)
+         return VK_ERROR_OUT_OF_HOST_MEMORY;
+      a->sets = ns;
+      a->capsets = nc;
+   }
+   uint32_t bytes = l->slot_count * MALI_DESC_SLOT_SIZE;
+   uint8_t *cpu = NULL;
+   uint64_t va = 0;
+   if (bytes) {   /* empty layout: no descriptor memory, the set index is bound with zero bytes */
+      VkResult r = push_carve(dev, a, bytes, &cpu, &va);
+      if (r != VK_SUCCESS)
+         return r;
+   }
+   struct mali_dset *s = vk_object_zalloc(dev, NULL, sizeof *s, VK_OBJECT_TYPE_DESCRIPTOR_SET);
+   if (!s) {
+      if (bytes)
+         a->chunks->used -= bytes;   /* the carve above is the newest one of the newest chunk */
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+   }
+   s->layout = (struct mali_dsl *)vk_descriptor_set_layout_ref(&l->vk);
+   s->cpu = cpu;
+   s->va = va;
+   s->bytes = bytes;
+   s->arch = arch;
+   if (!bytes) {
+   } else if (prev && prev->layout == l && prev->bytes == bytes) {
+      memcpy(s->cpu, prev->cpu, bytes);   /* push descriptors update incrementally: unwritten bindings keep the previous push */
+      for (unsigned i = 0; i < prev->nwrote; i++)
+         mali_dset_mark_write(s, prev->wrote[i]);
+      s->wrote_full = prev->wrote_full;
+   } else {
+      memset(s->cpu, 0, bytes);
+      write_immutable(s);
+   }
+   a->sets[a->nsets++] = s;
+   *out = s;
+   return VK_SUCCESS;
+}
+
+void
+mali_push_arena_reset(struct vk_device *dev, struct mali_push_arena *a)
+{
+   for (unsigned i = 0; i < a->nsets; i++)
+      dset_free(dev, a->sets[i]);
+   a->nsets = 0;
+   for (struct mali_push_chunk *c = a->chunks; c; c = c->next)
+      c->used = 0;
+}
+
+void
+mali_push_arena_finish(struct vk_device *dev, struct mali_push_arena *a)
+{
+   mali_push_arena_reset(dev, a);
+   vk_free(&dev->alloc, a->sets);
+   while (a->chunks) {
+      struct mali_push_chunk *n = a->chunks->next;
+      mem_free(dev, a->chunks->cpu, a->chunks->cap);
+      vk_free(&dev->alloc, a->chunks);
+      a->chunks = n;
+   }
+   memset(a, 0, sizeof *a);
+}
+
 static void
 pool_clear(struct vk_device *dev, struct mali_dpool *p)
 {

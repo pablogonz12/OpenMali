@@ -81,6 +81,24 @@ struct mali_dpool {
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(mali_dpool, base, VkDescriptorPool, VK_OBJECT_TYPE_DESCRIPTOR_POOL)
 
+/* VK_KHR_push_descriptor: the transient sets of one command buffer. Their descriptor memory is carved out of GPU chunks owned by
+ * the command buffer; a reset frees the set objects and keeps the chunks for the next recording, destroy frees everything. */
+struct mali_push_chunk;
+struct mali_push_arena {
+   struct mali_push_chunk *chunks;   /* newest first; only the newest one is carved */
+   unsigned nchunks;
+   struct mali_dset **sets;          /* every set handed out since the last reset */
+   unsigned nsets, capsets;
+};
+
+/* A fresh push set of layout `l` (descriptor memory from the arena). `prev` = the previous push of the same bind point and set
+ * index: its contents are the starting point when it has the same layout, else the set starts zeroed with its immutable samplers.
+ * VK_ERROR_OUT_OF_DEVICE_MEMORY / _HOST_MEMORY leave the arena unchanged. */
+VkResult mali_push_set_create(struct vk_device *dev, unsigned arch, struct mali_push_arena *a, struct mali_dsl *l,
+                              const struct mali_dset *prev, struct mali_dset **out);
+void mali_push_arena_reset(struct vk_device *dev, struct mali_push_arena *a);    /* frees the sets, keeps the chunks */
+void mali_push_arena_finish(struct vk_device *dev, struct mali_push_arena *a);   /* frees everything */
+
 /* Create the layout. dev->... arch is passed per object; `arch` = 11 or 13. */
 VkResult mali_dsl_create(struct vk_device *dev, unsigned arch, const VkDescriptorSetLayoutCreateInfo *ci, struct mali_dsl **out);
 

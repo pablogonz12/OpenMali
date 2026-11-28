@@ -171,6 +171,8 @@ reset_state(struct mali_cmd_buffer *cmd)
     * freed buffer's address into the next draw (mali_cmd.c: the XFB patch below), so it goes with the push block. */
    memset(&cmd->tf, 0, sizeof cmd->tf);
    memset(cmd->descriptors, 0, sizeof cmd->descriptors);
+   memset(cmd->push_sets, 0, sizeof cmd->push_sets);
+   mali_push_arena_reset(cmd->vk.base.device, &cmd->push_arena);   /* the pool may not reset a pending buffer: no GPU reader left */
    cmd->occ_va = 0;
    cmd->occ_mode = 0;
    cmd->dirty = MALI_D_ALL;
@@ -213,6 +215,7 @@ mali_cmd_destroy(struct vk_command_buffer *vk)
    struct mali_cmd_buffer *cmd = mali_cmd_buffer_from_vk(vk);
    struct vk_command_pool *pool = vk->pool;
    reset_state(cmd);
+   mali_push_arena_finish(vk->base.device, &cmd->push_arena);
    vk_command_buffer_finish(vk);
    vk_free(&pool->alloc, cmd);
 }
@@ -360,6 +363,7 @@ mali_CmdBindDescriptorSets(VkCommandBuffer h, VkPipelineBindPoint bp, VkPipeline
             }
          }
       }
+      cmd->push_sets[bp == VK_PIPELINE_BIND_POINT_COMPUTE][s] = NULL;   /* an ordinary bind replaces a push at this index */
       if (binding->set_va[s] != ds->va || binding->set_bytes[s] != ds->bytes) {
          binding->set_va[s] = ds->va;
          binding->set_bytes[s] = ds->bytes;
@@ -443,8 +447,9 @@ mali_CmdPushConstants(VkCommandBuffer h, VkPipelineLayout layout, VkShaderStageF
 }
 
 /* VK_KHR_maintenance6: the "2" forms carry stage flags instead of a bind point. They forward to the 1.0 entry points (the runtime's
- * vk_common_* wrappers go the other way, but we override the 1.0 ones). A null layout (pNext layout info) needs push descriptors /
- * descriptor buffers, which are not advertised. */
+ * vk_common_* wrappers go the other way, but we override the 1.0 ones). A null layout (pNext layout info) is valid only with the
+ * dynamicPipelineLayout feature, which is not advertised; it is refused here. The push-descriptor 2KHR forms below tolerate it
+ * (they need only the pushed set layout, which the chained VkPipelineLayoutCreateInfo names). */
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdBindDescriptorSets2KHR(VkCommandBuffer h, const VkBindDescriptorSetsInfoKHR *info)
 {
@@ -459,6 +464,142 @@ mali_CmdBindDescriptorSets2KHR(VkCommandBuffer h, const VkBindDescriptorSetsInfo
    if (info->stageFlags & VK_SHADER_STAGE_ALL_GRAPHICS)
       mali_CmdBindDescriptorSets(h, VK_PIPELINE_BIND_POINT_GRAPHICS, info->layout, info->firstSet, info->descriptorSetCount,
                                  info->pDescriptorSets, info->dynamicOffsetCount, info->pDynamicOffsets);
+}
+
+/* ---- VK_KHR_push_descriptor ----
+ * Every push is a fresh transient set from the command buffer's arena, bound like an ordinary set: draws and dispatches recorded
+ * earlier keep the set they snapshotted. The new set starts from the previous push of the same bind point, set index and set
+ * layout (push descriptors update incrementally); an ordinary bind at that index, or another set layout, starts it fresh.
+ * Graphics and compute keep separate push state, like their ordinary bindings. */
+static struct mali_dsl *
+push_set_layout(struct mali_cmd_buffer *cmd, VkPipelineLayout layout, const void *pnext, uint32_t set)
+{
+   VK_FROM_HANDLE(vk_pipeline_layout, pl, layout);
+   const struct vk_descriptor_set_layout *l = NULL;
+   if (pl) {
+      if (set < pl->set_count)
+         l = pl->set_layouts[set];
+   } else {
+      /* maintenance6: a null layout names its set layouts through a chained VkPipelineLayoutCreateInfo */
+      const VkPipelineLayoutCreateInfo *ci = vk_find_struct_const(pnext, PIPELINE_LAYOUT_CREATE_INFO);
+      if (!ci) {
+         unsupported(cmd, "push descriptor set without a pipeline layout");
+         return NULL;
+      }
+      if (set < ci->setLayoutCount)
+         l = vk_descriptor_set_layout_from_handle(ci->pSetLayouts[set]);
+   }
+   if (set >= MALI_CMD_SETS || !l) {
+      unsupported(cmd, "push descriptor set index");
+      return NULL;
+   }
+   if (!(l->flags & VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR)) {
+      unsupported(cmd, "push descriptor set layout without PUSH_DESCRIPTOR");
+      return NULL;
+   }
+   struct mali_dsl *d = container_of(l, struct mali_dsl, vk);
+   if (d->dyn_count) {   /* forbidden by the spec for push layouts; the transient set has no dynamic-buffer table */
+      unsupported(cmd, "push descriptor set layout with dynamic buffers");
+      return NULL;
+   }
+   return d;
+}
+
+/* bp: 0 = graphics, 1 = compute. Writes (w) or a template (t, data). */
+static void
+push_set(struct mali_cmd_buffer *cmd, unsigned bp, struct mali_dsl *l, uint32_t set, uint32_t nw, const VkWriteDescriptorSet *w,
+         const struct vk_descriptor_update_template *t, const void *data)
+{
+   struct vk_device *dev = cmd->vk.base.device;
+   unsigned arch = mali_device_pdev(container_of(dev, struct mali_device, vk))->gpu.arch_major;
+   struct mali_dset *ds;
+   VkResult r = mali_push_set_create(dev, arch, &cmd->push_arena, l, cmd->push_sets[bp][set], &ds);
+   if (r != VK_SUCCESS) {
+      vk_command_buffer_set_error(&cmd->vk, r);
+      return;
+   }
+   if (t)
+      mali_dset_update_template(ds, t, data);
+   else
+      for (uint32_t i = 0; i < nw; i++)
+         mali_dset_write(ds, &w[i]);
+   VkDescriptorSet h = mali_dset_to_handle(ds);
+   mali_CmdBindDescriptorSets(vk_command_buffer_to_handle(&cmd->vk), bp ? VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS,
+                              VK_NULL_HANDLE, set, 1, &h, 0, NULL);   /* no dynamic buffers: the layout is not needed */
+   cmd->push_sets[bp][set] = ds;
+}
+
+static bool
+push_bind_point(struct mali_cmd_buffer *cmd, VkPipelineBindPoint bp, unsigned *out)
+{
+   if (bp != VK_PIPELINE_BIND_POINT_GRAPHICS && bp != VK_PIPELINE_BIND_POINT_COMPUTE) {
+      unsupported(cmd, "push descriptor bind point");
+      return false;
+   }
+   *out = bp == VK_PIPELINE_BIND_POINT_COMPUTE;
+   return true;
+}
+
+static const struct vk_descriptor_update_template *
+push_template(struct mali_cmd_buffer *cmd, VkDescriptorUpdateTemplate h, unsigned *bp)
+{
+   VK_FROM_HANDLE(vk_descriptor_update_template, t, h);
+   if (!t || t->type != VK_DESCRIPTOR_UPDATE_TEMPLATE_TYPE_PUSH_DESCRIPTORS_KHR) {
+      unsupported(cmd, "push descriptor template type");
+      return NULL;
+   }
+   return push_bind_point(cmd, t->bind_point, bp) ? t : NULL;   /* the template names the bind point */
+}
+
+#define MALI_GRAPHICS_STAGES (VK_SHADER_STAGE_ALL_GRAPHICS | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT)
+
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdPushDescriptorSetKHR(VkCommandBuffer h, VkPipelineBindPoint bp, VkPipelineLayout layout, uint32_t set, uint32_t nw,
+                             const VkWriteDescriptorSet *w)
+{
+   CMD(h);
+   unsigned b;
+   struct mali_dsl *l = push_bind_point(cmd, bp, &b) ? push_set_layout(cmd, layout, NULL, set) : NULL;
+   if (l)
+      push_set(cmd, b, l, set, nw, w, NULL, NULL);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdPushDescriptorSetWithTemplateKHR(VkCommandBuffer h, VkDescriptorUpdateTemplate th, VkPipelineLayout layout, uint32_t set,
+                                         const void *data)
+{
+   CMD(h);
+   unsigned b;
+   const struct vk_descriptor_update_template *t = push_template(cmd, th, &b);
+   struct mali_dsl *l = t ? push_set_layout(cmd, layout, NULL, set) : NULL;
+   if (l)
+      push_set(cmd, b, l, set, 0, NULL, t, data);
+}
+
+/* maintenance6: stageFlags select the bind points (graphics and compute each get their own transient set) */
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdPushDescriptorSet2KHR(VkCommandBuffer h, const VkPushDescriptorSetInfoKHR *info)
+{
+   CMD(h);
+   struct mali_dsl *l = push_set_layout(cmd, info->layout, info->pNext, info->set);
+   if (!l)
+      return;
+   if (info->stageFlags & MALI_GRAPHICS_STAGES)
+      push_set(cmd, 0, l, info->set, info->descriptorWriteCount, info->pDescriptorWrites, NULL, NULL);
+   if (info->stageFlags & VK_SHADER_STAGE_COMPUTE_BIT)
+      push_set(cmd, 1, l, info->set, info->descriptorWriteCount, info->pDescriptorWrites, NULL, NULL);
+}
+
+/* maintenance6 template form: no stageFlags, the bind point comes from the template */
+VKAPI_ATTR void VKAPI_CALL
+mali_CmdPushDescriptorSetWithTemplate2KHR(VkCommandBuffer h, const VkPushDescriptorSetWithTemplateInfoKHR *info)
+{
+   CMD(h);
+   unsigned b;
+   const struct vk_descriptor_update_template *t = push_template(cmd, info->descriptorUpdateTemplate, &b);
+   struct mali_dsl *l = t ? push_set_layout(cmd, info->layout, info->pNext, info->set) : NULL;
+   if (l)
+      push_set(cmd, b, l, info->set, 0, NULL, t, info->pData);
 }
 
 VKAPI_ATTR void VKAPI_CALL

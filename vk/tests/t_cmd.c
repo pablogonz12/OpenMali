@@ -975,6 +975,300 @@ test_descriptor_bind_points(VkCommandPool pool)
    }
 }
 
+/* ---- VK_KHR_push_descriptor (vkd3d-proton requires it at device creation) ----
+ * Every push is a fresh transient set (draws recorded earlier keep theirs), seeded from the previous push of the same bind point,
+ * set index and set layout; graphics and compute keep separate push state. The entry points are taken from the device dispatch
+ * table, which is what an application reaches (the runtime forwards the 1.0 forms to the maintenance6 2KHR forms). */
+static VkDescriptorSetLayout
+push_dsl(VkDescriptorSetLayoutCreateFlags flags, uint32_t n, const VkDescriptorSetLayoutBinding *b)
+{
+   DFN(CreateDescriptorSetLayout);
+   VkDescriptorSetLayoutCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .flags = flags,
+                                         .bindingCount = n, .pBindings = b};
+   VkDescriptorSetLayout l = VK_NULL_HANDLE;
+   CHECK(CreateDescriptorSetLayout(dev, &ci, NULL, &l) == VK_SUCCESS, "push: create set layout");
+   return l;
+}
+
+static bool
+push_holds_buffer(const struct mali_dset *s, unsigned slot, uint64_t va, uint32_t size)
+{
+   struct mali_hw_desc hd;
+   mali_pack_buffer(s->arch, &hd, va, size);
+   return s->cpu && (slot + 1) * MALI_DESC_SLOT_SIZE <= s->bytes && !memcmp(s->cpu + slot * MALI_DESC_SLOT_SIZE, hd.w, sizeof hd.w);
+}
+
+static void *fail_alloc(struct vk_device *d, size_t size, uint64_t *va) { (void)d; (void)size; (void)va; return NULL; }
+static void fail_free(struct vk_device *d, void *p, size_t size) { (void)d; (void)p; (void)size; }
+static const struct mali_desc_mem_ops k_fail_mem = {fail_alloc, fail_free};
+
+static void
+test_push_descriptors(VkCommandPool pool)
+{
+   struct mali_device *md = mali_device_from_handle(dev);
+   const struct vk_device_dispatch_table *dt = &md->vk.dispatch_table;
+   /* dispatch_table holds the secondary-recording wrappers (always set); cmd_dispatch is what a primary reaches */
+   const struct vk_device_dispatch_table *pt = &md->cmd_dispatch;
+   CHECK(pt->CmdPushDescriptorSet2KHR && pt->CmdPushDescriptorSetWithTemplate2KHR && pt->CmdPushDescriptorSetKHR &&
+         pt->CmdPushDescriptorSetWithTemplateKHR, "push: vkCmdPushDescriptorSet* not implemented");
+   if (!pt->CmdPushDescriptorSet2KHR || !pt->CmdPushDescriptorSetWithTemplate2KHR)
+      return;
+   DFN(CmdBindPipeline);
+   DFN(CmdDraw);
+   DFN(EndCommandBuffer);
+   DFN(ResetCommandBuffer);
+   PFN_vkCreateDescriptorUpdateTemplate CreateDescriptorUpdateTemplate = dt->CreateDescriptorUpdateTemplate;   /* 1.1 core: the test device is 1.0 */
+   const VkDescriptorSetLayoutCreateFlags PUSH = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
+   const VkDescriptorSetLayoutBinding ubo2[2] = {
+      {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_ALL},
+      {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_ALL}};
+   VkDescriptorSetLayout l2 = push_dsl(PUSH, 2, ubo2), l1 = push_dsl(PUSH, 1, ubo2), l0 = push_dsl(PUSH, 0, NULL);
+   VkDescriptorSetLayout lplain = push_dsl(0, 1, ubo2);
+   struct vk_pipeline_layout pl2 = {.base = {.type = VK_OBJECT_TYPE_PIPELINE_LAYOUT}, .set_count = 1},
+                             pl1 = pl2, pl0 = pl2, plp = pl2;
+   pl2.set_layouts[0] = vk_descriptor_set_layout_from_handle(l2);
+   pl1.set_layouts[0] = vk_descriptor_set_layout_from_handle(l1);
+   pl0.set_layouts[0] = vk_descriptor_set_layout_from_handle(l0);
+   plp.set_layouts[0] = vk_descriptor_set_layout_from_handle(lplain);
+   VkPipelineLayout hpl2 = vk_pipeline_layout_to_handle(&pl2), hpl1 = vk_pipeline_layout_to_handle(&pl1);
+   VkPipelineLayout hpl0 = vk_pipeline_layout_to_handle(&pl0), hplp = vk_pipeline_layout_to_handle(&plp);
+   VkBuffer ba = vk_buffer_to_handle(make_buffer(0x1000000, 4096)), bb = vk_buffer_to_handle(make_buffer(0x2000000, 4096));
+   VkBuffer bc = vk_buffer_to_handle(make_buffer(0x3000000, 4096));
+   VkDescriptorBufferInfo ia = {ba, 0, 256}, ib = {bb, 256, 512}, ic = {bc, 0, 1024};
+   VkWriteDescriptorSet w0 = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 0, .descriptorCount = 1,
+                              .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = &ia};
+   VkWriteDescriptorSet w1 = w0, wab[2];
+   w1.dstBinding = 1;
+   w1.pBufferInfo = &ic;
+   struct mali_compiled cs = {.bin_size = 4};
+   VkRenderingAttachmentInfo ca;
+   VkRenderingInfo ri = rendering_info(&ca, true);
+   VkPushDescriptorSetInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PUSH_DESCRIPTOR_SET_INFO_KHR, .layout = hpl2, .set = 0};
+
+   /* 1. graphics A and compute B at the same set index: the dispatch sees B, the draw sees A */
+   {
+      VkCommandBuffer cb;
+      struct mali_cmd_buffer *m = mali_cmd_buffer_from_vk(new_cmd(pool, &cb));
+      dt->CmdPushDescriptorSetKHR(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, hpl2, 0, 1, &w0);
+      const struct mali_dset *ga = m->push_sets[0][0];
+      w0.pBufferInfo = &ib;
+      dt->CmdPushDescriptorSetKHR(cb, VK_PIPELINE_BIND_POINT_COMPUTE, hpl2, 0, 1, &w0);
+      w0.pBufferInfo = &ia;
+      const struct mali_dset *cbs = m->push_sets[1][0];
+      m->cs = &cs;
+      mali_CmdDispatch(cb, 1, 1, 1);
+      mali_CmdBeginRendering(cb, &ri);
+      CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipeline)(uintptr_t)1);
+      CmdDraw(cb, 3, 1, 0, 0);
+      mali_CmdEndRendering(cb);
+      CHECK(EndCommandBuffer(cb) == VK_SUCCESS && m->nframes == 2 && m->frames[1].ndraws == 1, "push bind points: dispatch and draw");
+      CHECK(ga && cbs && ga != cbs && ga->va != cbs->va, "push bind points: one transient set per bind point");
+      if (ga && cbs && m->nframes == 2 && m->frames[1].ndraws) {
+         const struct mali_rec *d = &m->frames[1].draws[0];
+         CHECK(m->frames[0].disp.nsets == 1 && m->frames[0].disp.set_va[0] == cbs->va && push_holds_buffer(cbs, 0, 0x2000000 + 256, 512),
+               "push bind points: compute did not see its own set B");
+         CHECK(d->bind && d->bind->nsets == 1 && d->bind->set_va[0] == ga->va && push_holds_buffer(ga, 0, 0x1000000, 256),
+               "push bind points: graphics did not see its own set A");
+      }
+   }
+   /* 2. push, draw, re-push (binding 0 only), draw: draw 1 keeps its snapshot, draw 2 inherits binding 1 from the first push */
+   {
+      VkCommandBuffer cb;
+      struct mali_cmd_buffer *m = mali_cmd_buffer_from_vk(new_cmd(pool, &cb));
+      wab[0] = w0;
+      wab[1] = w1;
+      mali_CmdBeginRendering(cb, &ri);
+      CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipeline)(uintptr_t)1);
+      dt->CmdPushDescriptorSetKHR(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, hpl2, 0, 2, wab);
+      const struct mali_dset *s1 = m->push_sets[0][0];
+      CmdDraw(cb, 3, 1, 0, 0);
+      w0.pBufferInfo = &ib;
+      dt->CmdPushDescriptorSetKHR(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, hpl2, 0, 1, &w0);
+      w0.pBufferInfo = &ia;
+      const struct mali_dset *s2 = m->push_sets[0][0];
+      CmdDraw(cb, 3, 1, 0, 0);
+      mali_CmdEndRendering(cb);
+      CHECK(EndCommandBuffer(cb) == VK_SUCCESS && m->nframes == 1 && m->frames[0].ndraws == 2, "push re-push: two draws");
+      CHECK(s1 && s2 && s1 != s2 && s1->va != s2->va, "push re-push: the second push must be a new set");
+      if (s1 && s2 && m->nframes == 1 && m->frames[0].ndraws == 2) {
+         const struct mali_rec *d = m->frames[0].draws;
+         CHECK(d[0].bind && d[0].bind->set_va[0] == s1->va && push_holds_buffer(s1, 0, 0x1000000, 256) &&
+               push_holds_buffer(s1, 1, 0x3000000, 1024), "push re-push: draw 1 lost its snapshot");
+         const struct mali_bbind *b2 = d[1].bind ? d[1].bind : d[0].bind;
+         CHECK(b2 && b2->set_va[0] == s2->va && push_holds_buffer(s2, 0, 0x2000000 + 256, 512) && push_holds_buffer(s2, 1, 0x3000000, 1024),
+               "push re-push: draw 2 must see B and the inherited binding 1");
+      }
+   }
+   /* 3. templates: the bind point comes from the template (1.0 and 2KHR forms) */
+   {
+      VkDescriptorUpdateTemplateEntry te = {.dstBinding = 0, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                            .offset = 0, .stride = sizeof(VkDescriptorBufferInfo)};
+      VkDescriptorUpdateTemplateCreateInfo tci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_UPDATE_TEMPLATE_CREATE_INFO, .descriptorUpdateEntryCount = 1,
+                                                  .pDescriptorUpdateEntries = &te, .templateType = VK_DESCRIPTOR_UPDATE_TEMPLATE_TYPE_PUSH_DESCRIPTORS_KHR,
+                                                  .pipelineBindPoint = VK_PIPELINE_BIND_POINT_COMPUTE, .pipelineLayout = hpl2, .set = 0};
+      VkDescriptorUpdateTemplate t = VK_NULL_HANDLE;
+      CHECK(CreateDescriptorUpdateTemplate(dev, &tci, NULL, &t) == VK_SUCCESS, "push template: create");
+      VkCommandBuffer cb;
+      struct mali_cmd_buffer *m = mali_cmd_buffer_from_vk(new_cmd(pool, &cb));
+      dt->CmdPushDescriptorSetWithTemplateKHR(cb, t, hpl2, 0, &ib);
+      const struct mali_dset *t1 = m->push_sets[1][0];
+      CHECK(t1 && !m->push_sets[0][0] && push_holds_buffer(t1, 0, 0x2000000 + 256, 512), "push template: compute set from the template's bind point");
+      VkPushDescriptorSetWithTemplateInfoKHR ti = {.sType = VK_STRUCTURE_TYPE_PUSH_DESCRIPTOR_SET_WITH_TEMPLATE_INFO_KHR,
+                                                   .descriptorUpdateTemplate = t, .layout = hpl2, .set = 0, .pData = &ic};
+      dt->CmdPushDescriptorSetWithTemplate2KHR(cb, &ti);
+      const struct mali_dset *t2 = m->push_sets[1][0];
+      CHECK(t2 && t2 != t1 && !m->push_sets[0][0] && push_holds_buffer(t2, 0, 0x3000000, 1024), "push template 2KHR: compute set");
+      CHECK(t1 && push_holds_buffer(t1, 0, 0x2000000 + 256, 512), "push template: the first set was overwritten");
+      CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "push template: end");
+   }
+   /* 4. maintenance6 2KHR: stageFlags route to the bind points; a null layout takes VkPipelineLayoutCreateInfo from pNext */
+   {
+      VkCommandBuffer cb;
+      struct mali_cmd_buffer *m = mali_cmd_buffer_from_vk(new_cmd(pool, &cb));
+      pi.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+      pi.descriptorWriteCount = 1;
+      pi.pDescriptorWrites = &w0;
+      dt->CmdPushDescriptorSet2KHR(cb, &pi);
+      CHECK(m->push_sets[0][0] && !m->push_sets[1][0], "push 2KHR: VERTEX must reach graphics only");
+      const struct mali_dset *g = m->push_sets[0][0];
+      pi.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+      pi.pDescriptorWrites = &w1;
+      dt->CmdPushDescriptorSet2KHR(cb, &pi);
+      CHECK(m->push_sets[0][0] && m->push_sets[1][0] && m->push_sets[0][0] != g && m->push_sets[0][0] != m->push_sets[1][0],
+            "push 2KHR: COMPUTE|FRAGMENT must reach both bind points");
+      if (m->push_sets[0][0] && m->push_sets[1][0])
+         CHECK(push_holds_buffer(m->push_sets[0][0], 0, 0x1000000, 256) && push_holds_buffer(m->push_sets[0][0], 1, 0x3000000, 1024) &&
+               !push_holds_buffer(m->push_sets[1][0], 0, 0x1000000, 256) && push_holds_buffer(m->push_sets[1][0], 1, 0x3000000, 1024),
+               "push 2KHR: graphics inherits its own binding 0, compute starts fresh");
+      VkPipelineLayoutCreateInfo plci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &l1};
+      VkPushDescriptorSetInfoKHR pn = {.sType = VK_STRUCTURE_TYPE_PUSH_DESCRIPTOR_SET_INFO_KHR, .pNext = &plci,
+                                       .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT, .layout = VK_NULL_HANDLE, .set = 0,
+                                       .descriptorWriteCount = 1, .pDescriptorWrites = &w0};
+      dt->CmdPushDescriptorSet2KHR(cb, &pn);
+      CHECK(m->push_sets[1][0] && m->push_sets[1][0]->bytes == MALI_DESC_SLOT_SIZE && push_holds_buffer(m->push_sets[1][0], 0, 0x1000000, 256),
+            "push 2KHR: null layout with a pNext pipeline layout");
+      CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "push 2KHR: end");
+      new_cmd(pool, &cb);
+      pn.pNext = NULL;
+      dt->CmdPushDescriptorSet2KHR(cb, &pn);
+      CHECK(EndCommandBuffer(cb) != VK_SUCCESS, "push 2KHR: a null layout without pNext must be refused");
+   }
+   /* 5. empty layout: nothing to allocate, the set index is still bound */
+   {
+      VkCommandBuffer cb;
+      struct mali_cmd_buffer *m = mali_cmd_buffer_from_vk(new_cmd(pool, &cb));
+      mali_CmdBeginRendering(cb, &ri);
+      CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipeline)(uintptr_t)1);
+      dt->CmdPushDescriptorSetKHR(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, hpl0, 0, 0, NULL);
+      CmdDraw(cb, 3, 1, 0, 0);
+      mali_CmdEndRendering(cb);
+      CHECK(EndCommandBuffer(cb) == VK_SUCCESS && m->nframes == 1 && m->frames[0].ndraws == 1 && m->push_sets[0][0] &&
+            m->push_sets[0][0]->bytes == 0, "push empty layout");
+      if (m->nframes == 1 && m->frames[0].ndraws == 1)
+         CHECK(m->frames[0].draws[0].bind && m->frames[0].draws[0].bind->nsets == 1 && m->frames[0].draws[0].bind->set_bytes[0] == 0,
+               "push empty layout: set 0 bound with no bytes");
+   }
+   /* 6. layout changes and ordinary binds: a push with another set layout starts fresh (sized for it), an ordinary bind replaces it */
+   {
+      VkCommandBuffer cb;
+      struct mali_cmd_buffer *m = mali_cmd_buffer_from_vk(new_cmd(pool, &cb));
+      wab[0] = w0;
+      wab[1] = w1;
+      dt->CmdPushDescriptorSetKHR(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, hpl2, 0, 2, wab);
+      w0.pBufferInfo = &ib;
+      dt->CmdPushDescriptorSetKHR(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, hpl1, 0, 1, &w0);
+      w0.pBufferInfo = &ia;
+      const struct mali_dset *s = m->push_sets[0][0];
+      CHECK(s && s->bytes == MALI_DESC_SLOT_SIZE && push_holds_buffer(s, 0, 0x2000000 + 256, 512), "push layout change: fresh set of the new layout");
+      struct mali_dsl dl = {0};
+      struct mali_dset plain = {.layout = &dl, .va = 0x5000000, .bytes = 64, .arch = ARCH};
+      plain.base.type = VK_OBJECT_TYPE_DESCRIPTOR_SET;
+      VkDescriptorSet ph = mali_dset_to_handle(&plain);
+      mali_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, hpl1, 0, 1, &ph, 0, NULL);
+      CHECK(!m->push_sets[0][0] && m->descriptors[0].set_va[0] == 0x5000000, "push then ordinary bind: the bound set replaces the push");
+      dt->CmdPushDescriptorSetKHR(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, hpl2, 0, 1, &w1);
+      CHECK(m->push_sets[0][0] && !push_holds_buffer(m->push_sets[0][0], 0, 0x1000000, 256), "push after an ordinary bind starts fresh");
+      CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "push layout change: end");
+   }
+   /* 7. incompatible layouts are refused loudly: a set layout without the push flag, a set index outside the pipeline layout */
+   {
+      VkCommandBuffer cb;
+      struct mali_cmd_buffer *m = mali_cmd_buffer_from_vk(new_cmd(pool, &cb));
+      dt->CmdPushDescriptorSetKHR(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, hplp, 0, 1, &w0);
+      CHECK(!m->push_sets[0][0] && m->descriptors[0].nsets == 0 && EndCommandBuffer(cb) != VK_SUCCESS,
+            "push: a set layout without PUSH_DESCRIPTOR must be refused");
+      m = mali_cmd_buffer_from_vk(new_cmd(pool, &cb));
+      dt->CmdPushDescriptorSetKHR(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, hpl2, 1, 1, &w0);
+      CHECK(m->descriptors[0].nsets == 0 && EndCommandBuffer(cb) != VK_SUCCESS, "push: a set index outside the layout must be refused");
+   }
+   /* 8. lifetime: reset frees the transient sets and reuses the arena; a failed allocation is reported and binds nothing */
+   {
+      VkCommandBuffer cb;
+      struct mali_cmd_buffer *m = mali_cmd_buffer_from_vk(new_cmd(pool, &cb));
+      for (int i = 0; i < 300; i++)
+         dt->CmdPushDescriptorSetKHR(cb, VK_PIPELINE_BIND_POINT_COMPUTE, hpl2, 0, 1, &w0);
+      CHECK(EndCommandBuffer(cb) == VK_SUCCESS && m->push_arena.nsets == 300, "push lifetime: 300 sets recorded");
+      unsigned chunks = m->push_arena.nchunks;
+      CHECK(ResetCommandBuffer(cb, 0) == VK_SUCCESS && m->push_arena.nsets == 0 && !m->push_sets[1][0], "push lifetime: reset frees the sets");
+      DFN(BeginCommandBuffer);
+      VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+      BeginCommandBuffer(cb, &bi);
+      for (int i = 0; i < 300; i++)
+         dt->CmdPushDescriptorSetKHR(cb, VK_PIPELINE_BIND_POINT_COMPUTE, hpl2, 0, 1, &w0);
+      CHECK(EndCommandBuffer(cb) == VK_SUCCESS && m->push_arena.nchunks == chunks && chunks >= 1, "push lifetime: the arena is reused (%u chunks)", chunks);
+      m = mali_cmd_buffer_from_vk(new_cmd(pool, &cb));
+      mali_desc_set_mem_ops(&k_fail_mem);
+      dt->CmdPushDescriptorSetKHR(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, hpl2, 0, 1, &w0);
+      mali_resources_init();
+      CHECK(!m->push_sets[0][0] && m->descriptors[0].nsets == 0, "push alloc failure: nothing bound");
+      CHECK(EndCommandBuffer(cb) == VK_ERROR_OUT_OF_DEVICE_MEMORY, "push alloc failure: VK_ERROR_OUT_OF_DEVICE_MEMORY");
+   }
+   /* 9. maxPushDescriptors = 32: a full layout of combined image samplers with immutable samplers, and 32 uniform buffers */
+   {
+      static struct mali_sampler smp;
+      smp.vk.base.type = VK_OBJECT_TYPE_SAMPLER;
+      for (unsigned i = 0; i < 8; i++)
+         smp.hw.w[i] = 0x5a000000u | i;
+      VkSampler sh = mali_sampler_to_handle(&smp), imm[32];
+      for (unsigned i = 0; i < 32; i++)
+         imm[i] = sh;
+      VkDescriptorSetLayoutBinding cis = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 32,
+                                          .stageFlags = VK_SHADER_STAGE_ALL, .pImmutableSamplers = imm};
+      VkDescriptorSetLayoutBinding ubos = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .descriptorCount = 32,
+                                           .stageFlags = VK_SHADER_STAGE_ALL};
+      VkDescriptorSetLayout lc = push_dsl(PUSH, 1, &cis), lu = push_dsl(PUSH, 1, &ubos);
+      struct vk_pipeline_layout plc = pl2, plu = pl2;
+      plc.set_layouts[0] = vk_descriptor_set_layout_from_handle(lc);
+      plu.set_layouts[0] = vk_descriptor_set_layout_from_handle(lu);
+      VkDescriptorImageInfo ii[32] = {{0}};
+      VkDescriptorBufferInfo bi32[32];
+      for (unsigned i = 0; i < 32; i++)
+         bi32[i] = (VkDescriptorBufferInfo){ba, 64 * i, 64};
+      VkWriteDescriptorSet wc = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 0, .descriptorCount = 32,
+                                 .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = ii};
+      VkWriteDescriptorSet wu = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 0, .descriptorCount = 32,
+                                 .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, .pBufferInfo = bi32};
+      VkCommandBuffer cb;
+      struct mali_cmd_buffer *m = mali_cmd_buffer_from_vk(new_cmd(pool, &cb));
+      dt->CmdPushDescriptorSetKHR(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, vk_pipeline_layout_to_handle(&plc), 0, 1, &wc);
+      dt->CmdPushDescriptorSetKHR(cb, VK_PIPELINE_BIND_POINT_COMPUTE, vk_pipeline_layout_to_handle(&plu), 0, 1, &wu);
+      const struct mali_dset *c = m->push_sets[0][0], *u = m->push_sets[1][0];
+      unsigned bad_c = 0, bad_u = 0;
+      const struct mali_dsl *dl = c ? c->layout : NULL;
+      for (unsigned i = 0; c && dl && i < 32; i++) {
+         const uint8_t *e = c->cpu + (size_t)(dl->b[0].slot + i * dl->b[0].stride) * MALI_DESC_SLOT_SIZE;
+         static const uint8_t zero[MALI_DESC_SLOT_SIZE];
+         if (memcmp(e, zero, sizeof zero) || memcmp(e + MALI_DESC_SLOT_SIZE, smp.hw.w, sizeof smp.hw.w))
+            bad_c++;
+      }
+      for (unsigned i = 0; u && i < 32; i++)
+         if (!push_holds_buffer(u, i, 0x1000000 + 64 * i, 64))
+            bad_u++;
+      CHECK(c && u && !bad_c && !bad_u, "push 32 descriptors: %u combined/immutable and %u uniform elements wrong", bad_c, bad_u);
+      CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "push 32 descriptors: end");
+   }
+}
+
 int main(int argc, char **argv)
 {
    int scene = 1;
@@ -1036,6 +1330,7 @@ int main(int argc, char **argv)
    CHECK(CreateCommandPool(dev, &pci, NULL, &pool) == VK_SUCCESS, "CreateCommandPool");
    if (extra) {
       test_descriptor_bind_points(pool);
+      test_push_descriptors(pool);
       test_resolve_mismatched_view(pool);
       test_stencil_store_recording(pool);
    }

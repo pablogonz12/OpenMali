@@ -19,6 +19,7 @@
 #include "mali_cs_emit.h"
 #include "mali_event.h"
 #include "mali_private.h"
+#include "mali_descriptor.h"
 
 #define MALI_CMD_WROTE_MAX 64
 
@@ -94,6 +95,9 @@ struct mali_cmd_buffer {
    uint32_t vb_stride[MALI_MAX_VB];   /* stride from vkCmdBindVertexBuffers2/3KHR setStride (used when the pipeline's VERTEX_INPUT_BINDING_STRIDE is dynamic) */
    uint8_t push[2][MALI_PUSH_MAX];
    struct mali_cmd_descriptors descriptors[2]; /* graphics, compute; dynamic offsets are packed at bind time */
+   struct mali_dset *push_sets[2][MALI_CMD_SETS]; /* VK_KHR_push_descriptor: latest push per bind point and set index (NULL once an
+                                                   * ordinary bind replaces it); the next push of the same set layout starts from it */
+   struct mali_push_arena push_arena;
    uint64_t ib_va;       /* bound index buffer, offset applied (0 = none) */
    uint32_t ib_bytes;
    const uint8_t *ib_cpu;   /* CPU view of ib_va (NULL = unmapped) */
@@ -167,6 +171,12 @@ VKAPI_ATTR void VKAPI_CALL mali_CmdBindDescriptorSets(VkCommandBuffer, VkPipelin
 VKAPI_ATTR void VKAPI_CALL mali_CmdBindVertexBuffers(VkCommandBuffer, uint32_t, uint32_t, const VkBuffer *, const VkDeviceSize *);
 VKAPI_ATTR void VKAPI_CALL mali_CmdBindIndexBuffer(VkCommandBuffer, VkBuffer, VkDeviceSize, VkIndexType);
 VKAPI_ATTR void VKAPI_CALL mali_CmdBindDescriptorSets2KHR(VkCommandBuffer, const VkBindDescriptorSetsInfoKHR *);
+VKAPI_ATTR void VKAPI_CALL mali_CmdPushDescriptorSetKHR(VkCommandBuffer, VkPipelineBindPoint, VkPipelineLayout, uint32_t, uint32_t,
+                                                        const VkWriteDescriptorSet *);
+VKAPI_ATTR void VKAPI_CALL mali_CmdPushDescriptorSetWithTemplateKHR(VkCommandBuffer, VkDescriptorUpdateTemplate, VkPipelineLayout, uint32_t,
+                                                                    const void *);
+VKAPI_ATTR void VKAPI_CALL mali_CmdPushDescriptorSet2KHR(VkCommandBuffer, const VkPushDescriptorSetInfoKHR *);
+VKAPI_ATTR void VKAPI_CALL mali_CmdPushDescriptorSetWithTemplate2KHR(VkCommandBuffer, const VkPushDescriptorSetWithTemplateInfoKHR *);
 VKAPI_ATTR void VKAPI_CALL mali_CmdPushConstants2KHR(VkCommandBuffer, const VkPushConstantsInfoKHR *);
 VKAPI_ATTR void VKAPI_CALL mali_CmdPushConstants(VkCommandBuffer, VkPipelineLayout, VkShaderStageFlags, uint32_t, uint32_t,
                                                  const void *);
