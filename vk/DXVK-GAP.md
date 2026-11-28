@@ -36,5 +36,5 @@
 | Sample-count 2/8, shaderStorageImageMultisample, tessellation | b/c | L | not planned |
 
 | VK_EXT_transform_feedback | c (code) / required (3.x wiki) | L | no XFB hardware on Valhall; needs NIR lowering of VS outputs to buffer writes |
-| VK_KHR_push_descriptor | a (VKD3D-Proton) | M | see worktree feat/push-descriptor |
+| VK_KHR_push_descriptor | a (VKD3D-Proton) | M | advertised, maxPushDescriptors 32: transient set per push and bind point, templates, maintenance6 2KHR forms (t_cmd push, t_vk_info); host only, no phone run yet |
 | VK_EXT_image_view_min_lod | c (VKD3D-Proton recommended) | S/M | per-view LOD clamp in the image descriptor |
