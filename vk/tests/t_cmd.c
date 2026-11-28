@@ -1066,7 +1066,6 @@ int main(int argc, char **argv)
       test_ringwrap();
       return g_fail ? 1 : 0;
    }
-   test_v13_audit();
 
    /* ---- ICD bring-up (instance -> device), as t_icd ---- */
    extern PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance, const char *);
@@ -1372,6 +1371,7 @@ int main(int argc, char **argv)
       printf("{\"test\":\"t_cmd%d\",\"loadstore\":true,\"pass\":%s}\n", ARCH, g_fail ? "false" : "true");
    }
    DestroyCommandPool(dev, pool, NULL);
+   test_v13_audit();   /* last: its frame parks a pool chunk, which the --loadstore pool-recycling checks must not see */
    kb_queue_destroy(&F.q);
    return g_fail ? 1 : 0;
 }

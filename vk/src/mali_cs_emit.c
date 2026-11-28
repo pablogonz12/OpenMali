@@ -709,6 +709,13 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
    /* stencil-only pass (no colour attachment): the stencil update is the draw's only visible effect; forward pixel kill would drop the fragment on a depth fail before the stencil dfail op runs */
    if (!f->has_colour && f->has_st && d->fx.set && d->fx.st_test)
       dop.allow_fpk = 0;
+   /* panvk_vX_cmd_draw.c:2507-2512: Allow Forward Pixel To Kill needs fs.can_fpk (no discard, no depth/stencil/coverage write,
+    * no output read: pan_compiler.c:315), To Be Killed needs no side effects (writes_global). A discarding draw allowed to kill
+    * what lies under it leaves the clear colour wherever it discards. */
+   if (g->fs && !g->fs->fs_can_fpk)
+      dop.allow_fpk = 0;
+   if (g->fs && g->fs->writes_global)
+      dop.allow_fpk_killed = 0;
    uint32_t dcd_extra = 0, pf_clear = 0;
    if (d->fx.set) {
       dop.front_ccw = d->fx.front_ccw;
@@ -726,12 +733,21 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
    }
    unsigned vx = d->vp[0] < 0 ? 0 : (unsigned)d->vp[0], vy = d->vp[1] < 0 ? 0 : (unsigned)d->vp[1];
    unsigned vmx = vx + (d->vp[2] > 1 ? (unsigned)d->vp[2] : 1) - 1, vmy = vy + (d->vp[3] > 1 ? (unsigned)d->vp[3] : 1) - 1;
-   int32_t sx = d->sc[0] < 0 ? 0 : d->sc[0], sy = d->sc[1] < 0 ? 0 : d->sc[1];
-   uint64_t scis = kb_draw_scissor((unsigned)sx, (unsigned)sy, (unsigned)(sx + (d->sc[2] > 1 ? d->sc[2] : 1) - 1),
-                                   (unsigned)(sy + (d->sc[3] > 1 ? d->sc[3] : 1) - 1));
+   /* Scissor box as panvk_vX_cmd_draw.c:887-900: max = offset + extent - 1 (= offset for an empty extent), every field
+    * clamped to [0, 65535]. Unclamped, a max x above 65535 spilled into the max y half-word. */
+   const int64_t s0x = d->sc[0], s0y = d->sc[1];
+   int64_t s1x = s0x + (d->sc[2] > 0 ? d->sc[2] : 0), s1y = s0y + (d->sc[3] > 0 ? d->sc[3] : 0);
+   s1x = s1x > s0x ? s1x - 1 : s1x;
+   s1y = s1y > s0y ? s1y - 1 : s1y;
+#define U16C(v) ((unsigned)((v) < 0 ? 0 : (v) > 0xffff ? 0xffff : (v)))
+   uint64_t scis = kb_draw_scissor(U16C(s0x), U16C(s0y), U16C(s1x), U16C(s1y));
+#undef U16C
+   /* Depth clamp range = [MIN2(minDepth, maxDepth), MAX2(...)] (panvk_cmd_draw.h:285-292 panvk_depth_range): a reversed
+    * viewport depth range (minDepth > maxDepth, valid Vulkan) must not give min > max, which culls every primitive. */
+   const float zlo = d->vp[4] < d->vp[5] ? d->vp[4] : d->vp[5], zhi = d->vp[4] < d->vp[5] ? d->vp[5] : d->vp[4];
    uint32_t minz, maxz;
-   memcpy(&minz, &d->vp[4], 4);
-   memcpy(&maxz, &d->vp[5], 4);
+   memcpy(&minz, &zlo, 4);
+   memcpy(&maxz, &zhi, 4);
 
    /* The registers derived from the static state (shader programs, blend, depth-stencil, the frame's tiler/FBD pointers) are re-emitted
     * only when this draw's record says the previous draw of the frame did not already write the identical values: MALI_D_PIPE/FX/BIND
@@ -777,7 +793,7 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
          M32(c, KB_IDVS_TILER_FLAGS2, 0);
       }
    } else {
-      uint64_t vh = kb_v13_viewport_hi(vx, vy, vmx, vmy), vl = kb_v13_viewport_lo(d->vp[4], d->vp[5]);
+      uint64_t vh = kb_v13_viewport_hi(vx, vy, vmx, vmy), vl = kb_v13_viewport_lo(zlo, zhi);
       if (!o->dyn_same) {
          M48(c, KB13_IDVS_VERTEX_SRT, kb_draw_srt_ptr(o->vst, d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets));
          M48(c, KB13_IDVS_FRAGMENT_SRT, kb_draw_srt_ptr(o->fst, d->ndyn ? MALI_DYN_TABLE + 1 : 1 + d->nsets));
