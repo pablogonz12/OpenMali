@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/eventfd.h>
@@ -77,6 +78,7 @@ struct mali_kdev {
    pthread_mutex_t wait_lock;   /* models kbase's notification-read lock: a blocking fence wait holds it for <= 20 ms slices */
    unsigned long cs_submits, cs_instr;
    uint64_t next_va;
+   uint64_t va_limit;           /* exclusive, when disjoint VA testing is enabled */
    bool lost;
    /* Offline checking (MALI_FAKE_DUMP=path|-): BO registry + decoded-stream dump, see tests/golden.py */
    struct fake_bo *bos;
@@ -109,7 +111,7 @@ struct fake_bo {
    uint64_t *phash;           /* per 4 KiB page FNV-1a of what was last dumped */
 };
 
-static unsigned g_fake_ndev;
+static atomic_uint g_fake_ndev;
 static FILE *g_dump_file;
 
 static FILE *
@@ -240,8 +242,15 @@ fake_device_create(const struct mali_gpu_info *gpu, struct mali_kdev **out)
    const char *f = getenv("MALI_FAULT_INJECT"), *sl = getenv("MALI_FAKE_SLOW_US");
    k->fault_at = f ? strtoul(f, NULL, 10) : 0;
    k->slow_us = sl ? (unsigned)strtoul(sl, NULL, 10) : 0;
+   k->id = atomic_fetch_add_explicit(&g_fake_ndev, 1, memory_order_relaxed);
+   /* Opt-in for ownership tests: leave the default addresses (and goldens)
+    * unchanged. Give each context a 4 GiB window so cross-context references
+    * cannot accidentally resolve to an identically numbered local BO. */
    k->next_va = 0x5f00000000ull;
-   k->id = g_fake_ndev++;
+   if (getenv("MALI_FAKE_DISJOINT_VA")) {
+      k->next_va += (uint64_t)k->id << 32;
+      k->va_limit = k->next_va + (1ull << 32);
+   }
    *out = k;
    return 0;
 }
@@ -274,6 +283,11 @@ fake_map(struct mali_kdev *k, int fd, size_t size, uint32_t flags, struct mali_b
       return -errno;
    pthread_mutex_lock(&k->lock);
    uint64_t va = k->next_va;
+   if (k->va_limit && (size > k->va_limit - va || k->va_limit - va - size < 4096)) {
+      pthread_mutex_unlock(&k->lock);
+      munmap(p, size);
+      return -ENOMEM;
+   }
    k->next_va += size + 4096;
    pthread_mutex_unlock(&k->lock);
    *out = (struct mali_bo){.gpu_va = va, .cpu = p, .size = size, .flags = flags, .dmabuf_fd = fd};

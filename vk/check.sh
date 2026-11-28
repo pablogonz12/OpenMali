@@ -180,6 +180,8 @@ if echo "$out" | grep -q '"skipped":"VK_EXT_transform_feedback not advertised"';
 else echo "FAIL  vk_feat tf_write opt-out v11"; echo "$out" | sed 's/^/        /'; fail=1; fi
 
 # M4: memory, sync, queue (fake backend; MALI_FAKE_SLOW_US makes the fences really block).
+run "build fake context isolation" 0 cc -std=gnu11 -pthread -I"$V/src" "$V/tests/t_fake_context.c" "$V/src/mali_backend_fake.c" -o "$OUT/t_fake_context"
+run "fake context VA isolation" 0 "$OUT/t_fake_context"
 TQ="$OUT/t_queue --direct $OUT/libvulkan_mali.so"
 run "queue all v11"      0 MALI_BACKEND=fake MALI_FAKE_GPU=v11 $TQ
 run "queue teardown v13"  0 MALI_BACKEND=fake MALI_FAKE_GPU=v13 MALI_FAKE_SLOW_US=400000 $TQ --only teardown
