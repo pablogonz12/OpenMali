@@ -314,6 +314,10 @@ for g in v10 v11 v13; do
    elif out=$(python3 -I "$V/tests/vfmt-words.py" "$GDIR/$name.txt" 2>&1); then echo "ok    view_format $g ($out)"
    else echo "FAIL  view_format $g: $out"; fail=1; fi
 done
+# MALI_PRELOAD_INTERSECT (tests/t_preload_stream.py): with the switch on, a colour LOAD frame runs its preload as pre-frame shader 0
+# in mode INTERSECT (one RUN_IDVS less, DCD pointers in live BOs, RT Clean Tile Write off); the mandatory-ALWAYS cases (colour +
+# depth/stencil LOAD, 4x + resolve) and switch 0 give byte-identical streams. The default build is covered by the goldens above.
+for g in v10 v11 v13; do run "preload intersect CS $g" 0 python3 -I "$V/tests/t_preload_stream.py" "$OUT" "$V/shader" $g; done
 # share_idx (tests/check_share_idx.py): the frame-build fast path skips the per-draw register packing when nothing differs
 # (mali_cs_emit.c same_draw_words). vkCmdBindIndexBuffer sets no dirty bit, so the index-buffer VA is only protected by being part
 # of that key: four draws with identical per-draw words and the index buffer alternating A B A B (an identical pipeline rebind
@@ -372,7 +376,7 @@ rm -f "$GDIR/geom.jsonl"
 if [ "$SAN" = 1 ]; then
    echo "skip  build-t_*.sh tests (not sanitized)"
 else
-   for t in afbc arena bbox bc cmd compile desc hmask image memsync meta qpool query txf txf_cc; do run "t_$t" 0 "$V/tests/build-t_$t.sh"; done
+   for t in afbc arena bbox bc cmd compile desc hmask image memsync meta preload_mode qpool query txf txf_cc; do run "t_$t" 0 "$V/tests/build-t_$t.sh"; done
    for t in bc bopool cmd compile desc image memsync meta qpool query txf txf_cc; do run "t_$t" 0 "$V/tests/build-t_$t.sh"; done
    # Unity 2023.2 capability probe: every format it hands to vkCreateImage, and the swapchain contract (surface rows only when the tree
    # has a WSI platform; the plain build skips them with a message, the x11 run is tests/xwsi-host.sh's job).

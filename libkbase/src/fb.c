@@ -50,6 +50,7 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 	uint32_t s_row = p->s_row_stride ? p->s_row_stride : (p->width + 15u) & ~15u;
 	if (st && ((p->s_gpu_va & 63) || (s_row & 15))) return -EINVAL;
 	if (st && p->s_layered_stride && s_row >= (1u << 27)) return -EINVAL;
+	if ((p->frame_shader_dcds_va & 63) || p->pre_frame_0 > 7) return -EINVAL;   /* Draw descriptors are 64-byte aligned; 3-bit mode */
 	uint32_t zs_row = p->zs_row_stride ? p->zs_row_stride : (p->width * kb_zs_bytes_per_pixel(p->zs_format) + 15u) & ~15u;
 	if (zs && ((p->zs_gpu_va & 63) || (zs_row & 15) || p->zs_format > KB_ZS_D16)) return -EINVAL;
 	memset(out, 0, ext ? KB_FB_DESC_SIZE_ZS : KB_FB_DESC_SIZE);
@@ -57,6 +58,9 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 	uint32_t *x = (uint32_t *)(void *)(out + KB_FB_FBD_SIZE); /* ZS/CRC extension, only if zs */
 	uint32_t *r = (uint32_t *)(void *)(out + KB_FB_FBD_SIZE + (ext ? KB_FB_ZSEXT_SIZE : 0)); /* RGB Render Target */
 
+	put(f, 0, 0, 3, p->pre_frame_0);                         /* Pre Frame 0 mode (0 = never) */
+	put(f, 6, 0, 32, (uint32_t)p->frame_shader_dcds_va);     /* Frame Shader DCDs (0 = none) */
+	put(f, 7, 0, 32, (uint32_t)(p->frame_shader_dcds_va >> 32));
 	put(f, 4, 0, 32, (uint32_t)p->sample_locations_va);  /* Sample Locations pointer */
 	put(f, 5, 0, 32, (uint32_t)(p->sample_locations_va >> 32));
 	/* word 0: Pre Frame 0/1 (0:0, 0:3), Post Frame (0:6): all 0 = never. Words 2..7: frame argument, sample locations,
@@ -87,7 +91,7 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 		put(x, 0, 16, 4, 1);
 		put(x, 0, 20, 4, 2);
 		put(x, 0, 24, 2, p->zs_msaa);
-		put(x, 0, 31, 1, 1);
+		put(x, 0, 31, 1, !p->zs_no_clean_tile_write);
 		put(x, 12, 0, 32, (uint32_t)p->s_gpu_va);            /* Base */
 		put(x, 13, 0, 32, (uint32_t)(p->s_gpu_va >> 32));
 		put(x, 14, 0, 32, s_row);                            /* Row Stride */
@@ -100,7 +104,7 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 		put(x, 0, 0, 4, p->zs_format == KB_ZS_D32F ? 14 : p->zs_format == KB_ZS_D24X8 ? 4 : 1);   /* Write Format D32 / D24X8 / D16 */
 		put(x, 0, 4, 4, 2);                                  /* Block Format: Linear */
 		put(x, 0, 8, 2, p->zs_msaa);
-		put(x, 0, 31, 1, 1);                                 /* Clean Tile Write Enable: write the cleared depth of empty tiles */
+		put(x, 0, 31, 1, !p->zs_no_clean_tile_write);                                 /* Clean Tile Write Enable: write the cleared depth of empty tiles */
 		put(x, 8, 0, 32, (uint32_t)p->zs_gpu_va);            /* Base */
 		put(x, 9, 0, 32, (uint32_t)(p->zs_gpu_va >> 32));
 		put(x, 10, 0, 27, zs_row);                           /* Row Stride */

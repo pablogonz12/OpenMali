@@ -1072,6 +1072,60 @@ build_compute(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **o
    return 0;
 }
 
+/* MALI_PRELOAD_INTERSECT=1: the colour preload draw (draws[0]) as pre-frame shader 0. Its fragment-side blocks come from
+ * build_draw_descs like any draw (SPD, resource table, FAU, blend, ZSD); they are pointed at by a Draw descriptor (genxml
+ * v10/v11 "Draw" with the Shader Environment at word 16, v13 "Draw" with the fragment fields at words 24..31) in slot 0 of
+ * the FBD's 3-entry Frame Shader DCD array. Flags as PanVK's colour preload DCD (panvk_vX_cmd_frame_shaders.c cmd_emit_dcd):
+ * Z/S forced early (the shader writes neither), forward pixel kill allowed both ways, Clean Fragment Write (the preload's
+ * own writes do not dirty a tile), render target 0 written, nothing read. *dcds_va = the array (64-aligned). */
+static int
+build_frame_shader(const struct mali_hw *hw, const struct mali_env *env, const struct mali_frame *f, uint32_t *tsd,
+                   unsigned *tls_have, uint64_t va_tsd, uint64_t *dcds_va)
+{
+   struct mali_draw d;
+   struct ddesc dd;
+   memset(&d, 0, sizeof d);
+   memset(&dd, 0, sizeof dd);
+   mali_draw_expand(&d, &f->draws[0]);
+   if (!d.gfx.fs || !d.gfx.vs)
+      return -EINVAL;
+   if (d.gfx.fs->tls_size > *tls_have) {
+      int rc = tls_fill(hw, env, tsd, d.gfx.fs->tls_size);
+      if (rc)
+         return rc;
+      *tls_have = d.gfx.fs->tls_size;
+   }
+   int rc = build_draw_descs(hw, f, &d, &dd, NULL, NULL);
+   if (rc)
+      return rc;
+   uint32_t *arr = A(hw, 3 * 128, 64, dcds_va);   /* slots 1 (Z/S pre-frame) and 2 (post-frame) stay zero: never used */
+   if (!arr)
+      return -ENOMEM;
+   const bool v13 = env->arch == 13;
+   uint32_t w[32];
+   memset(w, 0, sizeof w);
+   const struct kb_dcd_opts dop = { 0 /* force early */, 0, 1, 1, 1 };
+   const uint64_t srt = kb_draw_srt_ptr(dd.fst, d.ndyn ? MALI_DYN_TABLE + 1 : 1 + d.nsets);
+   const uint64_t fau = v13 ? dd.ffau : dd.ffau & ((1ull << 56) - 1);
+   const uint64_t bl = dd.bl | 1;   /* Blend count 1 in bits 3:0, pointer shr 4 above */
+   w[0] = kb_draw_dcd0(&dop) | (1u << 9);   /* DCD Flags 0, bit 9 Clean Fragment Write */
+   w[1] = kb_draw_dcd1(0xffff, 1);
+   w[5] = v13 ? kb_v13_dcd2(0, 1, 1, 1, 0, 0) : kb_draw_dcd2(0, 1, 1, 1);
+   if (!v13) {
+      const float one = 1.0f;
+      memcpy(&w[7], &one, 4);                 /* Maximum Z */
+      w[17] = (uint32_t)(dd.ffau >> 56);      /* Shader Environment: FAU count (64-bit entries) */
+   }
+   w[10] = (uint32_t)dd.zsd; w[11] = (uint32_t)(dd.zsd >> 32);
+   w[12] = (uint32_t)bl;     w[13] = (uint32_t)(bl >> 32);
+   w[24] = (uint32_t)srt;    w[25] = (uint32_t)(srt >> 32);       /* (Fragment) Resources */
+   w[26] = (uint32_t)dd.spd_f; w[27] = (uint32_t)(dd.spd_f >> 32); /* (Fragment) Shader */
+   w[28] = (uint32_t)va_tsd; w[29] = (uint32_t)(va_tsd >> 32);    /* Thread storage */
+   w[30] = (uint32_t)fau;    w[31] = (uint32_t)(fau >> 32);       /* (Fragment) FAU */
+   memcpy(arr, w, sizeof w);
+   return 0;
+}
+
 int
 mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t **out, unsigned *nout)
 {
@@ -1115,7 +1169,13 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
    if ((env->arch != 10 && env->arch != 11 && env->arch != 13) || !(f->has_colour || f->has_zs || f->has_st || f->width))
       return -EINVAL;
    memset(&c, 0, sizeof c);
-   bool geometry = f->ndraws > 0;
+   /* MALI_PRELOAD_INTERSECT=1: the colour preload (draws[0]) runs as pre-frame shader 0 in mode INTERSECT instead of as a
+    * draw (mali_preload_mode: only where that is safe; every other frame is built exactly as before). d0 = first tiled draw. */
+   const enum mali_pf_mode pfm = mali_preload_mode(f);
+   mali_preload_mode_note(pfm);
+   const unsigned d0 = pfm == MALI_PF_INTERSECT && mali_preload_intersect_on() ? 1u : 0u;
+   uint64_t va_pfd = 0;
+   bool geometry = f->ndraws > d0;
 
    /* smp: a full memcpy below; tctx: kb_*_tiler_ctx memsets all 128 B when there is geometry (unused otherwise);
     * fbd: kb_fb_pack memsets the whole descriptor; tsd: local_storage_none/WLS memset all 32 B. */
@@ -1145,7 +1205,9 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
       if (f->samples == 4 && v13)
          tctx[2] = (tctx[2] & ~(0xfu << 20)) | (((env->tile_log2 - 2) & 0xfu) << 20);
    }
-   if ((rc = mali_render_pack_fbd(env, f, fbd, geometry ? va_tctx : 0, va_smp)))
+   if (d0 && (rc = build_frame_shader(hw, env, f, tsd, &tls_have, va_tsd, &va_pfd)))
+      goto out;
+   if ((rc = mali_render_pack_fbd_pf(env, f, fbd, geometry ? va_tctx : 0, va_smp, va_pfd)))
       goto out;
 
    /* head: flush stale descriptor lines, WAIT for it (async), then registers */
@@ -1167,7 +1229,9 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
       memset(&dd_prev, 0, sizeof dd_prev);
       struct dwp dwp_prev, dwp_cur;
       bool have_dwp = false;
-      for (unsigned i = 0; i < f->ndraws; i++) {
+      if (d0)
+         mali_draw_expand(&x, &f->draws[0]);   /* the pre-frame shader's record: the running draw starts from it */
+      for (unsigned i = d0; i < f->ndraws; i++) {
          mali_draw_expand(&x, &f->draws[i]);
          struct mali_draw *dr = &x;
          {
@@ -1188,13 +1252,13 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
          }
          /* poly_lines rewrites gfx.prim (an empty POINT draw even picks a different one than a non-empty one) behind the record-time dirty
           * mask's back: a change of the EFFECTIVE primitive, in either direction, must not reuse the previous draw's descriptors. */
-         if (i && prev_prim != dr->gfx.prim)
+         if (i > d0 && prev_prim != dr->gfx.prim)
             dr->dirty |= MALI_D_PIPE;
          prev_prim = dr->gfx.prim;
          /* zeroed like the array it replaces: build_draw_descs leaves the fields of a reused group to the previous draw, and
           * the blend words (bl23) are only written on the path that rebuilds them */
          memset(&dd, 0, sizeof dd);
-         if ((rc = build_draw_descs(hw, f, dr, &dd, i ? &pv : NULL, i ? &dd_prev : NULL)))
+         if ((rc = build_draw_descs(hw, f, dr, &dd, i > d0 ? &pv : NULL, i > d0 ? &dd_prev : NULL)))
             goto out;
          /* an indirect draw's FAU words are patched from the loaded arguments, and each draw gets its own FAU block, so the
           * register group is never "the same words" for it - even two calls with the same buffer address */
@@ -1203,7 +1267,7 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
          dwp_of(&dwp_cur, dr);
          dwp_prev = dwp_cur;
          have_dwp = true;
-         if (i == 0) {
+         if (i == d0) {
             M48(&c, R->heap, env->heap_ctx_va);
             E(&c, kb_cs_heap_set(R->heap));
             E(&c, kb_cs_set_state_imm32(KB_CS_SB_SEL_ENDPOINT, env->slot));

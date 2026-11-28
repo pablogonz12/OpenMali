@@ -1439,6 +1439,12 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       d.dirty = MALI_D_ALL;
       for (int i = 0; i < 4; i++) d.sc[i] = f->area[i];
       d.vp[0] = (float)f->area[0]; d.vp[1] = (float)f->area[1]; d.vp[2] = (float)f->area[2]; d.vp[3] = (float)f->area[3]; d.vp[5] = 1.0f;
+      if (pi == 0) {
+         /* the colour preload is draws[0]: mali_frame_build may run it as pre-frame shader 0 instead (mali_preload_mode) */
+         f->pf_cand = f->ndraws == 0;
+         f->pf_src_va = pre[pi].src->va[0];
+         f->pf_zs_load = pre[1].on;
+      }
       if (mali_frame_add_draw(f, &d))
          vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
    }

@@ -286,6 +286,11 @@ struct mali_frame {
    unsigned colour_slot;   /* which of the render pass's colour attachment slots this frame renders (a null-slot pass may start
                             * at 1); CmdClearAttachments only clears that one */
    const struct mali_bpipe *cur_pipe;     /* the effective pipe of the last record (records are deltas) */
+   /* colour loadOp LOAD (mali_CmdBeginRendering): pf_cand = draws[0] is the colour preload draw, pf_zs_load = a depth/stencil
+    * preload draw follows it, pf_src_va = the image the colour preload reads. mali_preload_mode() decides at build time whether
+    * draws[0] runs as a pre-frame shader (MALI_PRELOAD_INTERSECT=1) instead of a draw. */
+   bool pf_cand, pf_zs_load;
+   uint64_t pf_src_va;
 };
 
 struct mali_rec *mali_frame_draw_slot(struct mali_frame *f);   /* next draw slot (uninitialised), NULL on ENOMEM; commit with f->ndraws++ */
@@ -316,6 +321,26 @@ void mali_fbd_bounds(const struct mali_env *env, const struct mali_frame *f, uin
 /* mali_render.c: framebuffer descriptor (v11 and v13) and per-frame blocks. out: 256 B (KB_FB_DESC_SIZE_ZS), 64-aligned. */
 int mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uint8_t *out, uint64_t tiler_ctx_va,
                          uint64_t sample_locations_va);
+/* mali_render.c: how the colour loadOp LOAD of a frame is done. INTERSECT = pre-frame shader 0 in mode INTERSECT with Clean
+ * Tile Write off on every target: a tile no primitive touches is neither loaded nor written back (PanVK
+ * cmd_preload_color_attachments). Every other value is the reason the frame keeps today's full-area preload draw, i.e. the
+ * hardware's ALWAYS behaviour: ZS_LOAD (PanVK preloads Z/S EARLY_ZS_ALWAYS / PREPASS_ALWAYS, and a Z/S preload draw touches
+ * every tile anyway), CLEAN_TILE (a depth/stencil CLEAR needs Clean Tile Write, and TSIX-2033 makes INTERSECT unsafe with it),
+ * ZS_ATTACHMENT (any other bound depth or stencil attachment, conservatively), MSAA, RESOLVE (an in-tile resolve is a store-always target), SRC (the preload reads another image than the one stored:
+ * an untouched tile would keep stale memory) and EMPTY (no geometry besides the preload: no tiler context). NONE = no
+ * candidate (no colour LOAD). The result ignores the switch: callers apply mali_preload_intersect_on(). */
+enum mali_pf_mode { MALI_PF_NONE, MALI_PF_INTERSECT, MALI_PF_ALWAYS_ZS_LOAD, MALI_PF_ALWAYS_CLEAN_TILE, MALI_PF_ALWAYS_ZS_ATTACHMENT, MALI_PF_ALWAYS_MSAA,
+                    MALI_PF_ALWAYS_RESOLVE, MALI_PF_ALWAYS_SRC, MALI_PF_ALWAYS_EMPTY, MALI_PF_NMODES };
+enum mali_pf_mode mali_preload_mode(const struct mali_frame *f);
+bool mali_preload_intersect_on(void);   /* MALI_PRELOAD_INTERSECT=1 (default off) */
+/* MALI_PRELOAD_STATS=1: per built frame with a colour LOAD, counts the mode mali_preload_mode() picked (also with the switch
+ * off: what it would pick) and prints the totals at exit. out[MALI_PF_NMODES]: the counts so far (test hook). */
+void mali_preload_mode_note(enum mali_pf_mode m);
+void mali_preload_mode_stats(unsigned *out);
+/* mali_render_pack_fbd with pre-frame shader 0 at pf_dcds_va (3 x 128 B Draw descriptors) in mode INTERSECT and Clean Tile
+ * Write off; pf_dcds_va = 0 is mali_render_pack_fbd byte for byte. */
+int mali_render_pack_fbd_pf(const struct mali_env *env, const struct mali_frame *f, uint8_t *out, uint64_t tiler_ctx_va,
+                            uint64_t sample_locations_va, uint64_t pf_dcds_va);
 /* Converts a 0..1 float to an 8-bit UNORM clear channel (round to nearest, clamped). */
 uint8_t mali_unorm8(float c);
 
