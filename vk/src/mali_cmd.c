@@ -348,15 +348,15 @@ mali_CmdBindDescriptorSets(VkCommandBuffer h, VkPipelineBindPoint bp, VkPipeline
             }
             struct mali_hw_desc hd;
             mali_dyn_buf_pack(ds->arch, &hd, &ds->dyn[k], dyn[used++]);
-             if (memcmp(binding->dyn_desc[start + k], hd.w, sizeof hd.w)) {
-                memcpy(binding->dyn_desc[start + k], hd.w, sizeof hd.w);
-                if (bp == VK_PIPELINE_BIND_POINT_GRAPHICS)
-                   cmd->dirty |= MALI_D_DYNBUF;
-             }
-             if (start + k + 1 > binding->ndyn) {
-                binding->ndyn = start + k + 1;
-                if (bp == VK_PIPELINE_BIND_POINT_GRAPHICS)
-                   cmd->dirty |= MALI_D_BIND;
+            if (memcmp(binding->dyn_desc[start + k], hd.w, sizeof hd.w)) {
+               memcpy(binding->dyn_desc[start + k], hd.w, sizeof hd.w);
+               if (bp == VK_PIPELINE_BIND_POINT_GRAPHICS)
+                  cmd->dirty |= MALI_D_DYNBUF;
+            }
+            if (start + k + 1 > binding->ndyn) {
+               binding->ndyn = start + k + 1;
+               if (bp == VK_PIPELINE_BIND_POINT_GRAPHICS)
+                  cmd->dirty |= MALI_D_BIND;
             }
          }
       }
