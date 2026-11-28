@@ -626,9 +626,11 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
          switch (dyn->rs.polygon_mode) {
          case VK_POLYGON_MODE_FILL: break;
          case VK_POLYGON_MODE_LINE:   /* a non-triangle topology: polygonMode does not apply */
+            if (tri && bp->gfx.vs && bp->gfx.vs->vs_cull_distances) unsupported(cmd, "shaderCullDistance with polygonMode LINE");   /* the cull test is per triangle, the rewrite leaves per-vertex flags (mali_pipeline.c refuses the static case) */
             if (tri) { bp->gfx.poly_mode = 1; bp->gfx.poly_prim = bp->gfx.prim; bp->gfx.prim = 2; }
             break;
          case VK_POLYGON_MODE_POINT:
+            if (tri && bp->gfx.vs && bp->gfx.vs->vs_cull_distances) unsupported(cmd, "shaderCullDistance with polygonMode POINT");
             if (tri) { bp->gfx.poly_mode = 2; bp->gfx.poly_prim = bp->gfx.prim; bp->gfx.prim = 1; }   /* prim_restart stays: the rewrite uses it to split strips */
             break;
          default: unsupported(cmd, "polygon mode");

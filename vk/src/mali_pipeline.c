@@ -277,10 +277,32 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
    o.sample_shading = samples > 1 && st.ms && st.ms->sample_shading_enable && st.ms->min_sample_shading * (float)samples > 1.0f;
    o.link_vs = &p->vs.layout;
    o.clip_distances = p->vs.vs_clip_distances;
+   o.cull_distances = p->vs.vs_cull_distances;
+   o.cull_varying = p->vs.cull_varying;
    const bool rs_discard = st.rs && st.rs->rasterizer_discard_enable;
    if ((fss || !rs_discard) && mali_compile(&o, &p->fs, err, sizeof err)) {
       fprintf(stderr, "mali_vk: FS compile failed: %s\n", err);
       res = VK_ERROR_INVALID_SHADER_NV;
+      goto fail;
+   }
+
+   /* shaderCullDistance: the FS discards on the varyings the VS wrote, and each stage works them out from its own
+    * location assignment. A disagreement reads another varying - a wrong picture, not a crash - so refuse. */
+   if (!rs_discard && p->vs.vs_cull_distances &&
+       (p->vs.cull_varying_first != p->fs.cull_varying_first || p->vs.cull_varying_last != p->fs.cull_varying_last)) {
+      fprintf(stderr, "mali_vk: cull distance varyings disagree: VS %u..%u, FS %u..%u (%u clip + %u cull)\n",
+              p->vs.cull_varying_first, p->vs.cull_varying_last, p->fs.cull_varying_first, p->fs.cull_varying_last,
+              p->vs.vs_clip_distances, p->vs.vs_cull_distances);
+      res = VK_ERROR_INVALID_SHADER_NV;
+      goto fail;
+   }
+
+   /* shaderCullDistance + EarlyFragmentTests: the cull discard needs late Z/S (a culled primitive must not touch depth,
+    * stencil or occlusion), EarlyFragmentTests needs them before the shader. Late is indistinguishable only for a shader
+    * that cannot kill, write memory or export Z/S/mask (mali_compile.c fs_cull_eft_conflict); refuse the rest. */
+   if (!rs_discard && p->vs.vs_cull_distances && p->fs.fs_cull_eft_conflict) {
+      fprintf(stderr, "mali_vk: shaderCullDistance with an EarlyFragmentTests fragment shader that discards, writes memory or exports depth/stencil/sample mask refused: the cull discard needs late depth/stencil tests\n");
+      res = VK_ERROR_FEATURE_NOT_PRESENT;
       goto fail;
    }
 
@@ -429,6 +451,16 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
       }
       g->prim_restart = ci->pInputAssemblyState->primitiveRestartEnable;
       /* fillModeNonSolid: Mali has no polygon mode. POINT = the vertices as a point list; LINE = triangle edges as an indexed line list built at frame build */
+      /* shaderCullDistance is a fragment-side discard on per-vertex flags: after the rewrite below each point/line
+       * carries only its own vertices' flags, so the points of a vertex with a negative distance are dropped even
+       * when the triangle as a whole is kept (the rule is triangle-level). Refuse instead of drawing it wrong:
+       * DXVK and wined3d never combine cull distances with POINT/LINE, and there is no triangle-level stage here. */
+      if (p->vs.vs_cull_distances && st.rs && g->prim >= 8 && st.rs->polygon_mode != VK_POLYGON_MODE_FILL) {
+         fprintf(stderr, "mali_vk: shaderCullDistance with polygonMode %u refused: the cull test is per vertex, the rule is per triangle\n",
+                 st.rs->polygon_mode);
+         res = VK_ERROR_FEATURE_NOT_PRESENT;
+         goto fail;
+      }
       if (st.rs && g->prim >= 8 && st.rs->polygon_mode == VK_POLYGON_MODE_POINT) {
          g->poly_mode = 2; g->poly_prim = g->prim; g->prim = 1;   /* prim_restart stays: the rewrite uses it to split strips */
       } else if (st.rs && g->prim >= 8 && st.rs->polygon_mode == VK_POLYGON_MODE_LINE) {

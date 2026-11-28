@@ -56,6 +56,8 @@ struct mali_compile_opts {
    const char *fs_entry;
    const struct mali_compile_layout *layout;  /* NULL = descriptor-free (texture handle stub); else M7 descriptor lowering (UBO/SSBO/textures) */
    unsigned clip_distances;       /* FS: gl_ClipDistance count written by the VS (compiled.vs_clip_distances); the FS discards where an interpolated distance < 0 */
+   unsigned cull_distances;       /* FS: gl_CullDistance count written by the VS (compiled.vs_cull_distances); the VS stores d>=0 as 1, the FS discards where one interpolates to 0 (all three vertices negative) */
+   unsigned cull_varying;         /* FS: the varying the VS wrote the merged clip+cull array in (compiled.cull_varying). NOT num_inputs: the VS's gl_Position takes varying 0, so the array is at 1 even when the FS reads nothing */
    int sample_shading;            /* FS: pipeline sampleShadingEnable with minSampleShading * samples > 1 (PanVK: nir->info.fs.uses_sample_shading) */
    int strip_psiz;                /* VS: drop the PointSize output (non-point topologies; the HW would read it as an array) */
    unsigned nspec;                         /* VkSpecializationInfo: mapEntryCount (0 = none) */
@@ -87,6 +89,12 @@ struct mali_compiled {
    uint32_t vs_writes_point_size, vs_secondary_enable, vs_secondary_offset, vs_secondary_work_reg_count;
    uint64_t vs_secondary_preload;
    uint32_t vs_clip_distances;    /* VS: gl_ClipDistance array size (0 = none) */
+   uint32_t vs_cull_distances;    /* VS: gl_CullDistance array size (0 = none), lowered to 0/1 varyings */
+   uint32_t cull_varying;         /* VS: driver_location of the merged clip+cull varying (handed to the FS compile); FS: the one it read */
+   uint32_t cull_varying_first;   /* the varying carrying cull distance 0 / the last one: the pipeline refuses a VS/FS disagreement */
+   uint32_t cull_varying_last;
+   uint32_t fs_cull_eft_conflict; /* FS: cull discard + EarlyFragmentTests + something late tests would change (own discard, memory writes, Z/S/mask export, PostDepthCoverage): mali_pipeline refuses */
+   uint32_t fs_cull_discard;      /* FS: the compile injected the cull-flag discard (lower_cull_fs): depth/stencil tests and updates must run late, or a culled primitive still writes Z/S and counts for occlusion */
    uint32_t noperspective_mask;   /* VS: FS's noperspective bitfield inlined into the code; FS: the bitfield its inputs use */
    uint32_t generic_size_B;       /* VS: size of the generic varying section per vertex */
    uint32_t nvarying;
