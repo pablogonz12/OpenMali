@@ -111,6 +111,8 @@ VkResult mali_wsi_get_surface_capabilities2(VkPhysicalDevice, const VkPhysicalDe
                                             VkSurfaceCapabilities2KHR*);
 VkResult mali_wsi_get_surface_formats2(VkPhysicalDevice, const VkPhysicalDeviceSurfaceInfo2KHR*, uint32_t*,
                                        VkSurfaceFormat2KHR*);
+VkResult mali_wsi_get_surface_capabilities2_ext(VkPhysicalDevice, VkSurfaceKHR, VkSurfaceCapabilities2EXT*);
+VkResult mali_wsi_get_present_rectangles(VkPhysicalDevice, VkSurfaceKHR, uint32_t*, VkRect2D*);
 #if defined(VK_USE_PLATFORM_XCB_KHR)
 VkBool32 mali_wsi_xcb_presentation_support(VkPhysicalDevice, uint32_t, xcb_connection_t*, xcb_visualid_t);
 #endif

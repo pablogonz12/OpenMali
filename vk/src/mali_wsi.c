@@ -21,6 +21,8 @@ VKAPI_ATTR VkResult VKAPI_CALL wsi_GetPhysicalDeviceSurfaceCapabilitiesKHR(VkPhy
 VKAPI_ATTR VkResult VKAPI_CALL wsi_GetPhysicalDeviceSurfaceFormatsKHR(VkPhysicalDevice, VkSurfaceKHR, uint32_t *, VkSurfaceFormatKHR *);
 VKAPI_ATTR VkResult VKAPI_CALL wsi_GetPhysicalDeviceSurfaceCapabilities2KHR(VkPhysicalDevice, const VkPhysicalDeviceSurfaceInfo2KHR*, VkSurfaceCapabilities2KHR *);
 VKAPI_ATTR VkResult VKAPI_CALL wsi_GetPhysicalDeviceSurfaceFormats2KHR(VkPhysicalDevice, const VkPhysicalDeviceSurfaceInfo2KHR*, uint32_t *, VkSurfaceFormat2KHR *);
+VKAPI_ATTR VkResult VKAPI_CALL wsi_GetPhysicalDeviceSurfaceCapabilities2EXT(VkPhysicalDevice, VkSurfaceKHR, VkSurfaceCapabilities2EXT *);
+VKAPI_ATTR VkResult VKAPI_CALL wsi_GetPhysicalDevicePresentRectanglesKHR(VkPhysicalDevice, VkSurfaceKHR, uint32_t *, VkRect2D *);
 
 /* wsi_common.c: what the device dispatch would have called; not in wsi_common.h in this tree. */
 VKAPI_ATTR VkResult VKAPI_CALL wsi_CreateSwapchainKHR(VkDevice device, const VkSwapchainCreateInfoKHR *pCreateInfo,
@@ -740,6 +742,36 @@ mali_wsi_get_surface_capabilities2(VkPhysicalDevice physicalDevice,
    const bool sw_now = mali_wsi_x11_maybe_sw_surface(pdev, pSurfaceInfo->surface);
    const struct mali_wsi_mode saved = mali_wsi_sw_enter(pdev, surface, sw_now);
    VkResult r = wsi_GetPhysicalDeviceSurfaceCapabilities2KHR(physicalDevice, pSurfaceInfo, pSurfaceCapabilities);
+   mali_wsi_sw_leave(pdev, saved);
+   return r;
+}
+
+/* The last two Mesa entrypoints that read the device-wide pdev->vk.wsi_device (wsi_common.c:1189, :1317). Left in
+ * the dispatch table they read it without mali_wsi_lock, i.e. possibly while another thread - another VkDevice of
+ * the same process - has it pointed at the other instance for its own call. tests/check_wsi_wrapped.py keeps the
+ * list complete. */
+VKAPI_ATTR VkResult VKAPI_CALL
+mali_wsi_get_surface_capabilities2_ext(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface,
+                                       VkSurfaceCapabilities2EXT *pSurfaceCapabilities)
+{
+   VK_FROM_HANDLE(vk_physical_device, vk_pdev, physicalDevice);
+   struct mali_physical_device *pdev = container_of(vk_pdev, struct mali_physical_device, vk);
+   const bool sw_now = mali_wsi_x11_maybe_sw_surface(pdev, surface);
+   const struct mali_wsi_mode saved = mali_wsi_sw_enter(pdev, (VkIcdSurfaceBase *)(uintptr_t)surface, sw_now);
+   VkResult r = wsi_GetPhysicalDeviceSurfaceCapabilities2EXT(physicalDevice, surface, pSurfaceCapabilities);
+   mali_wsi_sw_leave(pdev, saved);
+   return r;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL
+mali_wsi_get_present_rectangles(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface, uint32_t *pRectCount,
+                                VkRect2D *pRects)
+{
+   VK_FROM_HANDLE(vk_physical_device, vk_pdev, physicalDevice);
+   struct mali_physical_device *pdev = container_of(vk_pdev, struct mali_physical_device, vk);
+   const bool sw_now = mali_wsi_x11_maybe_sw_surface(pdev, surface);
+   const struct mali_wsi_mode saved = mali_wsi_sw_enter(pdev, (VkIcdSurfaceBase *)(uintptr_t)surface, sw_now);
+   VkResult r = wsi_GetPhysicalDevicePresentRectanglesKHR(physicalDevice, surface, pRectCount, pRects);
    mali_wsi_sw_leave(pdev, saved);
    return r;
 }

@@ -635,6 +635,10 @@ mali_present_fence_ok(struct mali_device *dev)
    }
    if (forced >= 0)
       return forced;
+   /* pdev->wsi, never pdev->vk.wsi_device: mali_wsi.c points the latter at the software instance for the length of
+    * one surface call on another thread. pdev->wsi.sw is written once by wsi_device_init and the probe result is
+    * atomic, so this read needs no lock and gives every VkDevice of the physical device the same answer. A software
+    * X11 chain waits its frame itself (mali_wsi_queue_present -> present_wait_submit_fence). */
    const struct wsi_device *w = &mali_device_pdev(dev)->wsi;
    if (w->sw)
       return 0;   /* software present: the CPU copies the frame, so the queue must wait for rendering first */
