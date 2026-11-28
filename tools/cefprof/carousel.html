@@ -1,0 +1,80 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: MIT
+     A Steam-menu-like page that never stops animating. ?mode=steam (default): the shelf scrolls with plain
+     style.transform (no will-change), the focused tile scales, footer icons change colour, a counter text changes:
+     Chromium must re-raster every frame. ?mode=composite: will-change layers, only the compositor moves them. -->
+<meta charset="utf-8">
+<style>
+html,body{margin:0;width:1920px;height:1080px;overflow:hidden;background:linear-gradient(160deg,#16202d,#0b0f16 70%);color:#dfe3e6;font:22px "Noto Sans",sans-serif}
+h1{position:absolute;left:64px;top:36px;margin:0;font-size:34px;letter-spacing:2px}
+.hero{position:absolute;left:64px;top:110px;width:1792px;height:360px;border-radius:18px;box-shadow:0 12px 40px #000a;object-fit:cover}
+.shelf{position:absolute;left:0;display:flex;gap:28px;padding:24px 64px}
+#s1{top:480px} #s2{top:760px}
+.tile{flex:0 0 auto;width:300px;height:200px;border-radius:16px;overflow:hidden;box-shadow:0 10px 24px #000c,0 0 0 1px #ffffff22;position:relative}
+.tile img{width:100%;height:100%;display:block}
+.tile span{position:absolute;left:14px;bottom:10px;font-size:18px;text-shadow:0 1px 3px #000}
+#s2 .tile{width:230px;height:150px}
+.focus{box-shadow:0 0 0 4px #67c1f5,0 14px 40px #000}
+footer{position:absolute;left:0;right:0;bottom:0;height:84px;background:#0e141bb0;backdrop-filter:blur(14px);display:flex;align-items:center;gap:44px;padding:0 64px;z-index:5}
+footer .b{display:flex;align-items:center;gap:10px;font-size:20px}
+footer svg{width:28px;height:28px;fill:currentColor}
+footer svg.small{width:15px;height:15px}
+#clock{margin-left:auto;font-variant-numeric:tabular-nums}
+body.composite .shelf,body.composite .tile{will-change:transform}
+</style>
+<body>
+<h1>LIBRARY</h1>
+<img class="hero" id="hero">
+<div class="shelf" id="s1"></div>
+<div class="shelf" id="s2"></div>
+<footer id="f"></footer>
+<script>
+const mode = new URLSearchParams(location.search).get('mode') || 'steam';
+document.body.classList.toggle('composite', mode === 'composite');
+function art(i, w, h) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const x = c.getContext('2d'), g = x.createLinearGradient(0, 0, w, h);
+  g.addColorStop(0, `hsl(${i * 47 % 360},65%,45%)`); g.addColorStop(1, `hsl(${(i * 47 + 90) % 360},60%,16%)`);
+  x.fillStyle = g; x.fillRect(0, 0, w, h);
+  for (let k = 0; k < 14; k++) { x.fillStyle = `hsla(${(i * 31 + k * 23) % 360},80%,65%,.35)`; x.beginPath(); x.arc((k * 131 + i * 17) % w, (k * 71 + i * 29) % h, 12 + (k * 13) % 60, 0, 7); x.fill(); }
+  return c.toDataURL('image/png');
+}
+const tiles = [];
+for (let i = 0; i < 30; i++) {
+  const d = document.createElement('div'); d.className = 'tile';
+  const im = new Image(); im.src = art(i, i < 18 ? 300 : 230, i < 18 ? 200 : 150);
+  const s = document.createElement('span'); s.textContent = 'Game title ' + (i + 1);
+  d.append(im, s); (i < 18 ? s1 : s2).append(d); tiles.push(d);
+}
+hero.src = art(99, 896, 180);
+const paths = [
+  'M12 2a10 10 0 1 0 0 20a10 10 0 0 0 0-20zm0 4l5 10H7z',
+  'M4 6h16v3H4zm0 5h16v3H4zm0 5h10v3H4z',
+  'M10.5 3a7.5 7.5 0 0 1 5.9 12.1l4.8 4.8-1.8 1.8-4.8-4.8A7.5 7.5 0 1 1 10.5 3zm0 2.5a5 5 0 1 0 0 10a5 5 0 0 0 0-10z',
+  'M7 5h10a6 6 0 0 1 5 9l-1 4c-1 2-3 2-4 0l-2-3H9l-2 3c-1 2-3 2-4 0l-1-4a6 6 0 0 1 5-9zm0 3v2H5v2h2v2h2v-2h2v-2H9V8z',
+  'M12 3l2.7 5.8 6.3.8-4.6 4.3 1.2 6.2L12 17l-5.6 3.1 1.2-6.2L3 9.6l6.3-.8z',
+  'M1 8c6-6 16-6 22 0l-2.2 2.2c-4.8-4.8-12.800-4.8-17.600 0zm4.5 4.500c3.6-3.600 9.400-3.600 13 0L16.300 14.700c-2.400-2.400-6.200-2.400-8.600 0zM12 17l2.5 2.5L12 22l-2.5-2.5z'];
+const names = ['Menu', 'Library', 'Search', 'Controller', 'Favourites', 'Online'];
+const svg = (p, cls) => `<svg viewBox="0 0 24 24" class="${cls || ''}"><path d="${p}"/></svg>`;
+f.innerHTML = paths.map((p, i) => `<div class="b">${svg(p)}<span>${names[i]}</span></div>`).join('') +
+  `<div class="b" id="clock">${svg(paths[5], 'small')}${svg(paths[3], 'small')}${svg(paths[4], 'small')}<span id="t">0</span></div>`;
+const icons = [...f.querySelectorAll('svg')];
+let n = 0, focus = 0;
+window.frames_drawn = 0;
+function tick() {
+  n++; window.frames_drawn = n;
+  const a = n * 7 % 2400, b = n * 4 % 1500;
+  s1.style.transform = `translateX(${-(a < 1200 ? a : 2400 - a) * 2}px)`;
+  s2.style.transform = `translateX(${-(b < 750 ? b : 1500 - b)}px)`;
+  const nf = Math.floor(n / 20) % 12;
+  if (nf !== focus) { tiles[focus].classList.remove('focus'); tiles[focus].style.transform = ''; focus = nf; tiles[focus].classList.add('focus'); }
+  tiles[focus].style.transform = `scale(${1 + 0.08 * Math.min(1, (n % 20) / 12)})`;
+  if (mode === 'steam') {
+    icons[n % icons.length].style.color = `hsl(${n * 5 % 360},70%,75%)`;
+    t.textContent = String(n);
+  }
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+</script>
+</body>
