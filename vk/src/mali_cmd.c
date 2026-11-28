@@ -1641,7 +1641,7 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
          partial = true;
    if (partial || f->ndraws) {
       /* after a draw, or a sub-rectangle: a constant-colour quad (preload.frag kind 19: the clear words are the format's raw shader output) per rect.
-       * Single-sampled, layer 0; whole-area depth/stencil clears before the first draw keep the loadOp-patch path below. */
+       * Layer 0 (1x or 4x); whole-area depth/stencil clears before the first draw keep the loadOp-patch path below. */
       /* depth/stencil: fixed function, no shader read. The constant-colour quad with colour writes masked; the depth value is the viewport
        * min=max depth (depth test ALWAYS + write, clip off), the stencil value a REPLACE-always reference. */
       for (uint32_t i = 0; i < na; i++) {
@@ -1657,11 +1657,6 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
             if (!zc && !sc)
                continue;
          }
-         if (f->samples != 1) {
-            /* the depth/stencil quad writes one sample per fragment; at 4x that is not the clear Vulkan asks for */
-            degrade(cmd, "CmdClearAttachments depth/stencil inside a multisampled pass");
-            continue;
-         }
          for (uint32_t r = 0; r < nr; r++) {
             if (rects[r].baseArrayLayer != 0 || rects[r].layerCount != 1) {
                unsupported(cmd, "CmdClearAttachments depth/stencil quad: layers");
@@ -1676,6 +1671,13 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
                return;
             }
             d.dirty = MALI_D_ALL;
+            /* Multisampled pass (zink's in-pass glClear(STENCIL), zink_clear.c clear_in_rp): the quad is rasterised with
+             * the pass' sample count, so its coverage holds every sample of a covered pixel and the fixed-function depth
+             * write / stencil REPLACE update each of them (PanVK clears ZS in a render pass with a draw too, vk_meta_clear).
+             * No per-sample shading: nothing here comes from the shader. It used to be dropped, which left the previous
+             * stencil under Skia's stencil-then-cover draws. */
+            if (f->samples > 1)
+               d.gfx.samples = f->samples;
             d.fx.set = true;
             d.fx.front_ccw = true;
             d.fx.depth_clip = false;
