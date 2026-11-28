@@ -183,13 +183,15 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
       .maxUpdateAfterBindDescriptorsInAllPools = 500000, .shaderSampledImageArrayNonUniformIndexingNative = false,
       .quadDivergentImplicitLod = false,
       .maxPerStageDescriptorUpdateAfterBindSamplers = 500000, .maxPerStageDescriptorUpdateAfterBindSampledImages = 500000,
-      .maxPerStageDescriptorUpdateAfterBindUniformBuffers = ubo_count, .maxPerStageDescriptorUpdateAfterBindStorageBuffers = 4,
-      .maxPerStageDescriptorUpdateAfterBindStorageImages = 4, .maxPerStageDescriptorUpdateAfterBindInputAttachments = 4,
+      .maxPerStageDescriptorUpdateAfterBindUniformBuffers = ubo_count, .maxPerStageDescriptorUpdateAfterBindStorageBuffers = 500000,
+      /* storage UAB: the descriptorIndexing minimum (Vulkan limits table), not more. A limit allocates nothing: a pool costs
+       * 32 B per descriptor it is created for (16 MB for 500000), capped at 1 GiB per pool (mali_create_descriptor_pool). */
+      .maxPerStageDescriptorUpdateAfterBindStorageImages = 500000, .maxPerStageDescriptorUpdateAfterBindInputAttachments = 4,
       .maxPerStageUpdateAfterBindResources = 500000,
       .maxDescriptorSetUpdateAfterBindSamplers = 500000, .maxDescriptorSetUpdateAfterBindSampledImages = 500000,
       .maxDescriptorSetUpdateAfterBindUniformBuffers = ubo_set_count, .maxDescriptorSetUpdateAfterBindUniformBuffersDynamic = 8,
-      .maxDescriptorSetUpdateAfterBindStorageBuffers = 24, .maxDescriptorSetUpdateAfterBindStorageBuffersDynamic = 4,
-      .maxDescriptorSetUpdateAfterBindStorageImages = 24, .maxDescriptorSetUpdateAfterBindInputAttachments = 4,
+      .maxDescriptorSetUpdateAfterBindStorageBuffers = 500000, .maxDescriptorSetUpdateAfterBindStorageBuffersDynamic = 4,
+      .maxDescriptorSetUpdateAfterBindStorageImages = 500000, .maxDescriptorSetUpdateAfterBindInputAttachments = 4,
    };
 
 #ifndef MALI_GIT_SHA
@@ -259,6 +261,7 @@ mali_get_properties(const struct mali_gpu_info *gpu, struct vk_properties *p)
                                                * firstInstance), but the only device run of those cases (job 20261118-142435-48673771) failed and
                                                * has not been explained or repeated, so firstInstance != 0 stays a documented limitation. */
    p->maxInlineUniformBlockSize = 256; p->maxPerStageDescriptorInlineUniformBlocks = 4; p->maxDescriptorSetInlineUniformBlocks = 4;
+   p->maxPerStageDescriptorUpdateAfterBindInlineUniformBlocks = 4; p->maxDescriptorSetUpdateAfterBindInlineUniformBlocks = 4;   /* descriptorIndexing + inlineUniformBlock minimum */
    p->maxCombinedImageSamplerDescriptorCount = 1; /* maintenance6; blockTexelViewCompatibleMultipleLayers stays false */
    p->maxInlineUniformTotalSize = 256;   /* t_vk_feat inlineub */
    /* ---- shaderIntegerDotProduct properties: honest. No Bifrost/Valhall dot instruction is used (vtn + bifrost_nir.c lower to mul+add),
@@ -508,6 +511,19 @@ mali_physical_device_init(struct mali_physical_device *pdev, struct mali_instanc
       .shaderSampledImageArrayDynamicIndexing = true, .runtimeDescriptorArray = true,    /* t_vk_feat didx */
       .shaderSampledImageArrayNonUniformIndexing = true, .descriptorBindingPartiallyBound = true,
       .descriptorBindingSampledImageUpdateAfterBind = true, .descriptorBindingUpdateUnusedWhilePending = true,
+      /* descriptorIndexing = the minimum set vk.xml ties to it (registry `require depends="...::descriptorIndexing"`), each one
+       * backed by t_vk_feat didxuab (pixels/values on hardware) + t_desc descidx (lowering, UAB in-place, M15 sweep).
+       * The GPU reads set memory at execution (resource table entry = set va/bytes, mali_cs_emit.c kb_draw_resource), so an
+       * update after bind needs no copy; indices are handle arithmetic + Mesa's nir_lower_non_uniform_access waterfall
+       * (mali_descriptor_lower.c). Not claimed: storage image / storage texel / UBO / input attachment non-uniform indexing,
+       * UBO update-after-bind, variable descriptor count (vkd3d-proton extras, WP-12). */
+      .descriptorIndexing = true,
+      .shaderStorageBufferArrayDynamicIndexing = true,
+      .shaderUniformTexelBufferArrayDynamicIndexing = true, .shaderStorageTexelBufferArrayDynamicIndexing = true,
+      .shaderStorageBufferArrayNonUniformIndexing = true, .shaderUniformTexelBufferArrayNonUniformIndexing = true,
+      .descriptorBindingStorageImageUpdateAfterBind = true, .descriptorBindingStorageBufferUpdateAfterBind = true,
+      .descriptorBindingUniformTexelBufferUpdateAfterBind = true, .descriptorBindingStorageTexelBufferUpdateAfterBind = true,
+      .descriptorBindingInlineUniformBlockUpdateAfterBind = true,   /* required with inlineUniformBlock; inline data lives in set memory */
       .multiDrawIndirect = true,
       .sampleRateShading = true,   /* 1-sample: sample shading is a no-op (t_vk_feat samplerate); 4-sample per-sample shading needs MALI_EXPERIMENTAL_MSAA=1 (t_vk_draw msaa_sample_shading) */
       .depthClamp = true,          /* t_vk_draw fx_depth_clamp */

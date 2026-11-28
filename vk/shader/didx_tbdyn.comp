@@ -1,0 +1,11 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require
+// t_desc descidx: tb array, index lane & 3 without the qualifier (twin of didx_tbnu.comp)
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 1) uniform usamplerBuffer utb[4];
+layout(set = 0, binding = 3, std430) buffer O { uint r[]; } o;
+void main() {
+  uint t = gl_LocalInvocationIndex;
+  int i = int(t & 3u);
+  o.r[t] = texelFetch(utb[i], int(t)).x;
+}

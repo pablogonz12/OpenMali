@@ -130,12 +130,23 @@ mali_dsl_create(struct vk_device *dev, unsigned arch, const VkDescriptorSetLayou
    d->nbindings = nb;
    for (uint32_t i = 0; i < nb; i++)
       d->b[i].type = MALI_DT_NONE;
+   /* binding flags (pBindingFlags[i] belongs to pBindings[i]; a missing array means no flags) */
+   const VkDescriptorSetLayoutBindingFlagsCreateInfo *bfi = vk_find_struct_const(ci->pNext, DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO);
+   const VkDescriptorBindingFlags *bflags = bfi && bfi->bindingCount == ci->bindingCount ? bfi->pBindingFlags : NULL;
    /* Slots are assigned in binding-number order so that the layout does not depend on the order in pBindings. */
    for (uint32_t n = 0; n < nb; n++) {
       const VkDescriptorSetLayoutBinding *src = NULL;
+      VkDescriptorBindingFlags fl = 0;
       for (uint32_t i = 0; i < ci->bindingCount; i++)
-         if (ci->pBindings[i].binding == n) src = &ci->pBindings[i];
+         if (ci->pBindings[i].binding == n) {
+            src = &ci->pBindings[i];
+            fl = bflags ? bflags[i] : 0;
+         }
       if (!src) continue;
+      if ((fl & VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT) &&
+          (src->descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER || src->descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE ||
+           src->descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER))
+         d->uab_storage = true;
       struct mali_lbinding *b = &d->b[n];
       b->type = src->descriptorType;
       b->count = src->descriptorCount;
@@ -337,6 +348,7 @@ alloc_set(struct vk_device *dev, struct mali_dpool *p, struct mali_dsl *l, struc
    s->cpu = p->cpu ? p->cpu + at : NULL;
    s->va = p->va + at;
    s->arch = p->arch;
+   s->wrote_full = l->uab_storage;   /* UAB storage writes can follow the bind: see mali_dsl::uab_storage */
    if (bytes) memset(s->cpu, 0, bytes);   /* zero-capacity pool: s->cpu is NULL (memset(NULL, 0, 0) is UB) */
    write_immutable(s);
    for (uint32_t n = 0; n < l->nbindings; n++) {
