@@ -21,6 +21,12 @@
 #include "mali_private.h"
 
 #define MALI_CMD_WROTE_MAX 64
+/* dma-bufs imported from another process that this command buffer samples: the consumer side of implicit sync
+ * (mali_isync.h). Only imported BOs are listed, so the list is short whatever the frame binds. */
+#define MALI_CMD_READ_MAX 16
+/* Implicit sync, producer side: shared dma-bufs this command buffer gives away or finishes. Only a handful per
+ * frame (the exported image, the swapchain-like target), never the frame's whole buffer set. */
+#define MALI_CMD_HANDOFF_MAX 8
 
 struct mali_cmd_buffer;
 /* The reason is copied when retained for rate limiting. */
@@ -110,6 +116,18 @@ struct mali_cmd_buffer {
    struct mali_memory *wrote[MALI_CMD_WROTE_MAX];
    unsigned nwrote;
    bool wrote_full;
+   /* Implicit sync, consumer side: imported dma-bufs this command buffer reads (sampled/storage/input-attachment
+    * descriptors, copy/blit sources, vertex/index buffers). A submit waits their fences before it runs. */
+   struct mali_memory *read[MALI_CMD_READ_MAX];
+   unsigned nread;
+   bool read_full;
+   /* Implicit sync, producer side: shared dma-bufs this command buffer HANDS OFF - a pipeline barrier that releases
+    * the image to VK_QUEUE_FAMILY_FOREIGN_EXT (zink's dmabuf export at batch flush) or a render-pass colour
+    * attachment's final store. Only these submits wait/attach a fence, instead of every submit that happens to
+    * touch a shared BO (which halved the X4's frame rate). */
+   struct mali_memory *handoff[MALI_CMD_HANDOFF_MAX];
+   unsigned nhandoff;
+   bool handoff_full;
 };
 
 static inline struct mali_cmd_buffer *
@@ -130,6 +148,17 @@ void mali_cmd_set_occlusion(struct mali_cmd_buffer *cmd, uint64_t va, unsigned m
 void mali_cmd_mark_written(struct mali_cmd_buffer *cmd, struct mali_memory *mem);
 /* Same, by handle, through the resolvers (NULL-safe; a no-op where the resolver is not installed, e.g. unit tests). */
 void mali_cmd_mark_buffer_written(struct mali_cmd_buffer *cmd, VkBuffer b);
+/* Implicit sync: record that this command buffer reads `mem`. Only imported (foreign) dma-bufs are kept; the submit
+ * waits their fences (mali_isync.h). Overflow sets read_full: the buffer is then not waited for. */
+void mali_cmd_mark_read(struct mali_cmd_buffer *cmd, struct mali_memory *mem);
+void mali_cmd_mark_image_read(struct mali_cmd_buffer *cmd, VkImage i);
+void mali_cmd_mark_buffer_read(struct mali_cmd_buffer *cmd, VkBuffer b);
+void mali_cmd_mark_image_view_read(struct mali_cmd_buffer *cmd, VkImageView v);
+/* Implicit sync, producer side: this command buffer hands `mem` away (foreign-queue release or final colour store).
+ * Only shared dma-bufs are kept; the submit attaches its fence to them, or (5.10) waits for itself. */
+void mali_cmd_mark_handoff(struct mali_cmd_buffer *cmd, struct mali_memory *mem);
+void mali_cmd_mark_handoff_image(struct mali_cmd_buffer *cmd, VkImage i);
+void mali_cmd_mark_buffer_handoff(struct mali_cmd_buffer *cmd, VkBuffer b);
 
 /* VK_EXT_transform_feedback (stage 2): recorded and validated here; the streamout job itself is not implemented yet. */
 void mali_CmdBindTransformFeedbackBuffersEXT(VkCommandBuffer h, uint32_t first, uint32_t count, const VkBuffer *buffers,

@@ -129,6 +129,74 @@ mali_cmd_mark_written(struct mali_cmd_buffer *cmd, struct mali_memory *mem)
    }
 }
 
+/* Implicit sync, consumer side (mali_isync.h): an imported dma-buf this command buffer reads must have its
+ * producer's fences waited before the submit. Only imported ones are recorded (a BO this driver allocated is in
+ * order with its own submits), so the list stays short whatever the frame binds. */
+void
+mali_cmd_mark_read(struct mali_cmd_buffer *cmd, struct mali_memory *mem)
+{
+   if (!mem || mem->isync != MALI_ISYNC_BO_IMPORTED)
+      return;
+   for (unsigned i = 0; i < cmd->nread; i++)
+      if (cmd->read[i] == mem)
+         return;
+   if (cmd->nread < MALI_CMD_READ_MAX)
+      cmd->read[cmd->nread++] = mem;
+   else
+      cmd->read_full = true;
+}
+
+/* Implicit sync, producer side (mali_isync.h): the buffer this submit gives away. A reset or a freed memory must not
+ * leave a stale mark behind, hence the guard at collect time (mali_queue.c) and the filter here. */
+void
+mali_cmd_mark_handoff(struct mali_cmd_buffer *cmd, struct mali_memory *mem)
+{
+   if (!mem || (mem->isync != MALI_ISYNC_BO_EXPORTED && mem->isync != MALI_ISYNC_BO_IMPORTED))
+      return;
+   for (unsigned i = 0; i < cmd->nhandoff; i++)
+      if (cmd->handoff[i] == mem)
+         return;
+   if (cmd->nhandoff < MALI_CMD_HANDOFF_MAX)
+      cmd->handoff[cmd->nhandoff++] = mem;
+   else
+      cmd->handoff_full = true;
+}
+
+void
+mali_cmd_mark_handoff_image(struct mali_cmd_buffer *cmd, VkImage i)
+{
+   if (g_res.image_mem)
+      mali_cmd_mark_handoff(cmd, g_res.image_mem(i));
+}
+
+void
+mali_cmd_mark_buffer_handoff(struct mali_cmd_buffer *cmd, VkBuffer b)
+{
+   if (g_res.buffer_mem)
+      mali_cmd_mark_handoff(cmd, g_res.buffer_mem(b));
+}
+
+void
+mali_cmd_mark_image_read(struct mali_cmd_buffer *cmd, VkImage i)
+{
+   if (g_res.image_mem)
+      mali_cmd_mark_read(cmd, g_res.image_mem(i));
+}
+
+void
+mali_cmd_mark_buffer_read(struct mali_cmd_buffer *cmd, VkBuffer b)
+{
+   if (g_res.buffer_mem)
+      mali_cmd_mark_read(cmd, g_res.buffer_mem(b));
+}
+
+void
+mali_cmd_mark_image_view_read(struct mali_cmd_buffer *cmd, VkImageView v)
+{
+   if (g_res.image_view_mem)
+      mali_cmd_mark_read(cmd, g_res.image_view_mem(v));
+}
+
 void
 mali_cmd_mark_buffer_written(struct mali_cmd_buffer *cmd, VkBuffer b)
 {
@@ -180,6 +248,12 @@ reset_state(struct mali_cmd_buffer *cmd)
    cmd->ndef = cmd->capdef = 0;
    cmd->nwrote = 0;
    cmd->wrote_full = false;
+   /* implicit sync: the read marks are per recording too. A reset buffer that kept them could wait (or, worse, name)
+    * an imported dma-buf that its owner has freed since. */
+   cmd->nread = 0;
+   cmd->read_full = false;
+   cmd->nhandoff = 0;
+   cmd->handoff_full = false;
    mali_meta_cmd_forget(cmd);
 }
 
@@ -331,6 +405,11 @@ mali_CmdBindDescriptorSets(VkCommandBuffer h, VkPipelineBindPoint bp, VkPipeline
          mali_cmd_mark_written(cmd, ds->wrote[k]);
       if (ds && ds->wrote_full)
          cmd->wrote_full = true;
+      /* Implicit sync: the imported dma-bufs this set samples (mali_isync.h). */
+      for (unsigned k = 0; ds && k < ds->nread; k++)
+         mali_cmd_mark_read(cmd, ds->read[k]);
+      if (ds && ds->read_full)
+         cmd->read_full = true;
       if (ds->layout && ds->layout->dyn_count) {
          /* dynamic buffers: this set's dyn_start = dynamic descriptors of the lower sets of the pipeline layout (matches mali_pipeline_layout_flatten) */
          unsigned start = 0;
@@ -377,6 +456,7 @@ mali_CmdBindVertexBuffers(VkCommandBuffer h, uint32_t first, uint32_t n, const V
          return;
       }
       struct vk_buffer *buf = vk_buffer_from_handle(bufs[i]);
+      mali_cmd_mark_buffer_read(cmd, bufs[i]);   /* implicit sync: an imported vertex buffer is a read (mali_isync.h) */
       uint64_t nva = buf ? vk_buffer_address(buf, offs[i]) : 0;
       uint32_t nsz = buf ? (uint32_t)(buf->size - offs[i]) : 0;
       if (cmd->vb_va[b] != nva || cmd->vb_size[b] != nsz) {
@@ -394,6 +474,7 @@ VKAPI_ATTR void VKAPI_CALL
 mali_CmdBindIndexBuffer(VkCommandBuffer h, VkBuffer b, VkDeviceSize off, VkIndexType t)
 {
    CMD(h);
+   mali_cmd_mark_buffer_read(cmd, b);   /* implicit sync: an imported index buffer is a read (mali_isync.h) */
    struct vk_buffer *buf = vk_buffer_from_handle(b);
    if (!buf) {
       cmd->ib_va = 0;
@@ -1202,8 +1283,12 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       return;
    }
    /* M15: the colour target is GPU-written in this frame */
-   if (!no_col && g_res.image_view_mem)
+   if (!no_col && g_res.image_view_mem) {
       mali_cmd_mark_written(cmd, g_res.image_view_mem(ca->imageView));
+      /* Implicit sync, producer side, fallback rule: the frame's final store into a shared colour attachment is a
+       * handoff even without a foreign-queue release barrier (mali_isync.h). */
+      mali_cmd_mark_handoff(cmd, g_res.image_view_mem(ca->imageView));
+   }
    if (!no_col)
       load = is_load_op(ca->loadOp);
    if (load) {
@@ -1832,9 +1917,19 @@ mali_cmd_submit(struct vk_command_buffer *vk)
    /* M15: hand the GPU-write marks to the backend before the submission that performs them, so the fence wait
     * for it CSYNCs exactly these BOs. An unplaced write (wrote_full) asks for one full sweep. */
    if (g_hw.bo_wrote) {
-      for (unsigned i = 0; i < cmd->nwrote; i++)
+      bool swept = cmd->wrote_full;
+      for (unsigned i = 0; i < cmd->nwrote; i++) {
+         /* A mark can name memory the app freed after recording (illegal, and still must not crash): the guard holds
+          * the live VkDeviceMemory registry lock, so the BO cannot go away under bo_wrote. A dead mark falls back to
+          * the full sweep, which is what an unlisted write does. */
+         if (!mali_memory_guard(cmd->wrote[i])) {
+            swept = true;
+            continue;
+         }
          g_hw.bo_wrote(g_hw.user, &cmd->wrote[i]->bo);
-      if (cmd->wrote_full)
+         mali_memory_unguard();
+      }
+      if (swept)
          g_hw.bo_wrote(g_hw.user, NULL);
    }
    for (unsigned i = 0; i < cmd->nframes; i++) {
