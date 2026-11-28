@@ -17,6 +17,7 @@
     "VK_EXT_mesh_shader": {"v10": "no", "v11": "no", "v13": "unknown", "note": "No mesh/task stage in Valhall 4th gen; emulation via compute + indirect is not worth it for our consumers."},
     "VK_KHR_fragment_shading_rate": {"v10": "unknown", "v11": "unknown", "v13": "unknown", "note": "Variable-rate shading exists on later Mali generations; the Arm blob column is the evidence per GPU."}
   },
+  "node_dependent": {"VK_EXT_physical_device_drm": "advertised on x4 and cmf (vulkaninfo.txt of 2026-11-28, smoke x4-1128-031240 / cmf-1128-031509); the fake backend has no DRM node"},
   "env_gates": [
     {"switch": "MALI_EXPERIMENTAL_MSAA", "default": "on (unset = on; =0 off)", "affects": "VK_SAMPLE_COUNT_4_BIT in framebuffer*/sampledImage*/storageImageSampleCounts limits and VkImageFormatProperties", "source": "vk/src/mali_msaa.h:17-18 (the header comment above it still says opt-in: stale)", "evidence": "vulkaninfo v11 unset == v11 MALI_EXPERIMENTAL_MSAA=1 byte for byte; =0 drops the 4x bits"},
     {"switch": "MALI_EXPERIMENTAL_TF", "default": "on (=0 off)", "affects": "VK_EXT_transform_feedback + transformFeedback feature + properties; maxPerStageDescriptorUniformBuffers 128 -> 12, maxDescriptorSetUniformBuffers 128 -> 72", "source": "vk/src/mali_tf.h:47, mali_physical_device.c:45-46,242,473,498", "evidence": "vulkaninfo v11 vs MALI_EXPERIMENTAL_TF=0 diff"},

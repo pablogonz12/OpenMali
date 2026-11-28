@@ -7,10 +7,10 @@
  "counts": {
   "extensions": {
    "deprecated_missing": 4,
-   "have": 97,
+   "have": 92,
    "impossible": 15,
-   "missing_possible": 100,
-   "missing_unknown": 72
+   "missing_possible": 104,
+   "missing_unknown": 73
   },
   "features": {
    "have": 60,
@@ -1035,6 +1035,34 @@
   },
   {
    "angle": null,
+   "blob": "Y/Y/Y",
+   "cite": "vk.xml:24827",
+   "core": "1.2",
+   "deprecated": false,
+   "gamescope": null,
+   "group": "rendering/pipelines",
+   "hw": {
+    "v10": "yes",
+    "v11": "yes",
+    "v13": "yes"
+   },
+   "missing_on": [
+    "v10",
+    "v11",
+    "v13"
+   ],
+   "name": "VK_KHR_draw_indirect_count",
+   "panvk": {
+    "v10": true,
+    "v11": true,
+    "v13": true
+   },
+   "platform": null,
+   "required_by": {},
+   "zink": "GL4.6"
+  },
+  {
+   "angle": null,
    "blob": "-/-/-",
    "cite": "vk.xml:25603",
    "core": "1.4",
@@ -1779,6 +1807,36 @@
   },
   {
    "angle": null,
+   "blob": "Y/Y/Y",
+   "cite": "vk.xml:26352",
+   "core": "1.3",
+   "deprecated": false,
+   "gamescope": null,
+   "group": "memory/buffers",
+   "hw": {
+    "v10": "yes",
+    "v11": "yes",
+    "v13": "yes"
+   },
+   "missing_on": [
+    "v10",
+    "v11",
+    "v13"
+   ],
+   "name": "VK_EXT_texel_buffer_alignment",
+   "panvk": {
+    "v10": true,
+    "v11": true,
+    "v13": true
+   },
+   "platform": null,
+   "required_by": {
+    "LDB24": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block"
+   },
+   "zink": ""
+  },
+  {
+   "angle": null,
    "blob": "-/-/-",
    "cite": "vk.xml:32446",
    "core": "",
@@ -2203,6 +2261,38 @@
    "platform": null,
    "required_by": {},
    "zink": ""
+  },
+  {
+   "angle": null,
+   "blob": "Y/Y/Y",
+   "cite": "vk.xml:27512",
+   "core": "1.3",
+   "deprecated": false,
+   "gamescope": null,
+   "group": "images/formats",
+   "hw": {
+    "v10": "yes",
+    "v11": "yes",
+    "v13": "yes"
+   },
+   "missing_on": [
+    "v10",
+    "v11",
+    "v13"
+   ],
+   "name": "VK_EXT_4444_formats",
+   "panvk": {
+    "v10": true,
+    "v11": true,
+    "v13": true
+   },
+   "platform": null,
+   "required_by": {
+    "A15": "Vulkan-Profiles/profiles/VP_ANDROID_15_minimums.json#capabilities.MUST",
+    "A16": "Vulkan-Profiles/profiles/VP_ANDROID_15_minimums.json#capabilities.MUST",
+    "LDB24": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block"
+   },
+   "zink": "use"
   },
   {
    "angle": null,
@@ -2727,6 +2817,34 @@
   },
   {
    "angle": null,
+   "blob": "Y/Y/Y",
+   "cite": "vk.xml:23756",
+   "core": "1.2",
+   "deprecated": false,
+   "gamescope": null,
+   "group": "images/formats",
+   "hw": {
+    "v10": "yes",
+    "v11": "yes",
+    "v13": "yes"
+   },
+   "missing_on": [
+    "v10",
+    "v11",
+    "v13"
+   ],
+   "name": "VK_EXT_sampler_filter_minmax",
+   "panvk": {
+    "v10": true,
+    "v11": true,
+    "v13": true
+   },
+   "platform": null,
+   "required_by": {},
+   "zink": "use"
+  },
+  {
+   "angle": null,
    "blob": "-/-/-",
    "cite": "vk.xml:26439",
    "core": "",
@@ -2745,6 +2863,34 @@
    ],
    "name": "VK_EXT_texture_compression_astc_3d",
    "panvk": {},
+   "platform": null,
+   "required_by": {},
+   "zink": ""
+  },
+  {
+   "angle": null,
+   "blob": "-/-/-",
+   "cite": "vk.xml:27373",
+   "core": "1.3",
+   "deprecated": false,
+   "gamescope": null,
+   "group": "images/formats",
+   "hw": {
+    "v10": "yes",
+    "v11": "yes",
+    "v13": "yes"
+   },
+   "missing_on": [
+    "v10",
+    "v11",
+    "v13"
+   ],
+   "name": "VK_EXT_ycbcr_2plane_444_formats",
+   "panvk": {
+    "v10": true,
+    "v11": true,
+    "v13": true
+   },
    "platform": null,
    "required_by": {},
    "zink": ""
@@ -2988,38 +3134,6 @@
    ],
    "name": "VK_EXT_multisampled_render_to_swapchain",
    "panvk": {},
-   "platform": null,
-   "required_by": {},
-   "zink": ""
-  },
-  {
-   "angle": "vk_renderer.cpp:2329",
-   "blob": "-/-/-",
-   "cite": "vk.xml:27644",
-   "core": "",
-   "deprecated": false,
-   "gamescope": {
-    "cite": "vk/tests/t_steam_caps.c:47",
-    "hard": false,
-    "why": "gamescope(optional: warns only; needs a DRM render node)"
-   },
-   "group": "sync/presentation",
-   "hw": {
-    "v10": "yes",
-    "v11": "yes",
-    "v13": "yes"
-   },
-   "missing_on": [
-    "v10",
-    "v11",
-    "v13"
-   ],
-   "name": "VK_EXT_physical_device_drm",
-   "panvk": {
-    "v10": true,
-    "v11": true,
-    "v13": true
-   },
    "platform": null,
    "required_by": {},
    "zink": ""
@@ -3885,6 +3999,32 @@
    "platform": null,
    "required_by": {},
    "zink": ""
+  },
+  {
+   "angle": null,
+   "blob": "-/-/-",
+   "cite": "vk.xml:24649",
+   "core": "1.2",
+   "deprecated": false,
+   "gamescope": null,
+   "group": "shaders/SPIR-V",
+   "hw": {
+    "v10": "unknown",
+    "v11": "unknown",
+    "v13": "unknown"
+   },
+   "missing_on": [
+    "v10",
+    "v11",
+    "v13"
+   ],
+   "name": "VK_EXT_shader_viewport_index_layer",
+   "panvk": {},
+   "platform": null,
+   "required_by": {
+    "LDB24": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block"
+   },
+   "zink": "use"
   },
   {
    "angle": null,
@@ -8978,123 +9118,27 @@
  "limits": [
   {
    "alt": null,
-   "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan10requirements",
-   "limittype": "min,mul",
-   "ours": {
-    "v10": 1,
-    "v11": 1,
-    "v13": 1
+   "blob": {
+    "v10": [
+     "VK_SAMPLE_COUNT_1_BIT",
+     "VK_SAMPLE_COUNT_4_BIT",
+     "VK_SAMPLE_COUNT_8_BIT",
+     "VK_SAMPLE_COUNT_16_BIT"
+    ],
+    "v11": [
+     "VK_SAMPLE_COUNT_1_BIT",
+     "VK_SAMPLE_COUNT_4_BIT",
+     "VK_SAMPLE_COUNT_8_BIT",
+     "VK_SAMPLE_COUNT_16_BIT"
+    ],
+    "v13": [
+     "VK_SAMPLE_COUNT_1_BIT",
+     "VK_SAMPLE_COUNT_2_BIT",
+     "VK_SAMPLE_COUNT_4_BIT",
+     "VK_SAMPLE_COUNT_8_BIT",
+     "VK_SAMPLE_COUNT_16_BIT"
+    ]
    },
-   "profile": "1.0",
-   "property": "bufferImageGranularity",
-   "required": 131072
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan10requirements",
-   "limittype": "min,mul",
-   "ours": {
-    "v10": 1,
-    "v11": 1,
-    "v13": 1
-   },
-   "profile": "1.1",
-   "property": "bufferImageGranularity",
-   "required": 131072
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan10requirements",
-   "limittype": "min,mul",
-   "ours": {
-    "v10": 1,
-    "v11": 1,
-    "v13": 1
-   },
-   "profile": "1.2",
-   "property": "bufferImageGranularity",
-   "required": 131072
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan10requirements",
-   "limittype": "min,mul",
-   "ours": {
-    "v10": 1,
-    "v11": 1,
-    "v13": 1
-   },
-   "profile": "1.3",
-   "property": "bufferImageGranularity",
-   "required": 131072
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan14requirements",
-   "limittype": "min,mul",
-   "ours": {
-    "v10": 1,
-    "v11": 1,
-    "v13": 1
-   },
-   "profile": "1.4",
-   "property": "bufferImageGranularity",
-   "required": 4096
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
-   "limittype": "min,mul",
-   "ours": {
-    "v10": 1,
-    "v11": 1,
-    "v13": 1
-   },
-   "profile": "R22",
-   "property": "bufferImageGranularity",
-   "required": 4096
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
-   "limittype": "min,mul",
-   "ours": {
-    "v10": 1,
-    "v11": 1,
-    "v13": 1
-   },
-   "profile": "R24",
-   "property": "bufferImageGranularity",
-   "required": 4096
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/VP_ANDROID_16_minimums.json#capabilities.MUST",
-   "limittype": "min,mul",
-   "ours": {
-    "v10": 1,
-    "v11": 1,
-    "v13": 1
-   },
-   "profile": "A16",
-   "property": "bufferImageGranularity",
-   "required": 4096
-  },
-  {
-   "alt": null,
-   "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
-   "limittype": "min,mul",
-   "ours": {
-    "v10": 1,
-    "v11": 1,
-    "v13": 1
-   },
-   "profile": "LDB24",
-   "property": "bufferImageGranularity",
-   "required": 1024
-  },
-  {
-   "alt": null,
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "bitmask",
    "ours": {
@@ -9121,6 +9165,27 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": [
+     "VK_SAMPLE_COUNT_1_BIT",
+     "VK_SAMPLE_COUNT_4_BIT",
+     "VK_SAMPLE_COUNT_8_BIT",
+     "VK_SAMPLE_COUNT_16_BIT"
+    ],
+    "v11": [
+     "VK_SAMPLE_COUNT_1_BIT",
+     "VK_SAMPLE_COUNT_4_BIT",
+     "VK_SAMPLE_COUNT_8_BIT",
+     "VK_SAMPLE_COUNT_16_BIT"
+    ],
+    "v13": [
+     "VK_SAMPLE_COUNT_1_BIT",
+     "VK_SAMPLE_COUNT_2_BIT",
+     "VK_SAMPLE_COUNT_4_BIT",
+     "VK_SAMPLE_COUNT_8_BIT",
+     "VK_SAMPLE_COUNT_16_BIT"
+    ]
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "bitmask",
    "ours": {
@@ -9147,6 +9212,27 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": [
+     "VK_SAMPLE_COUNT_1_BIT",
+     "VK_SAMPLE_COUNT_4_BIT",
+     "VK_SAMPLE_COUNT_8_BIT",
+     "VK_SAMPLE_COUNT_16_BIT"
+    ],
+    "v11": [
+     "VK_SAMPLE_COUNT_1_BIT",
+     "VK_SAMPLE_COUNT_4_BIT",
+     "VK_SAMPLE_COUNT_8_BIT",
+     "VK_SAMPLE_COUNT_16_BIT"
+    ],
+    "v13": [
+     "VK_SAMPLE_COUNT_1_BIT",
+     "VK_SAMPLE_COUNT_2_BIT",
+     "VK_SAMPLE_COUNT_4_BIT",
+     "VK_SAMPLE_COUNT_8_BIT",
+     "VK_SAMPLE_COUNT_16_BIT"
+    ]
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "bitmask",
    "ours": {
@@ -9173,6 +9259,27 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": [
+     "VK_SAMPLE_COUNT_1_BIT",
+     "VK_SAMPLE_COUNT_4_BIT",
+     "VK_SAMPLE_COUNT_8_BIT",
+     "VK_SAMPLE_COUNT_16_BIT"
+    ],
+    "v11": [
+     "VK_SAMPLE_COUNT_1_BIT",
+     "VK_SAMPLE_COUNT_4_BIT",
+     "VK_SAMPLE_COUNT_8_BIT",
+     "VK_SAMPLE_COUNT_16_BIT"
+    ],
+    "v13": [
+     "VK_SAMPLE_COUNT_1_BIT",
+     "VK_SAMPLE_COUNT_2_BIT",
+     "VK_SAMPLE_COUNT_4_BIT",
+     "VK_SAMPLE_COUNT_8_BIT",
+     "VK_SAMPLE_COUNT_16_BIT"
+    ]
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "bitmask",
    "ours": {
@@ -9199,6 +9306,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": false,
+    "v11": false,
+    "v13": false
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -9212,6 +9324,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": false,
+    "v11": false,
+    "v13": false
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -9225,110 +9342,11 @@
   },
   {
    "alt": null,
-   "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan10requirements",
-   "limittype": "min,mul",
-   "ours": {
-    "v10": 0.125,
-    "v11": 0.125,
-    "v13": 0.125
+   "blob": {
+    "v10": 8,
+    "v11": 8,
+    "v13": 8
    },
-   "profile": "1.0",
-   "property": "lineWidthGranularity",
-   "required": 1.0
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan10requirements",
-   "limittype": "min,mul",
-   "ours": {
-    "v10": 0.125,
-    "v11": 0.125,
-    "v13": 0.125
-   },
-   "profile": "1.1",
-   "property": "lineWidthGranularity",
-   "required": 1.0
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan10requirements",
-   "limittype": "min,mul",
-   "ours": {
-    "v10": 0.125,
-    "v11": 0.125,
-    "v13": 0.125
-   },
-   "profile": "1.2",
-   "property": "lineWidthGranularity",
-   "required": 1.0
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan10requirements",
-   "limittype": "min,mul",
-   "ours": {
-    "v10": 0.125,
-    "v11": 0.125,
-    "v13": 0.125
-   },
-   "profile": "1.3",
-   "property": "lineWidthGranularity",
-   "required": 1.0
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan14dependent_wideLines",
-   "limittype": "min,mul",
-   "ours": {
-    "v10": 0.125,
-    "v11": 0.125,
-    "v13": 0.125
-   },
-   "profile": "1.4",
-   "property": "lineWidthGranularity",
-   "required": 0.5
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10dependent_roadmap2022_widelines",
-   "limittype": "min,mul",
-   "ours": {
-    "v10": 0.125,
-    "v11": 0.125,
-    "v13": 0.125
-   },
-   "profile": "R22",
-   "property": "lineWidthGranularity",
-   "required": 0.5
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10dependent_roadmap2022_widelines",
-   "limittype": "min,mul",
-   "ours": {
-    "v10": 0.125,
-    "v11": 0.125,
-    "v13": 0.125
-   },
-   "profile": "R24",
-   "property": "lineWidthGranularity",
-   "required": 0.5
-  },
-  {
-   "alt": "one-of(wideLinesEnabledConstrained,wideLinesDisabledUnconstrained)",
-   "cite": "Vulkan-Profiles/profiles/VP_ANDROID_16_minimums.json#capabilities.wideLinesEnabledConstrained",
-   "limittype": "min,mul",
-   "ours": {
-    "v10": 0.125,
-    "v11": 0.125,
-    "v13": 0.125
-   },
-   "profile": "A16",
-   "property": "lineWidthGranularity",
-   "required": 0.5
-  },
-  {
-   "alt": null,
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan14requirements",
    "limittype": "max",
    "ours": {
@@ -9342,6 +9360,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8,
+    "v11": 8,
+    "v13": 8
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -9355,6 +9378,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8,
+    "v11": 8,
+    "v13": 8
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2024",
    "limittype": "max",
    "ours": {
@@ -9368,6 +9396,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8,
+    "v11": 8,
+    "v13": 8
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_15_minimums.json#capabilities.MUST",
    "limittype": "max",
    "ours": {
@@ -9381,6 +9414,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8,
+    "v11": 8,
+    "v13": 8
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_16_minimums.json#capabilities.MUST",
    "limittype": "max",
    "ours": {
@@ -9394,6 +9432,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8,
+    "v11": 8,
+    "v13": 8
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -9407,6 +9450,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 32768,
+    "v11": 32768,
+    "v13": 32768
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -9420,6 +9468,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 1024,
+    "v11": 1024,
+    "v13": 1024
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan14requirements",
    "limittype": "max",
    "ours": {
@@ -9433,6 +9486,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 1024,
+    "v11": 1024,
+    "v13": 1024
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -9446,6 +9504,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 1024,
+    "v11": 1024,
+    "v13": 1024
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -9459,6 +9522,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 1024,
+    "v11": 1024,
+    "v13": 1024
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_16_minimums.json#capabilities.MUST",
    "limittype": "max",
    "ours": {
@@ -9472,6 +9540,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 1024,
+    "v11": 1024,
+    "v13": 1024
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -9485,6 +9558,23 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": [
+     1024,
+     1024,
+     1024
+    ],
+    "v11": [
+     1024,
+     1024,
+     1024
+    ],
+    "v13": [
+     1024,
+     1024,
+     1024
+    ]
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan14requirements",
    "limittype": "max",
    "ours": {
@@ -9514,6 +9604,23 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": [
+     1024,
+     1024,
+     1024
+    ],
+    "v11": [
+     1024,
+     1024,
+     1024
+    ],
+    "v13": [
+     1024,
+     1024,
+     1024
+    ]
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -9543,6 +9650,23 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": [
+     1024,
+     1024,
+     1024
+    ],
+    "v11": [
+     1024,
+     1024,
+     1024
+    ],
+    "v13": [
+     1024,
+     1024,
+     1024
+    ]
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -9572,6 +9696,23 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": [
+     1024,
+     1024,
+     1024
+    ],
+    "v11": [
+     1024,
+     1024,
+     1024
+    ],
+    "v13": [
+     1024,
+     1024,
+     1024
+    ]
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_16_minimums.json#capabilities.MUST",
    "limittype": "max",
    "ours": {
@@ -9601,6 +9742,23 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": [
+     1024,
+     1024,
+     1024
+    ],
+    "v11": [
+     1024,
+     1024,
+     1024
+    ],
+    "v13": [
+     1024,
+     1024,
+     1024
+    ]
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -9630,6 +9788,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 64,
+    "v11": 64,
+    "v13": 64
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -9643,6 +9806,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 9,
+    "v11": 9,
+    "v13": 9
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -9656,6 +9824,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -9669,6 +9842,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -9682,6 +9860,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -9695,6 +9878,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -9708,6 +9896,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -9721,6 +9914,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan14requirements",
    "limittype": "max",
    "ours": {
@@ -9734,6 +9932,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -9747,6 +9950,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -9760,6 +9968,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_16_minimums.json#capabilities.MUST",
    "limittype": "max",
    "ours": {
@@ -9773,6 +9986,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -9786,6 +10004,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 32,
+    "v11": 32,
+    "v13": 32
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -9799,6 +10022,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan14requirements",
    "limittype": "max",
    "ours": {
@@ -9812,6 +10040,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -9825,6 +10058,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -9838,6 +10076,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -9851,6 +10094,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 216,
+    "v13": 500000
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -9864,6 +10112,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 192,
+    "v11": 192,
+    "v13": 192
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan13requirements",
    "limittype": "max",
    "ours": {
@@ -9877,6 +10130,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 192,
+    "v11": 192,
+    "v13": 192
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan13requirements",
    "limittype": "max",
    "ours": {
@@ -9890,6 +10148,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 192,
+    "v11": 192,
+    "v13": 192
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -9903,6 +10166,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 9,
+    "v11": 9,
+    "v13": 9
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan12requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -9916,6 +10184,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 9,
+    "v11": 9,
+    "v13": 9
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan12requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -9929,6 +10202,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 9,
+    "v11": 9,
+    "v13": 9
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -9942,6 +10220,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan12requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -9955,6 +10238,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan12requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -9968,6 +10256,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -9981,6 +10274,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 32,
+    "v11": 32,
+    "v13": 32
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -9994,6 +10292,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan12requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -10007,6 +10310,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan12requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -10020,6 +10328,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -10033,6 +10346,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 216,
+    "v13": 500000
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -10046,6 +10364,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 4294967295,
+    "v11": 4294967295,
+    "v13": 4294967295
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -10059,6 +10382,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 16777224,
+    "v11": 1000008,
+    "v13": 1000008
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan14requirements",
    "limittype": "max",
    "ours": {
@@ -10072,6 +10400,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 16777224,
+    "v11": 1000008,
+    "v13": 1000008
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -10085,6 +10418,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 16777224,
+    "v11": 1000008,
+    "v13": 1000008
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -10098,6 +10436,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 16777224,
+    "v11": 1000008,
+    "v13": 1000008
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_baseline_2021.json#capabilities.baseline",
    "limittype": "max",
    "ours": {
@@ -10111,6 +10454,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 16777224,
+    "v11": 1000008,
+    "v13": 1000008
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_baseline_2022.json#capabilities.baseline",
    "limittype": "max",
    "ours": {
@@ -10124,6 +10472,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 16777224,
+    "v11": 1000008,
+    "v13": 1000008
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_baseline_2022.json#capabilities.baseline",
    "limittype": "max",
    "ours": {
@@ -10137,6 +10490,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 16777224,
+    "v11": 1000008,
+    "v13": 1000008
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_16_minimums.json#capabilities.MUST",
    "limittype": "max",
    "ours": {
@@ -10150,6 +10508,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 16777224,
+    "v11": 1000008,
+    "v13": 1000008
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -10163,6 +10526,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 128,
+    "v11": 128,
+    "v13": 128
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -10176,6 +10544,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8,
+    "v11": 8,
+    "v13": 8
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -10189,6 +10562,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 256,
+    "v11": 256,
+    "v13": 256
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -10202,6 +10580,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 0.4375,
+    "v11": 0.4375,
+    "v13": 0.4375
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan14requirements",
    "limittype": "max",
    "ours": {
@@ -10215,6 +10598,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 0.4375,
+    "v11": 0.4375,
+    "v13": 0.4375
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_baseline_2021.json#capabilities.baseline",
    "limittype": "max",
    "ours": {
@@ -10228,6 +10616,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 0.4375,
+    "v11": 0.4375,
+    "v13": 0.4375
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_baseline_2022.json#capabilities.baseline",
    "limittype": "max",
    "ours": {
@@ -10241,6 +10634,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 0.4375,
+    "v11": 0.4375,
+    "v13": 0.4375
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_baseline_2022.json#capabilities.baseline",
    "limittype": "max",
    "ours": {
@@ -10254,6 +10652,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 0.4375,
+    "v11": 0.4375,
+    "v13": 0.4375
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_baseline_2022.json#capabilities.baseline",
    "limittype": "max",
    "ours": {
@@ -10267,6 +10670,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 0.4375,
+    "v11": 0.4375,
+    "v13": 0.4375
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -10280,6 +10688,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8589934592,
+    "v11": 7836983296,
+    "v13": 8589934592
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -10293,6 +10706,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 4294967295,
+    "v11": 4294967295,
+    "v13": 4294967295
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan11requirements",
    "limittype": "max",
    "ours": {
@@ -10306,6 +10724,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 4294967295,
+    "v11": 4294967295,
+    "v13": 4294967295
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan11requirements",
    "limittype": "max",
    "ours": {
@@ -10319,6 +10742,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 4294967295,
+    "v11": 4294967295,
+    "v13": 4294967295
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan11requirements",
    "limittype": "max",
    "ours": {
@@ -10332,6 +10760,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 4294967295,
+    "v11": 4294967295,
+    "v13": 4294967295
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan11requirements",
    "limittype": "max",
    "ours": {
@@ -10345,6 +10778,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 4294967295,
+    "v11": 4294967295,
+    "v13": 4294967295
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_baseline_2022.json#capabilities.baseline",
    "limittype": "max",
    "ours": {
@@ -10358,6 +10796,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 4294967295,
+    "v11": 4294967295,
+    "v13": 4294967295
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_baseline_2022.json#capabilities.baseline",
    "limittype": "max",
    "ours": {
@@ -10371,6 +10814,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 4294967295,
+    "v11": 4294967295,
+    "v13": 4294967295
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_baseline_2022.json#capabilities.baseline",
    "limittype": "max",
    "ours": {
@@ -10384,6 +10832,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 4294967295,
+    "v11": 4294967295,
+    "v13": 4294967295
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -10397,6 +10850,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8,
+    "v11": 8,
+    "v13": 8
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan11requirements",
    "limittype": "max",
    "ours": {
@@ -10410,6 +10868,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8,
+    "v11": 8,
+    "v13": 8
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan11requirements",
    "limittype": "max",
    "ours": {
@@ -10423,6 +10886,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8,
+    "v11": 8,
+    "v13": 8
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan11requirements",
    "limittype": "max",
    "ours": {
@@ -10436,6 +10904,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8,
+    "v11": 8,
+    "v13": 8
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan11requirements",
    "limittype": "max",
    "ours": {
@@ -10449,6 +10922,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8,
+    "v11": 8,
+    "v13": 8
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_baseline_2022.json#capabilities.baseline",
    "limittype": "max",
    "ours": {
@@ -10462,6 +10940,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8,
+    "v11": 8,
+    "v13": 8
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_baseline_2022.json#capabilities.baseline",
    "limittype": "max",
    "ours": {
@@ -10475,6 +10958,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8,
+    "v11": 8,
+    "v13": 8
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_baseline_2022.json#capabilities.baseline",
    "limittype": "max",
    "ours": {
@@ -10488,6 +10976,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8,
+    "v11": 8,
+    "v13": 8
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -10501,6 +10994,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 9,
+    "v11": 9,
+    "v13": 9
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -10514,6 +11012,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -10527,6 +11030,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -10540,6 +11048,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_15_minimums.json#capabilities.MUST",
    "limittype": "max",
    "ours": {
@@ -10553,6 +11066,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_15_minimums.json#capabilities.MUST",
    "limittype": "max",
    "ours": {
@@ -10566,6 +11084,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -10579,6 +11102,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -10592,6 +11120,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -10605,6 +11138,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_15_minimums.json#capabilities.MUST",
    "limittype": "max",
    "ours": {
@@ -10618,6 +11156,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_15_minimums.json#capabilities.MUST",
    "limittype": "max",
    "ours": {
@@ -10631,6 +11174,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -10644,6 +11192,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -10657,6 +11210,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_15_minimums.json#capabilities.MUST",
    "limittype": "max",
    "ours": {
@@ -10670,6 +11228,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_15_minimums.json#capabilities.MUST",
    "limittype": "max",
    "ours": {
@@ -10683,6 +11246,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -10696,6 +11264,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -10709,6 +11282,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -10722,6 +11300,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -10735,6 +11318,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 32,
+    "v11": 32,
+    "v13": 32
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan13requirements",
    "limittype": "max",
    "ours": {
@@ -10748,6 +11336,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 32,
+    "v11": 32,
+    "v13": 32
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan13requirements",
    "limittype": "max",
    "ours": {
@@ -10761,6 +11354,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 32,
+    "v11": 32,
+    "v13": 32
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -10774,6 +11372,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 9,
+    "v11": 9,
+    "v13": 9
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan12requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -10787,6 +11390,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 9,
+    "v11": 9,
+    "v13": 9
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan12requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -10800,6 +11408,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 9,
+    "v11": 9,
+    "v13": 9
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -10813,6 +11426,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan12requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -10826,6 +11444,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan12requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -10839,6 +11462,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -10852,6 +11480,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan12requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -10865,6 +11498,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan12requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -10878,6 +11516,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -10891,6 +11534,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan14requirements",
    "limittype": "max",
    "ours": {
@@ -10904,6 +11552,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -10917,6 +11570,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -10930,6 +11588,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_16_minimums.json#capabilities.MUST",
    "limittype": "max",
    "ours": {
@@ -10943,6 +11606,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8388608,
+    "v11": 500000,
+    "v13": 500000
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -10956,6 +11624,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 32,
+    "v11": null,
+    "v13": 32
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan14requirements",
    "limittype": "max",
    "ours": {
@@ -10969,6 +11642,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 32,
+    "v11": null,
+    "v13": 32
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -10982,6 +11660,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 126,
+    "v11": 126,
+    "v13": 126
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan14requirements",
    "limittype": "max",
    "ours": {
@@ -10995,6 +11678,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 126,
+    "v11": 126,
+    "v13": 126
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -11008,6 +11696,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 126,
+    "v11": 126,
+    "v13": 126
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -11021,6 +11714,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 126,
+    "v11": 126,
+    "v13": 126
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_16_minimums.json#capabilities.MUST",
    "limittype": "max",
    "ours": {
@@ -11034,6 +11732,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 126,
+    "v11": 126,
+    "v13": 126
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -11047,6 +11750,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 2147483648,
+    "v11": 2147483648,
+    "v13": 2147483648
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -11060,6 +11768,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 16,
+    "v11": 16,
+    "v13": 16
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max,pot",
    "ours": {
@@ -11073,6 +11786,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 120,
+    "v11": 120,
+    "v13": 120
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -11086,6 +11804,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 128,
+    "v11": 128,
+    "v13": 128
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -11099,6 +11822,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 128,
+    "v11": 128,
+    "v13": 128
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -11112,6 +11840,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 4096,
+    "v11": 4096,
+    "v13": 4096
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -11125,6 +11858,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 128,
+    "v11": 128,
+    "v13": 128
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -11138,6 +11876,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 128,
+    "v11": 128,
+    "v13": 128
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -11151,6 +11894,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 64,
+    "v11": 64,
+    "v13": 64
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -11164,6 +11912,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 32,
+    "v11": 32,
+    "v13": 32
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -11177,6 +11930,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 268435456,
+    "v11": 268435456,
+    "v13": 268435456
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -11190,6 +11948,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 2147483648,
+    "v11": 2147483648,
+    "v13": 2147483648
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan14requirements",
    "limittype": "max",
    "ours": {
@@ -11203,6 +11966,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 2147483648,
+    "v11": 2147483648,
+    "v13": 2147483648
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -11216,6 +11984,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 2147483648,
+    "v11": 2147483648,
+    "v13": 2147483648
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -11229,6 +12002,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 2147483648,
+    "v11": 2147483648,
+    "v13": 2147483648
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_16_minimums.json#capabilities.MUST",
    "limittype": "max",
    "ours": {
@@ -11242,6 +12020,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 2147483648,
+    "v11": 2147483648,
+    "v13": 2147483648
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -11255,6 +12038,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 4294967295,
+    "v11": 4294967295,
+    "v13": 4294967295
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -11268,6 +12056,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 32,
+    "v11": 32,
+    "v13": 32
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -11281,6 +12074,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 32,
+    "v11": 32,
+    "v13": 32
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -11294,6 +12092,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 128,
+    "v11": 128,
+    "v13": 128
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_16_minimums.json#capabilities.MUST",
    "limittype": "max",
    "ours": {
@@ -11307,6 +12110,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 128,
+    "v11": 128,
+    "v13": 128
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -11320,6 +12128,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 4096,
+    "v11": null,
+    "v13": null
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "min,pot",
    "ours": {
@@ -11333,6 +12146,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": -0.5,
+    "v11": -0.5,
+    "v13": -0.5
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan14requirements",
    "limittype": "min",
    "ours": {
@@ -11346,6 +12164,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": -0.5,
+    "v11": -0.5,
+    "v13": -0.5
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_baseline_2021.json#capabilities.baseline",
    "limittype": "min",
    "ours": {
@@ -11359,6 +12182,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": -0.5,
+    "v11": -0.5,
+    "v13": -0.5
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_baseline_2022.json#capabilities.baseline",
    "limittype": "min",
    "ours": {
@@ -11372,6 +12200,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": -0.5,
+    "v11": -0.5,
+    "v13": -0.5
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_baseline_2022.json#capabilities.baseline",
    "limittype": "min",
    "ours": {
@@ -11385,6 +12218,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": -0.5,
+    "v11": -0.5,
+    "v13": -0.5
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_baseline_2022.json#capabilities.baseline",
    "limittype": "min",
    "ours": {
@@ -11398,6 +12236,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": -0.5,
+    "v11": -0.5,
+    "v13": -0.5
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "min",
    "ours": {
@@ -11411,19 +12254,47 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 64,
+    "v11": 64,
+    "v13": 64
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "min,pot",
    "ours": {
-    "v10": 16,
-    "v11": 16,
-    "v13": 16
+    "v10": 256,
+    "v11": 256,
+    "v13": 256
    },
    "profile": "LDB24",
-   "property": "minSubgroupSize",
+   "property": "minStorageBufferOffsetAlignment",
    "required": 64
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 64,
+    "v11": 64,
+    "v13": 64
+   },
+   "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
+   "limittype": "min,pot",
+   "ours": {
+    "v10": 256,
+    "v11": 256,
+    "v13": 256
+   },
+   "profile": "LDB24",
+   "property": "minTexelBufferOffsetAlignment",
+   "required": 64
+  },
+  {
+   "alt": null,
+   "blob": {
+    "v10": 8,
+    "v11": 8,
+    "v13": 8
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan14requirements",
    "limittype": "bits",
    "ours": {
@@ -11437,6 +12308,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8,
+    "v11": 8,
+    "v13": 8
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
    "limittype": "bits",
    "ours": {
@@ -11450,6 +12326,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8,
+    "v11": 8,
+    "v13": 8
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
    "limittype": "bits",
    "ours": {
@@ -11463,6 +12344,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8,
+    "v11": 8,
+    "v13": 8
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_16_minimums.json#capabilities.MUST",
    "limittype": "bits",
    "ours": {
@@ -11476,266 +12362,20 @@
   },
   {
    "alt": null,
-   "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan10requirements",
-   "limittype": "min,pot",
-   "ours": {
-    "v10": 64,
-    "v11": 64,
-    "v13": 64
+   "blob": {
+    "v10": [
+     1,
+     1024
+    ],
+    "v11": [
+     1,
+     1024
+    ],
+    "v13": [
+     1,
+     1024
+    ]
    },
-   "profile": "1.0",
-   "property": "nonCoherentAtomSize",
-   "required": 256
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan10requirements",
-   "limittype": "min,pot",
-   "ours": {
-    "v10": 64,
-    "v11": 64,
-    "v13": 64
-   },
-   "profile": "1.1",
-   "property": "nonCoherentAtomSize",
-   "required": 256
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan10requirements",
-   "limittype": "min,pot",
-   "ours": {
-    "v10": 64,
-    "v11": 64,
-    "v13": 64
-   },
-   "profile": "1.2",
-   "property": "nonCoherentAtomSize",
-   "required": 256
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan10requirements",
-   "limittype": "min,pot",
-   "ours": {
-    "v10": 64,
-    "v11": 64,
-    "v13": 64
-   },
-   "profile": "1.3",
-   "property": "nonCoherentAtomSize",
-   "required": 256
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan10requirements",
-   "limittype": "min,pot",
-   "ours": {
-    "v10": 64,
-    "v11": 64,
-    "v13": 64
-   },
-   "profile": "1.4",
-   "property": "nonCoherentAtomSize",
-   "required": 256
-  },
-  {
-   "alt": null,
-   "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
-   "limittype": "min,pot",
-   "ours": {
-    "v10": 64,
-    "v11": 64,
-    "v13": 64
-   },
-   "profile": "LDB24",
-   "property": "nonCoherentAtomSize",
-   "required": 128
-  },
-  {
-   "alt": null,
-   "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
-   "limittype": "min,pot",
-   "ours": {
-    "v10": 1,
-    "v11": 1,
-    "v13": 1
-   },
-   "profile": "LDB24",
-   "property": "optimalBufferCopyOffsetAlignment",
-   "required": 128
-  },
-  {
-   "alt": null,
-   "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
-   "limittype": "min,pot",
-   "ours": {
-    "v10": 1,
-    "v11": 1,
-    "v13": 1
-   },
-   "profile": "LDB24",
-   "property": "optimalBufferCopyRowPitchAlignment",
-   "required": 128
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan10requirements",
-   "limittype": "min,mul",
-   "ours": {
-    "v10": 0,
-    "v11": 0,
-    "v13": 0
-   },
-   "profile": "1.0",
-   "property": "pointSizeGranularity",
-   "required": 1.0
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan10requirements",
-   "limittype": "min,mul",
-   "ours": {
-    "v10": 0,
-    "v11": 0,
-    "v13": 0
-   },
-   "profile": "1.1",
-   "property": "pointSizeGranularity",
-   "required": 1.0
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan10requirements",
-   "limittype": "min,mul",
-   "ours": {
-    "v10": 0,
-    "v11": 0,
-    "v13": 0
-   },
-   "profile": "1.2",
-   "property": "pointSizeGranularity",
-   "required": 1.0
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan10requirements",
-   "limittype": "min,mul",
-   "ours": {
-    "v10": 0,
-    "v11": 0,
-    "v13": 0
-   },
-   "profile": "1.3",
-   "property": "pointSizeGranularity",
-   "required": 1.0
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan14requirements",
-   "limittype": "min,mul",
-   "ours": {
-    "v10": 0,
-    "v11": 0,
-    "v13": 0
-   },
-   "profile": "1.4",
-   "property": "pointSizeGranularity",
-   "required": 0.125
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10dependent_roadmap2022_largepoints",
-   "limittype": "min,mul",
-   "ours": {
-    "v10": 0,
-    "v11": 0,
-    "v13": 0
-   },
-   "profile": "R22",
-   "property": "pointSizeGranularity",
-   "required": 0.125
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10dependent_roadmap2022_largepoints",
-   "limittype": "min,mul",
-   "ours": {
-    "v10": 0,
-    "v11": 0,
-    "v13": 0
-   },
-   "profile": "R24",
-   "property": "pointSizeGranularity",
-   "required": 0.125
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/VP_ANDROID_baseline_2021.json#capabilities.baseline",
-   "limittype": "min,mul",
-   "ours": {
-    "v10": 0,
-    "v11": 0,
-    "v13": 0
-   },
-   "profile": "A21",
-   "property": "pointSizeGranularity",
-   "required": 1
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/VP_ANDROID_baseline_2022.json#capabilities.baseline",
-   "limittype": "min,mul",
-   "ours": {
-    "v10": 0,
-    "v11": 0,
-    "v13": 0
-   },
-   "profile": "A22",
-   "property": "pointSizeGranularity",
-   "required": 1
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/VP_ANDROID_baseline_2022.json#capabilities.baseline",
-   "limittype": "min,mul",
-   "ours": {
-    "v10": 0,
-    "v11": 0,
-    "v13": 0
-   },
-   "profile": "A15",
-   "property": "pointSizeGranularity",
-   "required": 1
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/VP_ANDROID_16_minimums.json#capabilities.MUST",
-   "limittype": "min,mul",
-   "ours": {
-    "v10": 0,
-    "v11": 0,
-    "v13": 0
-   },
-   "profile": "A16",
-   "property": "pointSizeGranularity",
-   "required": 0.125
-  },
-  {
-   "alt": null,
-   "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
-   "limittype": "min,mul",
-   "ours": {
-    "v10": 0,
-    "v11": 0,
-    "v13": 0
-   },
-   "profile": "LDB24",
-   "property": "pointSizeGranularity",
-   "required": 1.0
-  },
-  {
-   "alt": null,
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan14requirements",
    "limittype": "range",
    "ours": {
@@ -11761,6 +12401,20 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": [
+     1,
+     1024
+    ],
+    "v11": [
+     1,
+     1024
+    ],
+    "v13": [
+     1,
+     1024
+    ]
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_baseline_2022.json#capabilities.baseline",
    "limittype": "range",
    "ours": {
@@ -11786,6 +12440,20 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": [
+     1,
+     1024
+    ],
+    "v11": [
+     1,
+     1024
+    ],
+    "v13": [
+     1,
+     1024
+    ]
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_baseline_2022.json#capabilities.baseline",
    "limittype": "range",
    "ours": {
@@ -11811,6 +12479,20 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": [
+     1,
+     1024
+    ],
+    "v11": [
+     1,
+     1024
+    ],
+    "v13": [
+     1,
+     1024
+    ]
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_baseline_2022.json#capabilities.baseline",
    "limittype": "range",
    "ours": {
@@ -11836,6 +12518,20 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": [
+     1,
+     1024
+    ],
+    "v11": [
+     1,
+     1024
+    ],
+    "v13": [
+     1,
+     1024
+    ]
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "range",
    "ours": {
@@ -11861,6 +12557,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": true,
+    "v11": false,
+    "v13": false
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -11874,12 +12575,17 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": false,
+    "v11": false,
+    "v13": false
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
-    "v10": null,
-    "v11": null,
-    "v13": null
+    "v10": false,
+    "v11": false,
+    "v13": false
    },
    "profile": "LDB24",
    "property": "quadOperationsInAllStages",
@@ -11887,6 +12593,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": true,
+    "v11": true,
+    "v13": true
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -11900,19 +12611,27 @@
   },
   {
    "alt": null,
-   "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
-   "limittype": "min,pot",
-   "ours": {
-    "v10": 4,
-    "v11": 4,
-    "v13": 4
+   "blob": {
+    "v10": [
+     "VK_SAMPLE_COUNT_1_BIT",
+     "VK_SAMPLE_COUNT_4_BIT",
+     "VK_SAMPLE_COUNT_8_BIT",
+     "VK_SAMPLE_COUNT_16_BIT"
+    ],
+    "v11": [
+     "VK_SAMPLE_COUNT_1_BIT",
+     "VK_SAMPLE_COUNT_4_BIT",
+     "VK_SAMPLE_COUNT_8_BIT",
+     "VK_SAMPLE_COUNT_16_BIT"
+    ],
+    "v13": [
+     "VK_SAMPLE_COUNT_1_BIT",
+     "VK_SAMPLE_COUNT_2_BIT",
+     "VK_SAMPLE_COUNT_4_BIT",
+     "VK_SAMPLE_COUNT_8_BIT",
+     "VK_SAMPLE_COUNT_16_BIT"
+    ]
    },
-   "profile": "LDB24",
-   "property": "robustUniformBufferAccessSizeAlignment",
-   "required": 256
-  },
-  {
-   "alt": null,
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "bitmask",
    "ours": {
@@ -11939,6 +12658,27 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": [
+     "VK_SAMPLE_COUNT_1_BIT",
+     "VK_SAMPLE_COUNT_4_BIT",
+     "VK_SAMPLE_COUNT_8_BIT",
+     "VK_SAMPLE_COUNT_16_BIT"
+    ],
+    "v11": [
+     "VK_SAMPLE_COUNT_1_BIT",
+     "VK_SAMPLE_COUNT_4_BIT",
+     "VK_SAMPLE_COUNT_8_BIT",
+     "VK_SAMPLE_COUNT_16_BIT"
+    ],
+    "v13": [
+     "VK_SAMPLE_COUNT_1_BIT",
+     "VK_SAMPLE_COUNT_2_BIT",
+     "VK_SAMPLE_COUNT_4_BIT",
+     "VK_SAMPLE_COUNT_8_BIT",
+     "VK_SAMPLE_COUNT_16_BIT"
+    ]
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "bitmask",
    "ours": {
@@ -11965,6 +12705,27 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": [
+     "VK_SAMPLE_COUNT_1_BIT",
+     "VK_SAMPLE_COUNT_4_BIT",
+     "VK_SAMPLE_COUNT_8_BIT",
+     "VK_SAMPLE_COUNT_16_BIT"
+    ],
+    "v11": [
+     "VK_SAMPLE_COUNT_1_BIT",
+     "VK_SAMPLE_COUNT_4_BIT",
+     "VK_SAMPLE_COUNT_8_BIT",
+     "VK_SAMPLE_COUNT_16_BIT"
+    ],
+    "v13": [
+     "VK_SAMPLE_COUNT_1_BIT",
+     "VK_SAMPLE_COUNT_2_BIT",
+     "VK_SAMPLE_COUNT_4_BIT",
+     "VK_SAMPLE_COUNT_8_BIT",
+     "VK_SAMPLE_COUNT_16_BIT"
+    ]
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "bitmask",
    "ours": {
@@ -11988,6 +12749,27 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": [
+     "VK_SAMPLE_COUNT_1_BIT",
+     "VK_SAMPLE_COUNT_4_BIT",
+     "VK_SAMPLE_COUNT_8_BIT",
+     "VK_SAMPLE_COUNT_16_BIT"
+    ],
+    "v11": [
+     "VK_SAMPLE_COUNT_1_BIT",
+     "VK_SAMPLE_COUNT_4_BIT",
+     "VK_SAMPLE_COUNT_8_BIT",
+     "VK_SAMPLE_COUNT_16_BIT"
+    ],
+    "v13": [
+     "VK_SAMPLE_COUNT_1_BIT",
+     "VK_SAMPLE_COUNT_2_BIT",
+     "VK_SAMPLE_COUNT_4_BIT",
+     "VK_SAMPLE_COUNT_8_BIT",
+     "VK_SAMPLE_COUNT_16_BIT"
+    ]
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "bitmask",
    "ours": {
@@ -12014,6 +12796,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": true,
+    "v11": true,
+    "v13": true
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -12027,6 +12814,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": false,
+    "v11": false,
+    "v13": false
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -12040,6 +12832,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": true,
+    "v11": true,
+    "v13": true
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan12requirements_roadmap2024",
    "limittype": "max",
    "ours": {
@@ -12053,6 +12850,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": true,
+    "v11": true,
+    "v13": true
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -12066,6 +12868,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": true,
+    "v11": true,
+    "v13": true
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan12requirements_roadmap2024",
    "limittype": "max",
    "ours": {
@@ -12079,6 +12886,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": true,
+    "v11": true,
+    "v13": true
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -12092,6 +12904,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": false,
+    "v11": false,
+    "v13": false
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -12105,6 +12922,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": true,
+    "v11": true,
+    "v13": true
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -12118,6 +12940,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": false,
+    "v11": false,
+    "v13": false
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -12131,6 +12958,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": false,
+    "v11": false,
+    "v13": false
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -12144,6 +12976,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": true,
+    "v11": true,
+    "v13": true
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan14dependent_shaderFloat16",
    "limittype": "max",
    "ours": {
@@ -12157,6 +12994,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": true,
+    "v11": true,
+    "v13": true
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan12requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -12170,6 +13012,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": true,
+    "v11": true,
+    "v13": true
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan12requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -12183,6 +13030,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": true,
+    "v11": true,
+    "v13": true
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_16_minimums.json#capabilities.MUST",
    "limittype": "max",
    "ours": {
@@ -12196,6 +13048,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": true,
+    "v11": true,
+    "v13": true
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -12209,6 +13066,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": true,
+    "v11": true,
+    "v13": true
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan14requirements",
    "limittype": "max",
    "ours": {
@@ -12222,6 +13084,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": true,
+    "v11": true,
+    "v13": true
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan12requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -12235,6 +13102,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": true,
+    "v11": true,
+    "v13": true
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan12requirements_roadmap2022",
    "limittype": "max",
    "ours": {
@@ -12248,6 +13120,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": true,
+    "v11": true,
+    "v13": true
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_16_minimums.json#capabilities.MUST",
    "limittype": "max",
    "ours": {
@@ -12261,6 +13138,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": true,
+    "v11": true,
+    "v13": true
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -12274,6 +13156,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": false,
+    "v11": false,
+    "v13": false
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -12287,6 +13174,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": true,
+    "v11": true,
+    "v13": true
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -12300,6 +13192,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": false,
+    "v11": false,
+    "v13": false
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -12313,6 +13210,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": false,
+    "v11": false,
+    "v13": false
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -12326,6 +13228,29 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 64,
+    "v11": 64,
+    "v13": 64
+   },
+   "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
+   "limittype": "min,pot",
+   "ours": {
+    "v10": 256,
+    "v11": 256,
+    "v13": 256
+   },
+   "profile": "LDB24",
+   "property": "storageTexelBufferOffsetAlignmentBytes",
+   "required": 16
+  },
+  {
+   "alt": null,
+   "blob": {
+    "v10": false,
+    "v11": false,
+    "v13": false
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "exact",
    "ours": {
@@ -12339,6 +13264,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 4,
+    "v11": 4,
+    "v13": 4
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan14requirements",
    "limittype": "bits",
    "ours": {
@@ -12352,6 +13282,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 4,
+    "v11": 4,
+    "v13": 4
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_baseline_2021.json#capabilities.baseline",
    "limittype": "bits",
    "ours": {
@@ -12365,6 +13300,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 4,
+    "v11": 4,
+    "v13": 4
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_baseline_2022.json#capabilities.baseline",
    "limittype": "bits",
    "ours": {
@@ -12378,6 +13318,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 4,
+    "v11": 4,
+    "v13": 4
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_baseline_2022.json#capabilities.baseline",
    "limittype": "bits",
    "ours": {
@@ -12391,6 +13336,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 4,
+    "v11": 4,
+    "v13": 4
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_baseline_2022.json#capabilities.baseline",
    "limittype": "bits",
    "ours": {
@@ -12404,6 +13354,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 4,
+    "v11": 4,
+    "v13": 4
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "bits",
    "ours": {
@@ -12417,6 +13372,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8,
+    "v11": 8,
+    "v13": 8
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan14requirements",
    "limittype": "bits",
    "ours": {
@@ -12430,6 +13390,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8,
+    "v11": 8,
+    "v13": 8
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
    "limittype": "bits",
    "ours": {
@@ -12443,6 +13408,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8,
+    "v11": 8,
+    "v13": 8
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2022",
    "limittype": "bits",
    "ours": {
@@ -12456,6 +13426,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 8,
+    "v11": 8,
+    "v13": 8
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_16_minimums.json#capabilities.MUST",
    "limittype": "bits",
    "ours": {
@@ -12469,6 +13444,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": false,
+    "v11": false,
+    "v13": false
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -12482,6 +13462,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 16,
+    "v11": 16,
+    "v13": 16
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max,pot",
    "ours": {
@@ -12495,6 +13480,38 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": [
+     "VK_SUBGROUP_FEATURE_BASIC_BIT",
+     "VK_SUBGROUP_FEATURE_VOTE_BIT",
+     "VK_SUBGROUP_FEATURE_ARITHMETIC_BIT",
+     "VK_SUBGROUP_FEATURE_BALLOT_BIT",
+     "VK_SUBGROUP_FEATURE_SHUFFLE_BIT",
+     "VK_SUBGROUP_FEATURE_SHUFFLE_RELATIVE_BIT",
+     "VK_SUBGROUP_FEATURE_CLUSTERED_BIT",
+     "VK_SUBGROUP_FEATURE_QUAD_BIT"
+    ],
+    "v11": [
+     "VK_SUBGROUP_FEATURE_BASIC_BIT",
+     "VK_SUBGROUP_FEATURE_VOTE_BIT",
+     "VK_SUBGROUP_FEATURE_ARITHMETIC_BIT",
+     "VK_SUBGROUP_FEATURE_BALLOT_BIT",
+     "VK_SUBGROUP_FEATURE_SHUFFLE_BIT",
+     "VK_SUBGROUP_FEATURE_SHUFFLE_RELATIVE_BIT",
+     "VK_SUBGROUP_FEATURE_CLUSTERED_BIT",
+     "VK_SUBGROUP_FEATURE_QUAD_BIT"
+    ],
+    "v13": [
+     "VK_SUBGROUP_FEATURE_BASIC_BIT",
+     "VK_SUBGROUP_FEATURE_VOTE_BIT",
+     "VK_SUBGROUP_FEATURE_ARITHMETIC_BIT",
+     "VK_SUBGROUP_FEATURE_BALLOT_BIT",
+     "VK_SUBGROUP_FEATURE_SHUFFLE_BIT",
+     "VK_SUBGROUP_FEATURE_SHUFFLE_RELATIVE_BIT",
+     "VK_SUBGROUP_FEATURE_CLUSTERED_BIT",
+     "VK_SUBGROUP_FEATURE_QUAD_BIT"
+    ]
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan14requirements",
    "limittype": "bitmask",
    "ours": {
@@ -12540,6 +13557,32 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": [
+     "VK_SHADER_STAGE_FRAGMENT_BIT",
+     "VK_SHADER_STAGE_COMPUTE_BIT"
+    ],
+    "v11": [
+     "VK_SHADER_STAGE_FRAGMENT_BIT",
+     "VK_SHADER_STAGE_COMPUTE_BIT",
+     "VK_SHADER_STAGE_RAYGEN_BIT_KHR",
+     "VK_SHADER_STAGE_ANY_HIT_BIT_KHR",
+     "VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR",
+     "VK_SHADER_STAGE_MISS_BIT_KHR",
+     "VK_SHADER_STAGE_INTERSECTION_BIT_KHR",
+     "VK_SHADER_STAGE_CALLABLE_BIT_KHR"
+    ],
+    "v13": [
+     "VK_SHADER_STAGE_FRAGMENT_BIT",
+     "VK_SHADER_STAGE_COMPUTE_BIT",
+     "VK_SHADER_STAGE_RAYGEN_BIT_KHR",
+     "VK_SHADER_STAGE_ANY_HIT_BIT_KHR",
+     "VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR",
+     "VK_SHADER_STAGE_MISS_BIT_KHR",
+     "VK_SHADER_STAGE_INTERSECTION_BIT_KHR",
+     "VK_SHADER_STAGE_CALLABLE_BIT_KHR"
+    ]
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan11requirements_roadmap2022",
    "limittype": "bitmask",
    "ours": {
@@ -12562,6 +13605,32 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": [
+     "VK_SHADER_STAGE_FRAGMENT_BIT",
+     "VK_SHADER_STAGE_COMPUTE_BIT"
+    ],
+    "v11": [
+     "VK_SHADER_STAGE_FRAGMENT_BIT",
+     "VK_SHADER_STAGE_COMPUTE_BIT",
+     "VK_SHADER_STAGE_RAYGEN_BIT_KHR",
+     "VK_SHADER_STAGE_ANY_HIT_BIT_KHR",
+     "VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR",
+     "VK_SHADER_STAGE_MISS_BIT_KHR",
+     "VK_SHADER_STAGE_INTERSECTION_BIT_KHR",
+     "VK_SHADER_STAGE_CALLABLE_BIT_KHR"
+    ],
+    "v13": [
+     "VK_SHADER_STAGE_FRAGMENT_BIT",
+     "VK_SHADER_STAGE_COMPUTE_BIT",
+     "VK_SHADER_STAGE_RAYGEN_BIT_KHR",
+     "VK_SHADER_STAGE_ANY_HIT_BIT_KHR",
+     "VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR",
+     "VK_SHADER_STAGE_MISS_BIT_KHR",
+     "VK_SHADER_STAGE_INTERSECTION_BIT_KHR",
+     "VK_SHADER_STAGE_CALLABLE_BIT_KHR"
+    ]
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan11requirements_roadmap2022",
    "limittype": "bitmask",
    "ours": {
@@ -12584,6 +13653,32 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": [
+     "VK_SHADER_STAGE_FRAGMENT_BIT",
+     "VK_SHADER_STAGE_COMPUTE_BIT"
+    ],
+    "v11": [
+     "VK_SHADER_STAGE_FRAGMENT_BIT",
+     "VK_SHADER_STAGE_COMPUTE_BIT",
+     "VK_SHADER_STAGE_RAYGEN_BIT_KHR",
+     "VK_SHADER_STAGE_ANY_HIT_BIT_KHR",
+     "VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR",
+     "VK_SHADER_STAGE_MISS_BIT_KHR",
+     "VK_SHADER_STAGE_INTERSECTION_BIT_KHR",
+     "VK_SHADER_STAGE_CALLABLE_BIT_KHR"
+    ],
+    "v13": [
+     "VK_SHADER_STAGE_FRAGMENT_BIT",
+     "VK_SHADER_STAGE_COMPUTE_BIT",
+     "VK_SHADER_STAGE_RAYGEN_BIT_KHR",
+     "VK_SHADER_STAGE_ANY_HIT_BIT_KHR",
+     "VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR",
+     "VK_SHADER_STAGE_MISS_BIT_KHR",
+     "VK_SHADER_STAGE_INTERSECTION_BIT_KHR",
+     "VK_SHADER_STAGE_CALLABLE_BIT_KHR"
+    ]
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "bitmask",
    "ours": {
@@ -12607,6 +13702,17 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": [
+     "VK_RESOLVE_MODE_SAMPLE_ZERO_BIT"
+    ],
+    "v11": [
+     "VK_RESOLVE_MODE_SAMPLE_ZERO_BIT"
+    ],
+    "v13": [
+     "VK_RESOLVE_MODE_SAMPLE_ZERO_BIT"
+    ]
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan12requirements",
    "limittype": "bitmask",
    "ours": {
@@ -12622,6 +13728,17 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": [
+     "VK_RESOLVE_MODE_SAMPLE_ZERO_BIT"
+    ],
+    "v11": [
+     "VK_RESOLVE_MODE_SAMPLE_ZERO_BIT"
+    ],
+    "v13": [
+     "VK_RESOLVE_MODE_SAMPLE_ZERO_BIT"
+    ]
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan12requirements",
    "limittype": "bitmask",
    "ours": {
@@ -12637,6 +13754,17 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": [
+     "VK_RESOLVE_MODE_SAMPLE_ZERO_BIT"
+    ],
+    "v11": [
+     "VK_RESOLVE_MODE_SAMPLE_ZERO_BIT"
+    ],
+    "v13": [
+     "VK_RESOLVE_MODE_SAMPLE_ZERO_BIT"
+    ]
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan12requirements",
    "limittype": "bitmask",
    "ours": {
@@ -12652,6 +13780,17 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": [
+     "VK_RESOLVE_MODE_SAMPLE_ZERO_BIT"
+    ],
+    "v11": [
+     "VK_RESOLVE_MODE_SAMPLE_ZERO_BIT"
+    ],
+    "v13": [
+     "VK_RESOLVE_MODE_SAMPLE_ZERO_BIT"
+    ]
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "bitmask",
    "ours": {
@@ -12669,153 +13808,44 @@
   },
   {
    "alt": null,
-   "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan11requirements",
-   "limittype": "bitmask",
-   "ours": {
-    "v10": null,
-    "v11": null,
-    "v13": null
+   "blob": {
+    "v10": [
+     "VK_SHADER_STAGE_FRAGMENT_BIT",
+     "VK_SHADER_STAGE_COMPUTE_BIT"
+    ],
+    "v11": [
+     "VK_SHADER_STAGE_FRAGMENT_BIT",
+     "VK_SHADER_STAGE_COMPUTE_BIT",
+     "VK_SHADER_STAGE_RAYGEN_BIT_KHR",
+     "VK_SHADER_STAGE_ANY_HIT_BIT_KHR",
+     "VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR",
+     "VK_SHADER_STAGE_MISS_BIT_KHR",
+     "VK_SHADER_STAGE_INTERSECTION_BIT_KHR",
+     "VK_SHADER_STAGE_CALLABLE_BIT_KHR"
+    ],
+    "v13": [
+     "VK_SHADER_STAGE_FRAGMENT_BIT",
+     "VK_SHADER_STAGE_COMPUTE_BIT",
+     "VK_SHADER_STAGE_RAYGEN_BIT_KHR",
+     "VK_SHADER_STAGE_ANY_HIT_BIT_KHR",
+     "VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR",
+     "VK_SHADER_STAGE_MISS_BIT_KHR",
+     "VK_SHADER_STAGE_INTERSECTION_BIT_KHR",
+     "VK_SHADER_STAGE_CALLABLE_BIT_KHR"
+    ]
    },
-   "profile": "1.1",
-   "property": "supportedOperations",
-   "required": [
-    "VK_SUBGROUP_FEATURE_BASIC_BIT"
-   ]
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan11requirements",
-   "limittype": "bitmask",
-   "ours": {
-    "v10": null,
-    "v11": null,
-    "v13": null
-   },
-   "profile": "1.2",
-   "property": "supportedOperations",
-   "required": [
-    "VK_SUBGROUP_FEATURE_BASIC_BIT"
-   ]
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan11requirements",
-   "limittype": "bitmask",
-   "ours": {
-    "v10": null,
-    "v11": null,
-    "v13": null
-   },
-   "profile": "1.3",
-   "property": "supportedOperations",
-   "required": [
-    "VK_SUBGROUP_FEATURE_BASIC_BIT"
-   ]
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan11requirements",
-   "limittype": "bitmask",
-   "ours": {
-    "v10": null,
-    "v11": null,
-    "v13": null
-   },
-   "profile": "1.4",
-   "property": "supportedOperations",
-   "required": [
-    "VK_SUBGROUP_FEATURE_BASIC_BIT"
-   ]
-  },
-  {
-   "alt": null,
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "bitmask",
    "ours": {
-    "v10": null,
-    "v11": null,
-    "v13": null
-   },
-   "profile": "LDB24",
-   "property": "supportedOperations",
-   "required": [
-    "VK_SUBGROUP_FEATURE_BASIC_BIT",
-    "VK_SUBGROUP_FEATURE_VOTE_BIT",
-    "VK_SUBGROUP_FEATURE_ARITHMETIC_BIT",
-    "VK_SUBGROUP_FEATURE_BALLOT_BIT",
-    "VK_SUBGROUP_FEATURE_SHUFFLE_BIT",
-    "VK_SUBGROUP_FEATURE_SHUFFLE_RELATIVE_BIT",
-    "VK_SUBGROUP_FEATURE_QUAD_BIT"
-   ]
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan11requirements",
-   "limittype": "bitmask",
-   "ours": {
-    "v10": null,
-    "v11": null,
-    "v13": null
-   },
-   "profile": "1.1",
-   "property": "supportedStages",
-   "required": [
-    "VK_SHADER_STAGE_COMPUTE_BIT"
-   ]
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan11requirements",
-   "limittype": "bitmask",
-   "ours": {
-    "v10": null,
-    "v11": null,
-    "v13": null
-   },
-   "profile": "1.2",
-   "property": "supportedStages",
-   "required": [
-    "VK_SHADER_STAGE_COMPUTE_BIT"
-   ]
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan11requirements",
-   "limittype": "bitmask",
-   "ours": {
-    "v10": null,
-    "v11": null,
-    "v13": null
-   },
-   "profile": "1.3",
-   "property": "supportedStages",
-   "required": [
-    "VK_SHADER_STAGE_COMPUTE_BIT"
-   ]
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan11requirements",
-   "limittype": "bitmask",
-   "ours": {
-    "v10": null,
-    "v11": null,
-    "v13": null
-   },
-   "profile": "1.4",
-   "property": "supportedStages",
-   "required": [
-    "VK_SHADER_STAGE_COMPUTE_BIT"
-   ]
-  },
-  {
-   "alt": null,
-   "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
-   "limittype": "bitmask",
-   "ours": {
-    "v10": null,
-    "v11": null,
-    "v13": null
+    "v10": [
+     "VK_SHADER_STAGE_COMPUTE_BIT"
+    ],
+    "v11": [
+     "VK_SHADER_STAGE_COMPUTE_BIT"
+    ],
+    "v13": [
+     "VK_SHADER_STAGE_COMPUTE_BIT"
+    ]
    },
    "profile": "LDB24",
    "property": "supportedStages",
@@ -12829,6 +13859,17 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": [
+     "VK_RESOLVE_MODE_SAMPLE_ZERO_BIT"
+    ],
+    "v11": [
+     "VK_RESOLVE_MODE_SAMPLE_ZERO_BIT"
+    ],
+    "v13": [
+     "VK_RESOLVE_MODE_SAMPLE_ZERO_BIT"
+    ]
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan12requirements",
    "limittype": "bitmask",
    "ours": {
@@ -12844,6 +13885,17 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": [
+     "VK_RESOLVE_MODE_SAMPLE_ZERO_BIT"
+    ],
+    "v11": [
+     "VK_RESOLVE_MODE_SAMPLE_ZERO_BIT"
+    ],
+    "v13": [
+     "VK_RESOLVE_MODE_SAMPLE_ZERO_BIT"
+    ]
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan12requirements",
    "limittype": "bitmask",
    "ours": {
@@ -12859,6 +13911,17 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": [
+     "VK_RESOLVE_MODE_SAMPLE_ZERO_BIT"
+    ],
+    "v11": [
+     "VK_RESOLVE_MODE_SAMPLE_ZERO_BIT"
+    ],
+    "v13": [
+     "VK_RESOLVE_MODE_SAMPLE_ZERO_BIT"
+    ]
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan12requirements",
    "limittype": "bitmask",
    "ours": {
@@ -12874,6 +13937,17 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": [
+     "VK_RESOLVE_MODE_SAMPLE_ZERO_BIT"
+    ],
+    "v11": [
+     "VK_RESOLVE_MODE_SAMPLE_ZERO_BIT"
+    ],
+    "v13": [
+     "VK_RESOLVE_MODE_SAMPLE_ZERO_BIT"
+    ]
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "bitmask",
    "ours": {
@@ -12889,6 +13963,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": true,
+    "v11": true,
+    "v13": true
+   },
    "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan14requirements",
    "limittype": "max",
    "ours": {
@@ -12902,6 +13981,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": true,
+    "v11": true,
+    "v13": true
+   },
    "cite": "Vulkan-Profiles/profiles/Khronos/VP_KHR_roadmap.json#capabilities.vulkan10requirements_roadmap2024",
    "limittype": "max",
    "ours": {
@@ -12915,6 +13999,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": true,
+    "v11": true,
+    "v13": true
+   },
    "cite": "Vulkan-Profiles/profiles/VP_ANDROID_16_minimums.json#capabilities.MUST",
    "limittype": "max",
    "ours": {
@@ -12928,6 +14017,11 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": true,
+    "v11": true,
+    "v13": true
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "max",
    "ours": {
@@ -12941,6 +14035,29 @@
   },
   {
    "alt": null,
+   "blob": {
+    "v10": 4,
+    "v11": 4,
+    "v13": 4
+   },
+   "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
+   "limittype": "min,pot",
+   "ours": {
+    "v10": 256,
+    "v11": 256,
+    "v13": 256
+   },
+   "profile": "LDB24",
+   "property": "uniformTexelBufferOffsetAlignmentBytes",
+   "required": 16
+  },
+  {
+   "alt": null,
+   "blob": {
+    "v10": true,
+    "v11": true,
+    "v13": true
+   },
    "cite": "generated/VP_LUNARG_desktop_baseline_2024.json (vkprofiles combine of Vulkan-Profiles/profiles/LunarG/VP_LUNARG_desktop_baseline_2024/)#capabilities.VP_LUNARG_desktop_baseline_2024_block",
    "limittype": "exact",
    "ours": {
@@ -12951,231 +14068,6 @@
    "profile": "LDB24",
    "property": "uniformTexelBufferOffsetSingleTexelAlignment",
    "required": true
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan10requirements",
-   "limittype": "range",
-   "ours": {
-    "v10": [
-     -32768,
-     32767
-    ],
-    "v11": [
-     -32768,
-     32767
-    ],
-    "v13": [
-     -32768,
-     32767
-    ]
-   },
-   "profile": "1.0",
-   "property": "viewportBoundsRange",
-   "required": [
-    -8192.0,
-    8191.0
-   ]
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan10requirements",
-   "limittype": "range",
-   "ours": {
-    "v10": [
-     -32768,
-     32767
-    ],
-    "v11": [
-     -32768,
-     32767
-    ],
-    "v13": [
-     -32768,
-     32767
-    ]
-   },
-   "profile": "1.1",
-   "property": "viewportBoundsRange",
-   "required": [
-    -8192.0,
-    8191.0
-   ]
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan10requirements",
-   "limittype": "range",
-   "ours": {
-    "v10": [
-     -32768,
-     32767
-    ],
-    "v11": [
-     -32768,
-     32767
-    ],
-    "v13": [
-     -32768,
-     32767
-    ]
-   },
-   "profile": "1.2",
-   "property": "viewportBoundsRange",
-   "required": [
-    -8192.0,
-    8191.0
-   ]
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan10requirements",
-   "limittype": "range",
-   "ours": {
-    "v10": [
-     -32768,
-     32767
-    ],
-    "v11": [
-     -32768,
-     32767
-    ],
-    "v13": [
-     -32768,
-     32767
-    ]
-   },
-   "profile": "1.3",
-   "property": "viewportBoundsRange",
-   "required": [
-    -8192.0,
-    8191.0
-   ]
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/LunarG/VP_LUNARG_minimum_requirements.json#capabilities.vulkan14requirements",
-   "limittype": "range",
-   "ours": {
-    "v10": [
-     -32768,
-     32767
-    ],
-    "v11": [
-     -32768,
-     32767
-    ],
-    "v13": [
-     -32768,
-     32767
-    ]
-   },
-   "profile": "1.4",
-   "property": "viewportBoundsRange",
-   "required": [
-    -15360.0,
-    15359.0
-   ]
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/VP_ANDROID_baseline_2021.json#capabilities.baseline",
-   "limittype": "range",
-   "ours": {
-    "v10": [
-     -32768,
-     32767
-    ],
-    "v11": [
-     -32768,
-     32767
-    ],
-    "v13": [
-     -32768,
-     32767
-    ]
-   },
-   "profile": "A21",
-   "property": "viewportBoundsRange",
-   "required": [
-    -8192,
-    8191
-   ]
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/VP_ANDROID_baseline_2022.json#capabilities.baseline",
-   "limittype": "range",
-   "ours": {
-    "v10": [
-     -32768,
-     32767
-    ],
-    "v11": [
-     -32768,
-     32767
-    ],
-    "v13": [
-     -32768,
-     32767
-    ]
-   },
-   "profile": "A22",
-   "property": "viewportBoundsRange",
-   "required": [
-    -8192,
-    8191
-   ]
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/VP_ANDROID_baseline_2022.json#capabilities.baseline",
-   "limittype": "range",
-   "ours": {
-    "v10": [
-     -32768,
-     32767
-    ],
-    "v11": [
-     -32768,
-     32767
-    ],
-    "v13": [
-     -32768,
-     32767
-    ]
-   },
-   "profile": "A15",
-   "property": "viewportBoundsRange",
-   "required": [
-    -8192,
-    8191
-   ]
-  },
-  {
-   "alt": null,
-   "cite": "Vulkan-Profiles/profiles/VP_ANDROID_baseline_2022.json#capabilities.baseline",
-   "limittype": "range",
-   "ours": {
-    "v10": [
-     -32768,
-     32767
-    ],
-    "v11": [
-     -32768,
-     32767
-    ],
-    "v13": [
-     -32768,
-     32767
-    ]
-   },
-   "profile": "A16",
-   "property": "viewportBoundsRange",
-   "required": [
-    -8192,
-    8191
-   ]
   }
  ],
  "zink_gl_max": {

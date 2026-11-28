@@ -352,7 +352,6 @@ def cmd_extract(a):
         s = summarise_vulkaninfo(load(path))
         s["report"] = "https://vulkan.gpuinfo.org/displayreport.php?id=" + rid
         s["report_id"] = int(rid)
-        s.pop("properties")
         blob[gpu] = s
     refs = {"sources": {"vk.xml": a.registry_rev, "Vulkan-Profiles": a.profiles_rev, "mesa": a.mesa_rev,
                         "angle": a.angle_rev},
@@ -433,12 +432,27 @@ def api_tuple(v):
     return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
 
 
+NODE_DEPENDENT = set()
+EXT_FEATURES = {}
+# promoted extensions whose core form is optional but has no feature struct of its own in vk.xml
+CORE_OPTIONAL = {"VK_KHR_draw_indirect_count": ["drawIndirectCount"],
+                 "VK_KHR_sampler_mirror_clamp_to_edge": ["samplerMirrorClampToEdge"],
+                 "VK_EXT_shader_viewport_index_layer": ["shaderOutputViewportIndex", "shaderOutputLayer"],
+                 "VK_EXT_sampler_filter_minmax": ["samplerFilterMinmax"]}
+
+
 def ours_ext_state(o, ext, info):
     if ext in o["extensions"]:
         return "yes"
+    if ext in NODE_DEPENDENT:
+        return "node"
     pt = info.get("promotedto") or ""
     m = re.match(r"VK_VERSION_(\d)_(\d)", pt)
     if m and api_tuple(o["id"]["apiVersion"]) >= (int(m.group(1)), int(m.group(2))):
+        # a promoted extension is only "there through core" when its (optional) core feature bits are on
+        bits = CORE_OPTIONAL.get(ext) or EXT_FEATURES.get(ext) or []
+        if bits and not all(o["features"].get(b) for b in bits[:1] + [b for b in bits[1:] if ext in CORE_OPTIONAL]):
+            return "no"
         return "core"
     return "no"
 
@@ -463,8 +477,8 @@ def hw_possible(refs, cur, kind, item, gpu, ours_has):
 def mark(v):
     if v is True or v == "yes":
         return "Y"
-    if v == "core":
-        return "core"
+    if v in ("core", "node"):
+        return v
     if v is False or v == "no" or v is None:
         return "-"
     if isinstance(v, str) and v.startswith("runtime"):
@@ -473,30 +487,45 @@ def mark(v):
 
 
 def check_limit(ltype, req, have):
+    """True when our value meets the requirement under the registry limittype (first token of e.g. "min,pot")."""
     if have is None:
         return None
+    lt = (ltype or "max").split(",")[0]
+    if isinstance(req, list) and not req:
+        return True
+    if isinstance(req, list) and isinstance(req[0], str):
+        return set(req) <= set(have if isinstance(have, list) else [have])
     if isinstance(req, list):
-        if req and isinstance(req[0], str):
-            return set(req) <= set(have if isinstance(have, list) else [have])
-        if not isinstance(have, list):
+        if not isinstance(have, list) or len(have) != len(req):
             return None
+        if lt == "range":
+            return have[0] <= req[0] and have[1] >= req[1]
         return all(check_limit(ltype, r, h) for r, h in zip(req, have))
     if isinstance(req, bool):
         return (have is True) if req else True
-    if ltype in ("min",):
+    if lt == "min":
         return have <= req
-    if ltype in ("max", None, "bits", "mul"):
-        return have >= req
-    if ltype in ("exact", "noauto", "struct"):
+    if lt in ("exact", "noauto", "struct"):
         return have == req
-    if ltype == "pot":
-        return have >= req
     return have >= req
+
+
+PROP_ALIASES = {"supportedOperations": "subgroupSupportedOperations", "supportedStages": "subgroupSupportedStages",
+                "quadOperationsInAllStages": "subgroupQuadOperationsInAllStages"}
+
+
+def prop(o, m):
+    v = o["properties"].get(m)
+    if v is None and m in PROP_ALIASES:
+        v = o["properties"].get(PROP_ALIASES[m])
+    return v
 
 
 def cmd_gen(a):
     refs = load(os.path.join(DATA, "refs.json"))
     cur = load(os.path.join(DATA, "curated.json"))
+    NODE_DEPENDENT.update(cur.get("node_dependent", {}))
+    EXT_FEATURES.update(refs["registry"]["ext_feature_members"])
     ours = {g: load(os.path.join(DATA, "ours-%s.json" % g)) for g in GPUS}
     reg = refs["registry"]
     prof = refs["profiles"]
@@ -541,7 +570,7 @@ def cmd_gen(a):
         w("| ours %s | `%s`, api %s, captured `%s` | ours columns |" % (g, o["id"]["deviceName"], ".".join(map(str, api_tuple(o["id"]["apiVersion"]))), o.get("captured_with", "")))
     w("| gamescope requirements | `vk/tests/t_steam_caps.c` (list taken from gamescope's vkCreateDevice) | gamescope column |")
     w("")
-    w("Legend: `Y` advertised / required, `core` available through the core version we report, `-` no, `rt` decided at run "
+    w("Legend: `Y` advertised / required, `core` available through the core version we report, `node` advertised only when a DRM node of the GPU exists (phones: yes; fake backend: no), `-` no, `rt` decided at run "
       "time by PanVK (expression in data/refs.json), `(alt)` one of several alternatives in the profile. Profile columns: "
       "1.0-1.4 = core minimum requirements of that Vulkan version, R22/R24 = VP_KHR_roadmap_2022/2024 (R24 includes R22), "
       "A21/A22 = VP_ANDROID_baseline_2021/2022, A15/A16 = VP_ANDROID_15/16_minimums (A16 includes A15 includes A22), "
@@ -687,8 +716,8 @@ def cmd_gen(a):
     w("")
     w("Only rows where at least one of our GPUs falls short (or the value is not reported) are listed; the full comparison is in `data/gaps.json`.")
     w("")
-    w("| property | limittype | requirement (profile: value) | ours v10 / v11 / v13 |")
-    w("|---|---|---|---|")
+    w("| property | limittype | requirement (profile: value) | ours v10 / v11 / v13 | Arm blob v10 / v11 / v13 |")
+    w("|---|---|---|---|---|")
     allprops = set()
     for _, pn in PROFILE_COLS:
         for p in profile_chain(prof, pn):
@@ -705,16 +734,18 @@ def cmd_gen(a):
                     break
             if not t:
                 continue
-            res = [check_limit(lt, t["value"], ours[x]["properties"].get(m)) for x in GPUS]
+            res = [check_limit(lt, t["value"], prop(ours[x], m)) for x in GPUS]
             if any(r is not True for r in res):
                 bad = True
                 reqs.append("%s: %s" % (label, json.dumps(t["value"])))
                 gaps["limits"].append({"property": m, "profile": label, "required": t["value"], "limittype": lt,
-                                       "ours": {x: ours[x]["properties"].get(m) for x in GPUS}, "cite": t["cite"],
+                                       "ours": {x: prop(ours[x], m) for x in GPUS}, "cite": t["cite"],
+                                       "blob": {x: prop(blob[x], m) for x in blob},
                                        "alt": t.get("alt")})
         if bad:
-            w("| `%s` | %s | %s | %s |" % (m, lt, "; ".join(reqs),
-                                         " / ".join(json.dumps(ours[x]["properties"].get(m)) for x in GPUS)))
+            w("| `%s` | %s | %s | %s | %s |" % (m, lt, "; ".join(reqs),
+                                              " / ".join(json.dumps(prop(ours[x], m)) for x in GPUS),
+                                              " / ".join(json.dumps(prop(blob[x], m)) if x in blob else "?" for x in GPUS)))
     w("")
     for ver, d in sorted(zk["gl"].items()):
         for lim, (val, ln) in d["limits"].items():
