@@ -125,6 +125,49 @@ static void t_fill_update(void)
    free(b); free(e);
 }
 
+/* The buffer -> image rect matrix of tests/t_texupload.c, planner + CPU reference only: narrow texels (1/2/4 B), odd sizes, odd buffer
+ * offsets, row lengths != width, sub-rectangle offsets. Verifies the plan's offsets, pitches, byte path and dispatch size; it cannot
+ * see the GPU shader, the image descriptor or sampling. */
+static void t_narrow_rect(void)
+{
+   static const uint32_t dims[] = { 1, 2, 3, 5, 7, 13, 17, 31, 33, 37, 63, 65, 67 }, offs[] = { 0, 1, 2, 3, 5, 64, 65, 4, 68 };
+   static const uint32_t bpts[] = { 1, 2, 4 }, extra[] = { 0, 1, 3 };
+   const size_t N = 1 << 16;
+   uint8_t *a = mk(N, 1), *b = mk(N, 99), *e = malloc(N);
+   unsigned n = 0, bad = 0;
+   for (unsigned bi = 0; bi < 3; bi++)
+      for (unsigned wi = 0; wi < 13; wi++)
+         for (unsigned hi = 0; hi < 13; hi++)
+            for (unsigned oi = 0; oi < 9; oi++)
+               for (unsigned ri = 0; ri < 3; ri++)
+                  for (unsigned io = 0; io < 2; io++) {
+                     const uint32_t bs = bpts[bi], w = dims[wi], h = dims[hi], boff = offs[oi];
+                     if (boff % bs)
+                        continue;
+                     const uint32_t ox = io ? 3 : 0, oy = io ? 5 : 0, iw = w + ox + 2;
+                     const uint32_t srow = (extra[ri] ? w + extra[ri] : w) * bs, drow = (iw * bs + 63) & ~63u;
+                     const uint32_t dof = oy * drow + ox * bs;
+                     for (size_t i = 0; i < N; i++) b[i] = (uint8_t)(i * 31 + 99);
+                     memcpy(e, b, N);
+                     for (uint32_t y = 0; y < h; y++)
+                        memcpy(e + dof + y * drow, a + boff + y * srow, (size_t)w * bs);
+                     struct mali_meta_list l = { 0 };
+                     struct mali_meta_surf d = S(b, N, dof, drow, drow * (h + oy + 2)), s = S(a, N, boff, srow, srow * h);
+                     int r = mali_meta_plan_copy(&l, &d, &s, bs, w, h, 1);
+                     if (!r)
+                        run(&l);
+                     n++;
+                     if (r || memcmp(b, e, N)) {
+                        if (!bad++)
+                           CHECK(0, "narrow rect bs %u %ux%u bufoff %u srow %u imgoff %u,%u r=%d", bs, w, h, boff, srow, ox, oy, r);
+                     }
+                     mali_meta_list_free(&l);
+                  }
+   CHECK(!bad, "narrow rect: %u of %u variants differ", bad, n);
+   if (g_verbose) printf("  narrow rect: %u variants\n", n);
+   free(a); free(b); free(e);
+}
+
 /* image rect copy: 2D region with pitches, 3D slices, mixed bpt */
 static void t_image_copy(void)
 {
@@ -338,6 +381,7 @@ int main(int argc, char **argv)
    t_materialize();
    t_buffer_copy();
    t_fill_update();
+   t_narrow_rect();
    t_image_copy();
    t_const();
    t_blit();

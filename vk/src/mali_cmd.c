@@ -1454,6 +1454,8 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
 void
 mali_resolve_region(const struct mali_frame *f, VkImageResolve2 *r)
 {
+   if (getenv("MALI_PIPE_DBG"))
+      fprintf(stderr, "mali_cmd: deferred resolve region %dx%d at %d,%d\n", f->area[2], f->area[3], f->area[0], f->area[1]);
    const int32_t *ar = f->area;
    const uint32_t x = ar[2] ? (uint32_t)ar[0] : 0, y = ar[3] ? (uint32_t)ar[1] : 0;
    memset(r, 0, sizeof *r);
@@ -1505,6 +1507,9 @@ mali_CmdEndRendering(VkCommandBuffer h)
       return;
    }
    const uint64_t resolve_src = cmd->cur.resolve_src, resolve_dst = cmd->cur.resolve_dst;
+   /* `rr` and `area` are taken from the frame BEFORE it is pushed and wiped; nothing below may read cmd->cur for them.
+    * Rebuilding the region from the wiped frame gave 0x0, blit_one returned early (mali_meta_vk.c) and the resolve image
+    * of a STORE + resolve pass was never written: stale memory or blank in whatever sampled it (PR #390 first found this). */
    const bool resolve_1x = cmd->cur.resolve_1x;
    const VkFormat src_format = cmd->cur.resolve_src_format, dst_format = cmd->cur.resolve_dst_format;
    VkImageResolve2 rr;
@@ -1551,7 +1556,6 @@ mali_CmdEndRendering(VkCommandBuffer h)
       /* MSAA storeOp STORE with a resolve: the samples are in memory now, resolve them in their own pass (the
        * hardware cannot write the average and the samples in one go). mali_CmdResolveImage2 plans a compute job
        * that is appended after the pass frame, which is "after the pass" on the in-order CS ring. */
-      mali_resolve_region(&cmd->cur, &rr);
       VkResolveImageInfo2 ri = {.sType = VK_STRUCTURE_TYPE_RESOLVE_IMAGE_INFO_2,
                                 .srcImage = (VkImage)(uintptr_t)resolve_src,
                                 .srcImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
