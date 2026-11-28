@@ -13,7 +13,7 @@ A CAPTURE is `vulkaninfo --json=0 --output f.json` (profile format) or plain `vu
 Every requirement carries its source as path:line at the commit in REFS.  Curated rows are below; DXVK's own feature table,
 DXGI format table and PanVK's advertised values are extracted mechanically into data/extracted.json by `extract`.
 """
-import json, os, re, sys
+import contextlib, copy, io, json, os, re, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "data")
@@ -230,9 +230,9 @@ def load_capture(path):
         txt = f.read()
     if txt.lstrip().startswith("{"):
         d = json.loads(txt)["capabilities"]["device"]
-        return dict(ext=set(d.get("extensions", {})), feat=d.get("features", {}), prop=d.get("properties", {}),
+        return dict(ext=set(d.get("extensions", {})), ext_complete=bool(d.get("extensions")), feat=d.get("features", {}), prop=d.get("properties", {}),
                     fmt=d.get("formats", {}), queues=[q.get("VkQueueFamilyProperties", q) for q in d.get("queueFamiliesProperties", [])],
-                    src=path, has_formats=True)
+                    src=path, has_formats=bool(d.get("formats")))
     return parse_text(txt, path)
 
 
@@ -310,7 +310,7 @@ def parse_text(txt, path):
         if m and listkey:
             t = m.group(1)
             cur[listkey].append(_val(t) if t[0] in "-0123456789" else "VK_" + t)
-    return dict(ext=ext, feat=feat, prop=prop, fmt={}, queues=queues, src=path, has_formats=False)
+    return dict(ext=ext, ext_complete=False, feat=feat, prop=prop, fmt={}, queues=queues, src=path, has_formats=False)
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -322,15 +322,62 @@ def ext_key(e):
 
 def has_ext(cap, e):
     k = ext_key(e)
-    return any(ext_key(x) == k for x in cap["ext"])
+    return True if any(ext_key(x) == k for x in cap["ext"]) else (False if cap["ext_complete"] else None)
 
 
 def feature(cap, name):
+    found = False
     for s in cap["feat"].values():
         if name in s:
-            if s[name]:
+            if s[name] is True:
                 return True
-    return False
+            if s[name] is False:
+                found = True
+    if found:
+        return False
+    if name in core_feature_names():
+        return None
+    extensions = feature_extensions().get(name, set())
+    if extensions and all(has_ext(cap, e) is False for e in extensions):
+        return False
+    return None
+
+
+def feature_extensions():
+    # Only explicit extension/feature pairs, not guesses from spelling. Core
+    # promotions are not inferred: an absent probed core field remains unknown.
+    if not hasattr(feature_extensions, "cache"):
+        mapping = {"computeDerivativeGroupLinear": {"VK_KHR_compute_shader_derivatives", "VK_NV_compute_shader_derivatives"}}
+        for entries in load_extracted()["dxvk"].values():
+            for e in entries:
+                if e["feature"] and e["ext"]:
+                    mapping.setdefault(e["feature"], set()).add(e["ext"])
+        feature_extensions.cache = mapping
+    return feature_extensions.cache
+
+
+def core_feature_names():
+    if not hasattr(core_feature_names, "cache"):
+        # The checked-in JSON defines which core fields this probe is expected
+        # to export, including optional core features promoted from extensions.
+        with open(os.path.join(DATA, "vi-v11.json")) as f:
+            features = json.load(f)["capabilities"]["device"]["features"]
+        core_feature_names.cache = {name for struct, values in features.items()
+                                    if struct in ("VkPhysicalDeviceFeatures", "VkPhysicalDeviceVulkan11Features",
+                                                  "VkPhysicalDeviceVulkan12Features", "VkPhysicalDeviceVulkan13Features")
+                                    for name in values}
+    return core_feature_names.cache
+
+
+def expected_formats():
+    if not hasattr(expected_formats, "cache"):
+        # vulkaninfo omits unsupported formats; distinguish these from a
+        # previously probed format that vanished from an incomplete capture.
+        expected_formats.cache = set()
+        for gpu in ("v10", "v11", "v13"):
+            with open(os.path.join(DATA, "vi-%s.json" % gpu)) as f:
+                expected_formats.cache.update(json.load(f)["capabilities"]["device"]["formats"])
+    return expected_formats.cache
 
 
 def prop_get(cap, path):
@@ -361,16 +408,28 @@ def atom(cap, a):
         v = prop_get(cap, "VkPhysicalDeviceProperties.apiVersion")
         return None if not isinstance(v, int) else ((v >> 22) & 0x7f, (v >> 12) & 0x3ff) >= (maj, mi)
     if a == "Q:SPARSE":
-        return any("VK_QUEUE_SPARSE_BINDING_BIT" in q.get("queueFlags", []) for q in cap["queues"])
+        if not cap["queues"] or any("queueFlags" not in q for q in cap["queues"]):
+            return None
+        return any("VK_QUEUE_SPARSE_BINDING_BIT" in q["queueFlags"] for q in cap["queues"])
     if a.startswith("SG:"):
         spec = dict(x.split("=") for x in a[3:].split(";"))
-        ops = set(prop_get(cap, "VkPhysicalDeviceVulkan11Properties.subgroupSupportedOperations") or [])
-        st = set(prop_get(cap, "VkPhysicalDeviceVulkan11Properties.subgroupSupportedStages") or [])
+        ops = prop_get(cap, "VkPhysicalDeviceVulkan11Properties.subgroupSupportedOperations")
+        st = prop_get(cap, "VkPhysicalDeviceVulkan11Properties.subgroupSupportedStages")
+        if ops is None or st is None:
+            return None
+        ops, st = set(ops), set(st)
         return set(spec["OPS"].split(",")) <= ops and set(spec["STAGES"].split(",")) <= st
     if a.startswith("FMT:") or a.startswith("BUF:"):
         if not cap["has_formats"]:
             return None
         _, f, bits = a.split(":")
+        if f not in cap["fmt"] and f in expected_formats():
+            return None
+        if f in cap["fmt"]:
+            p = cap["fmt"][f].get("VkFormatProperties", {})
+            keys = ("bufferFeatures",) if a.startswith("BUF:") else ("optimalTilingFeatures", "linearTilingFeatures")
+            if any(k not in p for k in keys):
+                return None
         o, l, b = fmt_bits(cap, f)
         need = set(bits.split(","))
         return need <= b if a.startswith("BUF:") else (need <= o or need <= l)
@@ -379,9 +438,7 @@ def atom(cap, a):
         path, op, want = m.groups()
         v = prop_get(cap, path)
         if v is None:
-            # property struct of an unadvertised extension: the requirement is not met
-            return False if path.split(".")[0] not in ("VkPhysicalDeviceProperties", "VkPhysicalDeviceVulkan11Properties",
-                                                         "VkPhysicalDeviceVulkan12Properties", "VkPhysicalDeviceVulkan13Properties") else None
+            return None
         w = True if want == "True" else False if want == "False" else int(want) if re.match(r"^-?\d+$", want) else want
         if isinstance(w, bool) or isinstance(w, str):
             v = bool(v) if isinstance(w, bool) else v
@@ -395,6 +452,10 @@ def evaluate(cap, req):
     res = [(a, atom(cap, a)) for a in req["check"]]
     miss = [a for a, r in res if r is False]
     unk = [a for a, r in res if r is None]
+    # A satisfied alternative does not prove that every expected field was
+    # captured. Keep the row unresolved for the regression coverage gate.
+    unk += [a for a, r in res if r is True and "|" in a and
+            any(atom(cap, part) is None for part in a.split("|"))]
     return (False if miss else None if unk else True), miss, unk
 
 
@@ -462,7 +523,7 @@ def summary_lines(cap, reqs):
             st, fails, n = rep[(cons, lv)]
             tag = "PASS" if st is True else ("UNKNOWN" if st is None else "FAIL")
             hard = lv != "optional"
-            lines.append((cons, lv, tag, n, [(r["id"], miss + unk) for r, miss, unk in fails], hard))
+            lines.append((cons, lv, tag, n, [(r["id"], miss, unk) for r, miss, unk in fails], hard))
     return lines
 
 
@@ -486,16 +547,20 @@ def cmd_check(args):
     reqs, rc = requirements(), 0
     for c in caps:
         cap = load_capture(c)
-        print("== %s" % c)
+        print("== %s%s" % (c, " (partial capture: no formats)" if not cap["has_formats"] else ""))
         got = {}
         for cons, lv, tag, n, fails, hard in summary_lines(cap, reqs):
-            got[count_key(cons, lv)] = len(fails)
+            got[count_key(cons, lv)] = (len(fails), sum(bool(u) for _, _, u in fails))
             if hard or tag != "PASS":
-                print("%-12s %-9s %-7s %d/%d missing%s" % (cons, lv, tag, len(fails), n,
-                      (": " + ", ".join("%s[%s]" % (i_, " ".join(m)) for i_, m in fails)) if fails and (hard or "-v" in sys.argv) else ""))
+                print("%-12s %-9s %-7s %d/%d unresolved rows (%d known-failure, %d unknown)%s" %
+                      (cons, lv, tag, len(fails), n, sum(bool(m) for _, m, _ in fails),
+                       sum(bool(u) for _, _, u in fails),
+                       (": " + ", ".join("%s[missing: %s; unknown: %s]" % (i_, " ".join(m) or "-", " ".join(u) or "-")
+                                          for i_, m, u in fails)) if fails and (hard or "-v" in sys.argv) else ""))
         for k, v in expect.items():
-            if got.get(k) != v:
-                print("FAIL  %s: %s missing, expected %d (lower the expectation in vk/check.sh only with a test for the new feature)" % (k, got.get(k), v))
+            count, unknown = got.get(k, (None, None))
+            if count != v or unknown != 0:
+                print("FAIL  %s: %s unresolved rows, %s unknown rows; expected %d and zero unknown" % (k, count, unknown, v))
                 rc = 1
     return rc
 
@@ -670,17 +735,19 @@ def cmd_markdown(args):
     P()
     P("## 1. Thresholds today")
     P()
-    P("| consumer | level | v10 | v11 | v13 | missing (v11) |")
+    P("| consumer | level | v10 | v11 | v13 | unresolved (v11: missing / unknown) |")
     P("|---|---|---|---|---|---|")
     sums = [summary_lines(c, reqs) for c in caps]
     for i, (cons, lv, tag, n, fails, hard) in enumerate(sums[1]):
         if not hard:
             continue
-        tags = [s[i][2] + " (%d/%d)" % (len(s[i][4]), s[i][3]) if s[i][2] != "PASS" else "PASS" for s in sums]
-        P("| %s | %s | %s | %s | %s | %s |" % (cons, lv, tags[0], tags[1], tags[2], ", ".join("`%s`" % f[0] for f in fails) or "—"))
+        tags = [s[i][2] + " (%d/%d; %d unknown)" % (len(s[i][4]), s[i][3], sum(bool(f[2]) for f in s[i][4])) if s[i][2] != "PASS" else "PASS" for s in sums]
+        P("| %s | %s | %s | %s | %s | %s |" % (cons, lv, tags[0], tags[1], tags[2],
+          ", ".join("`%s` (%s)" % (f[0], " / ".join(x for x, present in (("missing", bool(f[1])), ("unknown", bool(f[2]))) if present)) for f in fails) or "—"))
     P()
     P("Levels are cumulative: a D3D11 feature level needs the DXVK device plus every lower level; a vkd3d-proton feature level")
-    P("needs `vkd3d/device`. `dxgi/format` rows have DXVK fallbacks (see the effect column). Counts are rows, not atoms.")
+    P("needs `vkd3d/device`. `dxgi/format` rows have DXVK fallbacks (see the effect column). Counts are rows, not atoms;")
+    P("known-failure and unknown rows can overlap. An expected threshold requires zero unknown atoms, even in a failing row.")
     P()
     P("## 2. Requirements")
     P()
@@ -714,7 +781,7 @@ def cmd_markdown(args):
         ours = []
         for c in caps:
             st, miss, unk = evaluate(c, r)
-            ours.append("yes" if st else "?" if st is None else "**no**")
+            ours.append(("**no** + ?" if unk else "**no**") if st is False else "?" if st is None else "yes")
         hw = "; ".join(HW[a[2:]] for a in atoms_of(r) if a[2:] in HW)
         P("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (name, needed, "hard" if r["hard"] else "opt", r["effect"].replace("|", "/"),
           panvk_cell(ex, r), ours[0], ours[1], ours[2], hw or "", cite))
@@ -752,14 +819,14 @@ def cmd_markdown(args):
     P("D3D9 formats (`src/d3d9/d3d9_format.cpp`) are not extracted row by row; their fallbacks (D24S8 -> D32S8, D16S8) are rows in section 2.")
     if len(args) > 3:
         P()
-        P("## 4. Cross-check against real-phone vulkaninfo text (no format section; driver layers loaded)")
+        P("## 4. Partial cross-check against real-phone vulkaninfo text (no format section; extension inventory not assumed complete; driver layers loaded)")
         P()
         P("| capture | " + " | ".join("%s:%s" % (c, l) for c, l, t, n, f, h in sums[1] if h) + " |")
         P("|---|" + "---|" * sum(1 for x in sums[1] if x[5]))
         for a in args[3:]:
             s = summary_lines(load_capture(a), reqs)
             P("| %s | " % "/".join(a.split("/")[-2:]) + " | ".join(
-                ("PASS" if t == "PASS" else "%s %d" % (t, len(f))) for c, l, t, n, f, h in s if h) + " |")
+                ("PASS" if t == "PASS" else "%s %d (%d unknown)" % (t, len(f), sum(bool(x[2]) for x in f))) for c, l, t, n, f, h in s if h) + " |")
         P()
         P("Fake v11 for comparison: " + ", ".join("%s:%s=%d" % (c, l, len(f)) for c, l, t, n, f, h in sums[1] if h) + ".")
     return 0
@@ -794,6 +861,31 @@ def cmd_selftest(_):
     t = parse_text(txt, "inline")
     if not (atom(t, "F:robustBufferAccess") and not atom(t, "F:geometryShader") and atom(t, "X:VK_KHR_swapchain")):
         print("FAIL selftest: text parser"); ok = False
+    if atom(t, "X:VK_EXT_missing") is not None or atom(t, "F:notProbed") is not None:
+        print("FAIL selftest: partial text treated as complete"); ok = False
+    # A known false field disappearing must not preserve a passing count gate.
+    with open(os.path.join(DATA, "vi-v11.json")) as f:
+        original = json.load(f)
+    if feature(load_capture(os.path.join(DATA, "vi-v11.json")), "fragmentShaderPixelInterlock") is not False:
+        print("FAIL selftest: absent extension-backed feature"); ok = False
+    for label in ("false field", "capture subsection"):
+        data = copy.deepcopy(original)
+        dev = data["capabilities"]["device"]
+        if label == "false field":
+            del dev["features"]["VkPhysicalDeviceFeatures"]["geometryShader"]
+            key = "dxvk-3.1.1:device"
+        else:
+            del dev["queueFamiliesProperties"]
+            key = "vkd3d:12_0"  # already fails on other atoms in the same row
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as f:
+            json.dump(data, f); f.flush()
+            capture = load_capture(f.name)
+            lines = summary_lines(capture, reqs)
+            line = next(x for x in lines if count_key(x[0], x[1]) == key)
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                rc = cmd_check([f.name, "--expect", "%s=%d" % (key, base[key])])
+            if len(line[4]) != base[key] or not any(u for _, _, u in line[4]) or rc != 1 or "unknown" not in output.getvalue():
+                print("FAIL selftest: %s lost without failing unchanged-count gate" % label); ok = False
     if len(reqs) < 100:
         print("FAIL selftest: only %d requirements (data/extracted.json missing?)" % len(reqs)); ok = False
     print("selftest", "ok" if ok else "FAILED")
