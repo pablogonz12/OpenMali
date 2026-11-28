@@ -213,6 +213,21 @@ test_passmerge(VkCommandPool pool)
    }
    pm_rec(cb, &(struct pm_pass){.col = 1});
    pm_finish(cb, "no_merge_sampling_barrier", 2);
+   /* A pure execution dependency still orders fragments across passes, even
+    * though neither access mask requests a memory dependency. */
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR});
+   {
+      DFN(CmdPipelineBarrier);
+      VkMemoryBarrier mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+      CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 1, &mb,
+                         0, NULL, 0, NULL);
+   }
+   pm_rec(cb, &(struct pm_pass){.col = 1});
+   m = pm_finish(cb, "no_merge_execution_barrier", 2);
+   if (m->nframes == 2)
+      CHECK(pm_app_draws(&m->frames[0]) == 1 && pm_app_draws(&m->frames[1]) == 1 && ls_preloads(&m->frames[1]) == 1,
+            "no_merge_execution_barrier: expected one draw per frame and a preload");
    /* a different render area */
    new_cmd(pool, &cb);
    pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR});

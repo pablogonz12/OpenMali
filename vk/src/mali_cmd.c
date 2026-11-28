@@ -1945,11 +1945,16 @@ mali_cmd_barrier(VkCommandBuffer h, const VkDependencyInfo *info)
    if (!cmd->pm_open || !info)
       return;
    bool keep = !info->bufferMemoryBarrierCount;
-   for (uint32_t i = 0; keep && i < info->memoryBarrierCount; i++)
-      keep = !(info->pMemoryBarriers[i].dstAccessMask & ~(VkAccessFlags2)PASS_ATT_ACCESS);
+   for (uint32_t i = 0; keep && i < info->memoryBarrierCount; i++) {
+      const VkMemoryBarrier2 *b = &info->pMemoryBarriers[i];
+      /* Access masks can be empty while stage masks still impose an execution
+       * dependency. Do not erase that boundary by combining the passes. */
+      keep = b->srcAccessMask && b->dstAccessMask && !(b->dstAccessMask & ~(VkAccessFlags2)PASS_ATT_ACCESS);
+   }
    for (uint32_t i = 0; keep && i < info->imageMemoryBarrierCount; i++) {
       const VkImageMemoryBarrier2 *b = &info->pImageMemoryBarriers[i];
-      keep = !(b->dstAccessMask & ~(VkAccessFlags2)PASS_ATT_ACCESS) && b->srcQueueFamilyIndex == b->dstQueueFamilyIndex &&
+      keep = b->srcAccessMask && b->dstAccessMask && !(b->dstAccessMask & ~(VkAccessFlags2)PASS_ATT_ACCESS) &&
+             b->srcQueueFamilyIndex == b->dstQueueFamilyIndex &&
              (b->oldLayout == b->newLayout || att_layout(b->newLayout));
    }
    if (!keep)
