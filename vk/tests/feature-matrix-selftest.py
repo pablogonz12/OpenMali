@@ -16,15 +16,17 @@ spec.loader.exec_module(matrix)
 
 with tempfile.TemporaryDirectory() as tmp:
     matrix.DATA = tmp
+    ident = {"deviceName": "fake", "vendorID": 5045, "deviceID": 10,
+             "driverName": "mali-own", "apiVersion": "1.3"}
     base = {"extensions": ["VK_EXT_present"], "features": {"present": True, "unsupported": False},
             "formats": {"VK_FORMAT_TEST": ["SAMPLED_IMAGE"]},
-            "id": {"deviceName": "fake", "apiVersion": "1.3"}}
+            "id": ident}
     probe = {"capabilities": {"device": {
         "extensions": {"VK_EXT_present": 1},
         "features": {"features": {"present": True, "unsupported": False}},
         "formats": {"VK_FORMAT_TEST": {"properties": {"optimalTilingFeatures":
                     ["VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT"]}}},
-        "properties": {"properties": {"deviceName": "fake", "apiVersion": "1.3"}}}}}
+        "properties": {"properties": dict(ident)}}}}
     baseline = os.path.join(tmp, "ours-v10.json")
     capture = os.path.join(tmp, "probe.json")
     args = SimpleNamespace(gpu="v10", vulkaninfo=capture, ignore=[])
@@ -40,6 +42,18 @@ with tempfile.TemporaryDirectory() as tmp:
         assert result == expected and message in out.getvalue(), out.getvalue()
 
     check(0, "still advertised")
+    props = probe["capabilities"]["device"]["properties"]["properties"]
+    props["driverName"] = "different-icd"
+    check(1, "wrong probe driverName")
+    props["driverName"] = ident["driverName"]
+    props["deviceID"] = 11
+    check(1, "wrong probe deviceID")
+    props["deviceID"] = ident["deviceID"]
+    del props["driverName"]
+    check(1, "incomplete probe")
+    props["driverName"] = ident["driverName"]
+    props["driverVersion"] = 42
+    check(0, "still advertised")  # a driver version change is not an identity change
     probe["capabilities"]["device"]["features"]["features"]["present"] = False
     check(1, "feature present")
     probe["capabilities"]["device"]["features"]["features"]["present"] = True
