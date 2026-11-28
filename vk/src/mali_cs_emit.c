@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <time.h>
 #include <errno.h>
+#include <math.h>
 #include <stdlib.h>
 #include <pthread.h>
 #include <string.h>
@@ -724,8 +725,12 @@ emit_draw_regs(struct cs *c, const struct mali_env *env, const struct mali_frame
       if (g->per_sample || g->blend_va)
          dcd_extra |= 1u << 11;                               /* Evaluate per-sample (sampleRateShading; a blend shader reads per sample) */
    }
-   unsigned vx = d->vp[0] < 0 ? 0 : (unsigned)d->vp[0], vy = d->vp[1] < 0 ? 0 : (unsigned)d->vp[1];
-   unsigned vmx = vx + (d->vp[2] > 1 ? (unsigned)d->vp[2] : 1) - 1, vmy = vy + (d->vp[3] > 1 ? (unsigned)d->vp[3] : 1) - 1;
+   float x0 = d->vp[0], x1 = x0 + d->vp[2], y0 = d->vp[1], y1 = y0 + d->vp[3];
+   float xmin = fmaxf(fminf(x0, x1), 0.0f), xmax = fmaxf(fmaxf(x0, x1), 0.0f);
+   float ymin = fmaxf(fminf(y0, y1), 0.0f), ymax = fmaxf(fmaxf(y0, y1), 0.0f);
+   unsigned vx = (unsigned)xmin, vy = (unsigned)ymin;
+   unsigned vmx = xmax - xmin > 1 ? (unsigned)xmax - 1 : vx;
+   unsigned vmy = ymax - ymin > 1 ? (unsigned)ymax - 1 : vy;
    int32_t sx = d->sc[0] < 0 ? 0 : d->sc[0], sy = d->sc[1] < 0 ? 0 : d->sc[1];
    uint64_t scis = kb_draw_scissor((unsigned)sx, (unsigned)sy, (unsigned)(sx + (d->sc[2] > 1 ? d->sc[2] : 1) - 1),
                                    (unsigned)(sy + (d->sc[3] > 1 ? d->sc[3] : 1) - 1));
