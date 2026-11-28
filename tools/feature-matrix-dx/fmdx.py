@@ -316,8 +316,10 @@ def parse_text(txt, path):
 # ---------------------------------------------------------------------------------------------------------------------
 # Atom evaluation: True / False / None (unknown in this capture)
 def ext_key(e):
-    m = re.match(r"VK_[A-Z]+_(.+)", e)
-    return m.group(1) if m else e
+    # Only the KHR and EXT spellings of one extension are aliases (promotions); other vendors' extensions with the
+    # same suffix (VK_NV_mesh_shader vs VK_EXT_mesh_shader) are different extensions and keep their exact name.
+    m = re.match(r"VK_(KHR|EXT)_(.+)", e)
+    return m.group(2) if m else e
 
 
 def has_ext(cap, e):
@@ -860,6 +862,10 @@ def cmd_selftest(_):
     got = {count_key(c, l): len(f) for c, l, t, n, f, h in summary_lines(cap, reqs)}
     if got["vkd3d:device"] != base["vkd3d:device"] - 1:
         print("FAIL selftest: VK_KHR_push_descriptor did not move vkd3d:device"); ok = False
+    # 3b. only KHR/EXT spellings alias: another vendor's extension with the same suffix does not satisfy the row
+    al = dict(ext={"VK_NV_mesh_shader", "VK_KHR_line_rasterization"}, ext_complete=True)
+    if has_ext(al, "VK_EXT_mesh_shader") is not False or has_ext(al, "VK_EXT_line_rasterization") is not True:
+        print("FAIL selftest: extension alias rule"); ok = False
     # 4. the text parser reads the same features as the JSON for a rendered capture
     txt = "VkPhysicalDeviceFeatures:\n=========================\n\trobustBufferAccess = true\n\tgeometryShader = false\n" \
           "Device Extensions: count = 1\n\tVK_KHR_swapchain : extension revision 70\n"

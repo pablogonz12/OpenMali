@@ -56,7 +56,8 @@ below are where a package can go further on v11/v13 than on v10.
 - **Depends on:** nothing. WP-12 extends it for vkd3d-proton.
 - **Unlocks:** the second DXVK blocker, and the base of vkd3d-proton's bindless model.
 - **Tests:** `dEQP-VK.descriptor_indexing.*`, `dEQP-VK.binding_model.*` on the host (`vk/deqp/host-run.sh`), then the phone
-  runner (PR #391). Lower `DXVK_MISSING` by 1.
+  runner (PR #391). Lower `DXVK_MISSING` by 1, and lower the `vkd3d:device` pin in `FMDX_EXPECT` by the rows it clears
+  there (`vkd3d-bindless-*`), in the same commit.
 
 ### WP-3 Geometry shaders, part a: Mesa poly GS through our backend (priority 95, 3 d)
 - **What:** finish PR #378 (link Mesa `src/poly` GS/tess lowering as an unmodified library) and PR #392 (poly geometry
@@ -81,7 +82,9 @@ below are where a package can go further on v11/v13 than on v10.
   XFB written from the GS output buffer. D3D10/11 stream-out from a GS uses this.
 - **Depends on:** WP-4 and the XFB emulation (#313 merged; #260 open).
 
-### WP-6 Advertise geometryShader (priority 99 when WP-3 and WP-4 are done, 1 d)
+### WP-6 Advertise geometryShader (priority 99 when WP-3, WP-4 and the GS-instancing part of WP-5 are done, 1 d)
+- **Gate:** with `geometryShader` the spec requires `maxGeometryShaderInvocations` >= 32, so GS instancing (WP-5) must
+  land first.
 - **What:** an advertisement gate backed by `dEQP-VK.geometry.basic.*`, `geometry.input.*`, `geometry.emit.*` and
   `geometry.layered.*` passing on the host and on one phone. Then lower `DXVK_MISSING` by 1.
 - **Why a separate package:** DXVK emits no GS of its own (`notes/gs-design.md` §1). The bit is needed only at device creation,
