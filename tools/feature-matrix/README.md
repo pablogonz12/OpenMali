@@ -51,6 +51,9 @@ python3 -I tools/feature-matrix/feature_matrix.py extract --registry $R/Vulkan-D
 `feature_matrix.py check --gpu v11 --vulkaninfo fresh.json` exits 1 and lists every extension, true feature bit and
 format feature bit of `data/ours-v11.json` that the fresh capture lacks; new items are reported, not failed. When a
 capability is removed on purpose, re-capture (`ours`) and re-run `gen` in the same commit.
+`vk/check.sh` requires `vulkaninfo` and runs this comparison for all three fake GPUs using the selected build.
+Probe failures, incomplete data and the wrong device fail the gate; unknown or unsupported capabilities are not
+requirements. Limits are not regression-gated. The check also runs synthetic negative-case self-tests.
 
 ## Limits of the extraction (read before trusting a cell)
 

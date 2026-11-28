@@ -897,6 +897,16 @@ def cmd_gen(a):
 def cmd_check(a):
     base = load(os.path.join(DATA, "ours-%s.json" % a.gpu))
     now = summarise_vulkaninfo(load(a.vulkaninfo))
+    for label, data in (("baseline", base), ("probe", now)):
+        if (not data["extensions"] or not data["features"] or not data["formats"]
+                or not data["id"].get("deviceName")
+                or api_tuple(data["id"].get("apiVersion")) == (0, 0)):
+            print("feature-matrix %s: incomplete %s data" % (a.gpu, label))
+            return 1
+    if now["id"]["deviceName"] != base["id"]["deviceName"]:
+        print("feature-matrix %s: wrong probe device %s (expected %s)" %
+              (a.gpu, now["id"]["deviceName"], base["id"]["deviceName"]))
+        return 1
     lost = []
     lost += ["extension %s" % e for e in base["extensions"] if e not in now["extensions"] and e not in a.ignore]
     lost += ["feature %s" % f for f, v in base["features"].items() if v and not now["features"].get(f)]
