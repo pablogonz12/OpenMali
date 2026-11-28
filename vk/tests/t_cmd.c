@@ -30,6 +30,7 @@
 #include "kbase_draw.h"
 #include "kbase_fb.h"
 #include "kbase_samples.h"
+#include "kbase_cs_v13.h"
 #if ARCH == 13
 #include "../../libkbase/tests/shaders_v13.h"
 #else
@@ -161,6 +162,9 @@ struct fx {
    unsigned nsubmit;
 };
 static struct fx F;
+static const VkViewport *g_test_viewport;
+static const char *g_viewport_case;
+static uint32_t g_viewport_expected[2];
 
 /* provoking-vertex test hook: the frame build allocates the sample table, then the tiler context (KB_TILER_CTX_SIZE), ..., the FBD (KB_FB_DESC_SIZE_ZS) */
 static uint32_t *g_tctx;
@@ -181,6 +185,26 @@ static int hw_submit(void *u, const uint64_t *cs, unsigned n)
    struct fx *f = u;
    f->nsubmit++;
 #if ARCH == 13
+   if (g_viewport_case) {
+      uint32_t regs[2] = {0, 0};
+      unsigned seen = 0, runs = 0;
+      for (unsigned i = 0; i < n; i++) {
+         unsigned op = cs[i] >> 56, reg = (cs[i] >> 48) & 255;
+         if (op == 2 && reg >= KB13_IDVS_VIEWPORT_HIGH && reg <= KB13_IDVS_VIEWPORT_HIGH + 1) {
+            regs[reg - KB13_IDVS_VIEWPORT_HIGH] = (uint32_t)cs[i];
+            seen |= 1u << (reg - KB13_IDVS_VIEWPORT_HIGH);
+         }
+         if (op == 12) {
+            runs++;
+            CHECK(seen == 3 && regs[0] == g_viewport_expected[0] && regs[1] == g_viewport_expected[1],
+                  "viewport %s box (%u,%u)-(%u,%u), expected (%u,%u)-(%u,%u)", g_viewport_case,
+                  regs[0] & 65535, regs[0] >> 16, regs[1] & 65535, regs[1] >> 16,
+                  g_viewport_expected[0] & 65535, g_viewport_expected[0] >> 16,
+                  g_viewport_expected[1] & 65535, g_viewport_expected[1] >> 16);
+         }
+      }
+      CHECK(runs > 0, "viewport %s: no RUN_IDVS2", g_viewport_case);
+   }
    /* v13 BOs are COHERENT_LOCAL: CPU->device MEM_SYNC before every submit (V13-NEXT2.md), as rung2_v13.h */
    struct kb_bo *bs[3] = {&f->ar.bo, &f->geo, &f->vb};
    for (int i = 0; i < 3; i++) {
@@ -348,6 +372,7 @@ static uint64_t g_occ_va;   /* --m13: occlusion counter address set after BeginR
 static void record_scene(VkCommandBuffer cb, const struct scene *sc, VkBuffer vbuf)
 {
    DFN(CmdSetViewport);
+   DFN(CmdSetViewportWithCount);
    DFN(CmdSetScissor);
    DFN(CmdBindVertexBuffers);
    DFN(CmdPushConstants);
@@ -360,8 +385,13 @@ static void record_scene(VkCommandBuffer cb, const struct scene *sc, VkBuffer vb
       mali_cmd_set_occlusion(mali_cmd_buffer_from_vk(vk_command_buffer_from_handle(cb)), g_occ_va, MALI_OCC_MODE_COUNTER);
    CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipeline)(uintptr_t)1);
    VkViewport vp = {0, 0, W, H, 0.0f, 1.0f};
+   if (g_test_viewport)
+      vp = *g_test_viewport;
    VkRect2D scr = {{0, 0}, {W, H}};
-   CmdSetViewport(cb, 0, 1, &vp);
+   if (g_test_viewport)
+      CmdSetViewportWithCount(cb, 1, &vp);
+   else
+      CmdSetViewport(cb, 0, 1, &vp);
    CmdSetScissor(cb, 0, 1, &scr);
    VkDeviceSize off = 0;
    CmdBindVertexBuffers(cb, 0, 1, &vbuf, &off);
@@ -960,7 +990,7 @@ int main(int argc, char **argv)
    extern PFN_vkVoidFunction vk_icdGetInstanceProcAddr(VkInstance, const char *);
    gipa = vk_icdGetInstanceProcAddr;
    PFN_vkCreateInstance ci_fn = (PFN_vkCreateInstance)gipa(NULL, "vkCreateInstance");
-   VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .apiVersion = VK_API_VERSION_1_0};
+   VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .apiVersion = VK_API_VERSION_1_3};
    VkInstanceCreateInfo ici = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app};
    VkInstance inst;
    CHECK(ci_fn(&ici, NULL, &inst) == VK_SUCCESS, "CreateInstance");
@@ -1047,6 +1077,26 @@ int main(int argc, char **argv)
       printf("{\"test\":\"t_cmd%d\",\"scene\":%d,\"frames\":%u,\"pass\":%s}\n", ARCH, scene, F.nsubmit, g_fail ? "false" : "true");
    }
    if (extra) {
+#if ARCH == 13
+      const struct { const char *name; VkViewport vp; uint32_t lo, hi; } cases[] = {
+         {"flipped", {0, H, W, -H, 0, 1}, 0, (W - 1) | ((H - 1) << 16)},
+         {"flipped_clamped", {0, 100, W, -150, 0, 1}, 0, (W - 1) | (99u << 16)},
+         {"positive", {0, 10, W, 100, 0, 1}, 10u << 16, (W - 1) | (109u << 16)},
+      };
+      for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+         VkCommandBuffer cbv;
+         struct vk_command_buffer *vc = new_cmd(pool, &cbv);
+         g_test_viewport = &cases[i].vp;
+         record_scene(cbv, &k_scenes[0], vbh);
+         CHECK(EndCommandBuffer(cbv) == VK_SUCCESS, "viewport %s end", cases[i].name);
+         g_viewport_case = cases[i].name;
+         g_viewport_expected[0] = cases[i].lo;
+         g_viewport_expected[1] = cases[i].hi;
+         CHECK(mali_cmd_submit(vc) == VK_SUCCESS, "viewport %s submit", cases[i].name);
+         g_viewport_case = NULL;
+         g_test_viewport = NULL;
+      }
+#endif
       uint32_t n0 = F.nsubmit;
       test_provoking(pool, vbh);
       (void)n0;
