@@ -88,12 +88,24 @@ struct mali_kdev {
    pthread_cond_t slow_cv;
    pthread_t slow_thr;
    bool slow_started, slow_stop;
+   /* MALI_FAKE_CS_US=n (opt-in, off by default so the goldens and the instant-retire tests are unchanged): a GPU timeline. Every
+    * SYNC_ADD64 of a kicked command stream (the frame's retire signal, an event set) becomes an event on the timer queue, due n us
+    * after the previous one finished (one in-order GPU), and the timer thread performs the add on the CPU mapping of its target.
+    * Waits on the retire counter then really block until "the GPU" got there, and a fence signals no earlier than the work before
+    * it. MALI_FAKE_WAIT_FAIL=n: the n-th wait_counter call fails like a lost device, and every later one too. */
+   unsigned cs_us;
+   uint64_t busy_ns;            /* GPU timeline: when the last queued work finishes */
+   unsigned pending_adds;       /* counter events not yet performed */
+   pthread_cond_t cnt_cv;       /* broadcast after each performed add */
+   unsigned long waits, wait_fail_at;
+   bool wait_dead;
 };
 
 struct slow_ev {
    struct slow_ev *next;
-   int fd;                 /* dup of the fence eventfd: written then closed by the timer thread */
+   int fd;                 /* dup of the fence eventfd: written then closed by the timer thread; -1 = a counter event */
    uint64_t due_ns;
+   uint64_t va, add;       /* counter event: += add at due_ns on the CPU mapping of va (resolved then: the BO may be gone by then) */
 };
 
 
@@ -236,10 +248,13 @@ fake_device_create(const struct mali_gpu_info *gpu, struct mali_kdev **out)
    pthread_condattr_init(&ca);
    pthread_condattr_setclock(&ca, CLOCK_MONOTONIC);
    pthread_cond_init(&k->slow_cv, &ca);
+   pthread_cond_init(&k->cnt_cv, &ca);
    pthread_condattr_destroy(&ca);
-   const char *f = getenv("MALI_FAULT_INJECT"), *sl = getenv("MALI_FAKE_SLOW_US");
+   const char *f = getenv("MALI_FAULT_INJECT"), *sl = getenv("MALI_FAKE_SLOW_US"), *cu = getenv("MALI_FAKE_CS_US"), *wf = getenv("MALI_FAKE_WAIT_FAIL");
    k->fault_at = f ? strtoul(f, NULL, 10) : 0;
    k->slow_us = sl ? (unsigned)strtoul(sl, NULL, 10) : 0;
+   k->cs_us = cu ? (unsigned)strtoul(cu, NULL, 10) : 0;
+   k->wait_fail_at = wf ? strtoul(wf, NULL, 10) : 0;
    k->next_va = 0x5f00000000ull;
    k->id = g_fake_ndev++;
    *out = k;
@@ -259,6 +274,7 @@ fake_device_destroy(struct mali_kdev *k)
       pthread_join(k->slow_thr, NULL);
    }
    pthread_cond_destroy(&k->slow_cv);
+   pthread_cond_destroy(&k->cnt_cv);
    pthread_mutex_destroy(&k->lock);
    for (unsigned i = 0; i < k->nbos; i++)
       free(k->bos[i].phash);
@@ -402,6 +418,16 @@ now_ns(void)
    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
+/* CPU address of a live, mapped BO's 8 bytes at va (k->lock held), NULL when no BO holds it (freed since the kick). */
+static uint64_t *
+cs_model_target(struct mali_kdev *k, uint64_t va)
+{
+   for (unsigned b = 0; b < k->nbos; b++)
+      if (k->bos[b].live && k->bos[b].cpu && va >= k->bos[b].va && va + 8 <= k->bos[b].va + k->bos[b].size)
+         return (uint64_t *)((uint8_t *)k->bos[b].cpu + (va - k->bos[b].va));
+   return NULL;
+}
+
 static void *
 slow_thread(void *arg)
 {
@@ -424,6 +450,15 @@ slow_thread(void *arg)
       k->slow_q = e->next;
       if (!k->slow_q)
          k->slow_tail = NULL;
+      if (e->fd < 0) {   /* counter event (MALI_FAKE_CS_US): the GPU reached this SYNC_ADD64 */
+         uint64_t *ctr = cs_model_target(k, e->va);
+         if (ctr)
+            __atomic_add_fetch(ctr, e->add, __ATOMIC_SEQ_CST);
+         k->pending_adds--;
+         pthread_cond_broadcast(&k->cnt_cv);
+         free(e);
+         continue;
+      }
       pthread_mutex_unlock(&k->lock);
       uint64_t one = 1;
       if (write(e->fd, &one, sizeof(one)) < 0) {}
@@ -433,6 +468,68 @@ slow_thread(void *arg)
    }
    pthread_mutex_unlock(&k->lock);
    return NULL;
+}
+
+/* Append an event to the timer queue (k->lock held). Due times stay monotonic: the queue is one in-order GPU, so nothing completes
+ * before the work queued ahead of it (with MALI_FAKE_CS_US a fence never signals before the frames submitted before it). */
+static bool
+slow_push_locked(struct mali_kdev *k, struct slow_ev *e)
+{
+   if (!k->slow_started) {
+      if (pthread_create(&k->slow_thr, NULL, slow_thread, k))
+         return false;
+      k->slow_started = true;
+   }
+   if (k->cs_us && k->slow_tail && e->due_ns < k->slow_tail->due_ns)
+      e->due_ns = k->slow_tail->due_ns;
+   if (k->slow_tail)
+      k->slow_tail->next = e;
+   else
+      k->slow_q = e;
+   k->slow_tail = e;
+   pthread_cond_signal(&k->slow_cv);
+   return true;
+}
+
+/* MALI_FAKE_CS_US: walk the kicked stream with a register file (MOVE48, MOVE32, ADD_IMM64) and queue every SYNC_ADD64 as a counter
+ * event, each one cs_us of GPU time after the previous. A target without a CPU mapping is ignored. k->lock held. */
+static void
+cs_model_kick(struct mali_kdev *k, const uint64_t *cs, unsigned n)
+{
+   uint32_t r[256] = {0};
+   for (unsigned i = 0; i < n; i++) {
+      const uint64_t w = cs[i];
+      const unsigned op = (unsigned)(w >> 56), d = (unsigned)(w >> 48) & 0xff;
+      if (op == 1 && d < 255) {          /* MOVE48 */
+         r[d] = (uint32_t)w;
+         r[d + 1] = (uint32_t)(w >> 32) & 0xffff;
+      } else if (op == 2) {              /* MOVE32 */
+         r[d] = (uint32_t)w;
+      } else if (op == 17 && d < 255) {  /* ADD_IMM64 */
+         const unsigned src = (unsigned)(w >> 40) & 0xff;
+         uint64_t v = (src < 255 ? r[src] | (uint64_t)r[src + 1] << 32 : 0) + (uint64_t)(int64_t)(int32_t)(uint32_t)w;
+         r[d] = (uint32_t)v;
+         r[d + 1] = (uint32_t)(v >> 32);
+      } else if (op == 51) {             /* SYNC_ADD64 */
+         const unsigned ar = (unsigned)(w >> 40) & 0xff, dr = (unsigned)(w >> 32) & 0xff;
+         if (ar >= 255 || dr >= 255)
+            continue;
+         const uint64_t va = r[ar] | (uint64_t)r[ar + 1] << 32, add = r[dr] | (uint64_t)r[dr + 1] << 32;
+         uint64_t *cpu = cs_model_target(k, va);
+         struct slow_ev *e = cpu ? calloc(1, sizeof(*e)) : NULL;
+         if (!e)
+            continue;
+         uint64_t now = now_ns();
+         k->busy_ns = (k->busy_ns > now ? k->busy_ns : now) + (uint64_t)k->cs_us * 1000;
+         *e = (struct slow_ev){.fd = -1, .due_ns = k->busy_ns, .va = va, .add = add};
+         if (slow_push_locked(k, e))
+            k->pending_adds++;
+         else {
+            __atomic_add_fetch(cpu, add, __ATOMIC_SEQ_CST);   /* no timer thread: the GPU is instant */
+            free(e);
+         }
+      }
+   }
 }
 
 /* Queue the delayed signal of eventfd copy `fd` (takes ownership); false: fall back to signalling now. */
@@ -445,20 +542,13 @@ slow_queue(struct mali_kdev *k, int fd, unsigned us)
    e->fd = fd;
    e->due_ns = now_ns() + (uint64_t)us * 1000;
    pthread_mutex_lock(&k->lock);
-   if (!k->slow_started) {
-      if (pthread_create(&k->slow_thr, NULL, slow_thread, k)) {
-         pthread_mutex_unlock(&k->lock);
-         free(e);
-         return false;
-      }
-      k->slow_started = true;
+   if (k->cs_us && e->due_ns < k->busy_ns)
+      e->due_ns = k->busy_ns;   /* the fence follows the work submitted before it */
+   if (!slow_push_locked(k, e)) {
+      pthread_mutex_unlock(&k->lock);
+      free(e);
+      return false;
    }
-   if (k->slow_tail)
-      k->slow_tail->next = e;
-   else
-      k->slow_q = e;
-   k->slow_tail = e;
-   pthread_cond_signal(&k->slow_cv);
    pthread_mutex_unlock(&k->lock);
    return true;
 }
@@ -539,6 +629,8 @@ fake_submit_cs(struct mali_kdev *k, const uint64_t *cs, unsigned n)
    k->cs_submits++;
    k->cs_instr += n;
    dump_kick(k, cs, n);
+   if (k->cs_us && !lost)
+      cs_model_kick(k, cs, n);
    pthread_mutex_unlock(&k->lock);
    return lost ? -EIO : 0;
 }
@@ -546,9 +638,30 @@ fake_submit_cs(struct mali_kdev *k, const uint64_t *cs, unsigned n)
 static int
 fake_wait_counter(struct mali_kdev *k, const volatile uint64_t *c, uint64_t target, int timeout_ms)
 {
-   /* nothing executes: the wait stands for the GPU retiring the frames, so advance the event counter (else hw_retire spins on a full in-flight list) */
+   pthread_mutex_lock(&k->lock);
+   if (k->wait_fail_at && ++k->waits >= k->wait_fail_at)
+      k->wait_dead = k->lost = true;   /* MALI_FAKE_WAIT_FAIL: this wait and every later one fail, like a lost device */
+   if (k->wait_dead) {
+      pthread_mutex_unlock(&k->lock);
+      return -ETIMEDOUT;
+   }
+   if (k->cs_us) {
+      /* MALI_FAKE_CS_US: block until the timer thread performed the adds up to target (CLOCK_MONOTONIC condvar) */
+      uint64_t dl = now_ns() + (uint64_t)(timeout_ms > 0 ? timeout_ms : 0) * 1000000ull;
+      while (*c < target && k->pending_adds) {
+         if (now_ns() >= dl) {
+            pthread_mutex_unlock(&k->lock);
+            return -ETIMEDOUT;
+         }
+         struct timespec ts = {(time_t)(dl / 1000000000ull), (long)(dl % 1000000000ull)};
+         pthread_cond_timedwait(&k->cnt_cv, &k->lock, &ts);
+      }
+   }
+   /* Nothing (left) executes: the wait stands for the GPU retiring the frames, so advance the event counter (else hw_retire spins on a
+    * full in-flight list). With MALI_FAKE_CS_US this is only reached for a target no queued SYNC_ADD64 leads to. */
    if (*c < target)
       *(volatile uint64_t *)c = target;
+   pthread_mutex_unlock(&k->lock);
    return 0;
 }
 

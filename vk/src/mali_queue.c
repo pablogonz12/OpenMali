@@ -24,8 +24,25 @@ static double prof_acc[6]; static unsigned prof_n;
 #include "vk_command_buffer.h"
 
 /* ---- M9: frame resources ---- */
-#define MALI_MAX_INFLIGHT 3u
-#define MALI_MAX_OVF 64u
+/* Submissions in flight (MALI_QUEUE_DEPTH=1..64, read once per device). An entry is the arena range a submission still reads: the
+ * CPU blocks on the oldest one when the list is full, so the depth counts SUBMISSIONS, not displayed frames (an ANGLE frame is
+ * several). The list is sized for the maximum; MALI_MAX_OVF keeps two overflow slots per entry. */
+#define MALI_QUEUE_DEPTH_MAX 64u
+#define MALI_QUEUE_DEPTH_DEFAULT 3u
+#define MALI_MAX_OVF (2u * MALI_QUEUE_DEPTH_MAX)
+#define MALI_OVF_POOL 64u
+
+/* MALI_QUEUE_STATS=1: once a second (and once at device teardown) one stderr line with what the queue did and where the CPU
+ * blocked. Off: one predictable branch per call site. */
+enum qs_cause { QS_INFLIGHT, QS_ARENA, QS_OVF, QS_RING, QS_IDLE, QS_SEMWAIT, QS_N };
+static const char *const qs_name[QS_N] = {"inflight", "arena", "ovf", "ring", "idle", "semwait"};
+struct mali_qstats {
+   uint64_t submits, cmdbufs, frames, kicks, kb_kicks, appends, depth_sum, arena_bytes, wraps, ovf_bos, check_fail;
+   unsigned depth_max;
+   uint64_t blk_n[QS_N], blk_ns[QS_N];
+};
+uint64_t mali_qstat_ring_n, mali_qstat_ring_ns;   /* mali_backend.h: the kbase backend's waits for CS ring space */
+
 struct mali_hwctx {
    struct mali_device *dev;
    struct mali_bo arena, geo, sync, tls;
@@ -37,17 +54,22 @@ struct mali_hwctx {
    unsigned wait_ms;              /* MALI_FRAME_TIMEOUT_MS, default 10000 */
    struct mali_bo meta_sh[16];    /* M12: uploaded meta shader binaries, freed at device teardown */
    unsigned n_meta_sh;
-   /* async submit: frames in flight (retire counter value + arena range), oldest first */
-   struct { uint64_t expected; size_t start; } fl[MALI_MAX_INFLIGHT];
+   /* async submit: frames in flight (retire counter value + arena range [start, end), circular), oldest first */
+   struct { uint64_t expected; size_t start, end, bytes; } fl[MALI_QUEUE_DEPTH_MAX];
    unsigned nfl;
+   unsigned depth;                /* MALI_QUEUE_DEPTH: entries allowed in fl[] (1..MALI_QUEUE_DEPTH_MAX) */
+   bool arena_drain;              /* MALI_QUEUE_DEPTH set: a full arena retires every submission (the behaviour before the default changed) */
+   bool check;                    /* MALI_QUEUE_CHECK=1: abort when the arena hands out a range an unretired submission reads */
    size_t cur_start;
+   size_t cur_bytes;              /* arena bytes handed out since hw_job_begin */
+   struct { bool on; uint64_t t0, t_last; struct mali_qstats win, tot; uint64_t ring_n0, ring_ns0, kb_kicks0; } qs;
    struct mali_bo *old_tls;       /* replaced TLS BOs: freed at teardown, never earlier (in-flight frames AND frames built but not yet submitted, e.g. two direct-draw frames of one command buffer, still hold their VA) */
    unsigned n_old_tls, cap_old_tls;
    /* overflow descriptor memory: a frame that does not fit the rolling arena (even with every frame retired) takes extra BOs, freed once the
     * submission that used them has retired (tag = retire counter value, 0 = not yet submitted) */
    struct { struct mali_bo bo; uint64_t tag; } ovf[MALI_MAX_OVF];
    unsigned n_ovf;
-   struct mali_bo ovf_pool[MALI_MAX_OVF];   /* retired overflow BOs kept for the next big frame (mapping and kbase alloc are slow) */
+   struct mali_bo ovf_pool[MALI_OVF_POOL];   /* retired overflow BOs kept for the next big frame (mapping and kbase alloc are slow) */
    unsigned n_pool;
    size_t pool_bytes;
    size_t ovf_off, ovf_last;
@@ -166,8 +188,114 @@ static uint64_t g_zero_bytes;    /* test statistic: bytes of those that hw_alloc
 #define ARENA_BYTES (32u << 20)   /* per-frame descriptor arena: ~4.5 KB per draw (two 2 KiB driver sets); 1 MiB capped a frame at ~230 draws */
 #define HEAP_CHUNK (2u << 20)
 
-static int hw_wait(struct mali_hwctx *h, uint64_t target);
-static void hw_retire(struct mali_hwctx *h, unsigned max_left);
+static int hw_wait(struct mali_hwctx *h, uint64_t target, enum qs_cause why);
+static void hw_retire(struct mali_hwctx *h, unsigned max_left, enum qs_cause why);
+
+static uint64_t
+qs_now(void)
+{
+   struct timespec t;
+   clock_gettime(CLOCK_MONOTONIC, &t);
+   return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec;
+}
+
+static void
+qs_block(struct mali_hwctx *h, enum qs_cause why, uint64_t ns)
+{
+   h->qs.win.blk_n[why]++;
+   h->qs.win.blk_ns[why] += ns;
+}
+
+static void
+qs_print(const struct mali_hwctx *h, const struct mali_qstats *s, const char *what, double secs)
+{
+   char b[640];
+   int o = snprintf(b, sizeof b, "mali_queue_stats %s %.2fs depth_limit %u submits %llu cmdbufs %llu frames %llu frames_per_submit %.2f "
+                    "kicks %llu kb_kicks %llu inflight_max %u inflight_avg %.2f arena_kb %llu wraps %llu ovf_bos %llu check_fail %llu", what, secs, h->depth,
+                    (unsigned long long)s->submits, (unsigned long long)s->cmdbufs, (unsigned long long)s->frames,
+                    s->submits ? (double)s->frames / s->submits : 0.0, (unsigned long long)s->kicks, (unsigned long long)s->kb_kicks,
+                    s->depth_max, s->appends ? (double)s->depth_sum / s->appends : 0.0, (unsigned long long)(s->arena_bytes >> 10),
+                    (unsigned long long)s->wraps, (unsigned long long)s->ovf_bos, (unsigned long long)s->check_fail);
+   for (unsigned i = 0; i < QS_N && o > 0 && (size_t)o < sizeof b; i++)
+      o += snprintf(b + o, sizeof b - o, " blk_%s %llu/%.2fms", qs_name[i], (unsigned long long)s->blk_n[i], s->blk_ns[i] / 1e6);
+   fprintf(stderr, "%s\n", b);
+}
+
+static void
+qs_add(struct mali_qstats *t, const struct mali_qstats *w)
+{
+   t->submits += w->submits; t->cmdbufs += w->cmdbufs; t->frames += w->frames; t->kicks += w->kicks; t->kb_kicks += w->kb_kicks;
+   t->appends += w->appends; t->depth_sum += w->depth_sum; t->arena_bytes += w->arena_bytes; t->wraps += w->wraps; t->ovf_bos += w->ovf_bos; t->check_fail += w->check_fail;
+   if (w->depth_max > t->depth_max)
+      t->depth_max = w->depth_max;
+   for (unsigned i = 0; i < QS_N; i++) {
+      t->blk_n[i] += w->blk_n[i];
+      t->blk_ns[i] += w->blk_ns[i];
+   }
+}
+
+/* Fold the backend's counters into the window; print and restart it once a second (or always when `final`). */
+static void
+qs_tick(struct mali_hwctx *h, bool final)
+{
+   if (!h->qs.on)
+      return;
+   uint64_t rn = __atomic_load_n(&mali_qstat_ring_n, __ATOMIC_RELAXED), rns = __atomic_load_n(&mali_qstat_ring_ns, __ATOMIC_RELAXED);
+   uint64_t kk = __atomic_load_n(&kb_stat_kicks, __ATOMIC_RELAXED);
+   h->qs.win.blk_n[QS_RING] += rn - h->qs.ring_n0;
+   h->qs.win.blk_ns[QS_RING] += rns - h->qs.ring_ns0;
+   h->qs.win.kb_kicks += kk - h->qs.kb_kicks0;
+   h->qs.ring_n0 = rn, h->qs.ring_ns0 = rns, h->qs.kb_kicks0 = kk;
+   uint64_t now = qs_now();
+   if (!final && now - h->qs.t_last < 1000000000ull)
+      return;
+   qs_print(h, &h->qs.win, "window", (now - h->qs.t_last) / 1e9);
+   qs_add(&h->qs.tot, &h->qs.win);
+   memset(&h->qs.win, 0, sizeof h->qs.win);
+   h->qs.t_last = now;
+   if (final)
+      qs_print(h, &h->qs.tot, "total", (now - h->qs.t0) / 1e9);
+}
+
+/* MALI_QUEUE_CHECK: [o, o+n) must not meet the arena range of a submission the GPU has not retired. */
+static bool
+range_meets(size_t o, size_t n, size_t s, size_t e, size_t bytes, size_t size)
+{
+   if (!bytes)
+      return false;
+   if (s < e)
+      return o < e && o + n > s;
+   if (s == e)
+      return true;   /* the whole arena */
+   return o + n > s || o < e;   /* wrapped: [s, size) and [0, e) */
+}
+
+static void
+arena_check(struct mali_hwctx *h, size_t o, size_t n)
+{
+   uint64_t c = *(volatile uint64_t *)h->sync.cpu;
+   for (unsigned i = 0; i < h->nfl; i++)
+      if (h->fl[i].expected > c && range_meets(o, n, h->fl[i].start, h->fl[i].end, h->fl[i].bytes, h->arena.size)) {
+         if (h->qs.win.check_fail++ < 8)   /* counted (stats line), not fatal: the test reads the report */
+            fprintf(stderr, "mali_queue: CHECK FAILED: arena [%zx,+%zx) handed out while submission %llu (counter %llu) still reads [%zx,%zx) "
+                    "(%u in flight, limit %zx lapped %d)\n", o, n, (unsigned long long)h->fl[i].expected, (unsigned long long)c,
+                    h->fl[i].start, h->fl[i].end, h->nfl, h->ar.start, h->ar.lapped);
+         break;
+      }
+}
+
+/* Bound the current submission's arena allocations by `limit`, the start of the oldest range a submission in flight still reads (or,
+ * with none left, the current submission's own start). The free space is the circular interval [off, limit): linear when limit is
+ * ahead of off (kb_arena "lapped": bounded by start), otherwise the tail of the BO and then [0, limit). limit == off is either
+ * nothing free (`full`: something in flight, or this submission went all the way round) or the whole arena. Every submission starts
+ * 64-byte aligned, so kb_arena_begin rounding off up never passes a start; it can land exactly on one, and then the old
+ * "lapped = 0" handed the whole arena out over the submission still in flight (MALI_QUEUE_CHECK found it with a 64 KiB arena). */
+static void
+arena_limit(struct mali_hwctx *h, size_t limit, bool full)
+{
+   h->ar.start = limit;
+   h->ar.lapped = limit > h->ar.off ? 1 : limit < h->ar.off ? 0 : full;
+}
 
 static void *
 hw_alloc_ovf(struct mali_hwctx *h, size_t n, size_t al, uint64_t *va, bool zero)
@@ -177,7 +305,7 @@ hw_alloc_ovf(struct mali_hwctx *h, size_t n, size_t al, uint64_t *va, bool zero)
    size_t o = cur ? (h->ovf_off + al - 1) & ~(al - 1) : 0;
    if (!cur || o + n > cur->size) {
       if (h->n_ovf == MALI_MAX_OVF) {   /* all slots taken by submitted ones: wait for them, then reuse */
-         hw_retire(h, 0);
+         hw_retire(h, 0, QS_OVF);
          if (h->n_ovf == MALI_MAX_OVF)
             return NULL;
       }
@@ -199,6 +327,7 @@ hw_alloc_ovf(struct mali_hwctx *h, size_t n, size_t al, uint64_t *va, bool zero)
          return NULL;
       h->ovf[h->n_ovf].tag = 0;
       cur = &h->ovf[h->n_ovf++].bo;
+      h->qs.win.ovf_bos++;
       h->ovf_last = sz;
       o = 0;
    }
@@ -221,19 +350,29 @@ hw_alloc_x(void *u, size_t n, size_t al, uint64_t *va, bool zero)
    g_alloc_bytes += n;
    if (h->n_ovf && !h->ovf[h->n_ovf - 1].tag)   /* this submission already spilled: stay in order */
       return hw_alloc_ovf(h, n, al, va, zero);
+   const size_t off0 = h->ar.off;
    void *p = kb_arena_alloc_nz(&h->ar, n, al, va);
-   if (!p && h->nfl) {
-      /* arena full of in-flight frames: retire them all; the limit is then this submission's own start */
-      hw_retire(h, 0);
-      h->ar.start = h->cur_start;
-      if (h->ar.off >= h->cur_start) {   /* failed at the end of the BO: wrap to 0, bounded by this submission's own start */
-         h->ar.off = 0;
-         h->ar.lapped = 1;
-      }
+   while (!p && h->nfl) {
+      /* Arena full of in-flight submissions. Default: wait for the oldest only, so the CPU stays one range behind the GPU instead of
+       * draining the queue (the arena's bytes, not a count, bound how far ahead it runs). MALI_QUEUE_DEPTH set: the old behaviour,
+       * retire them all. A wait that could not retire anything (lost device, timeout) leaves the limit where it is: the overflow BOs
+       * take the rest. */
+      const unsigned before = h->nfl;
+      hw_retire(h, h->arena_drain ? 0 : before - 1, QS_ARENA);
+      if (h->nfl == before)
+         break;
+      arena_limit(h, h->nfl ? h->fl[0].start : h->cur_start, h->nfl || h->cur_bytes);
       p = kb_arena_alloc_nz(&h->ar, n, al, va);
    }
    if (!p)
       return hw_alloc_ovf(h, n, al, va, zero);
+   h->cur_bytes += n;
+   if (h->qs.on) {
+      h->qs.win.arena_bytes += n;
+      h->qs.win.wraps += (size_t)((char *)p - (char *)h->arena.cpu) < off0;
+   }
+   if (h->check)
+      arena_check(h, (size_t)((char *)p - (char *)h->arena.cpu), n);
    if (zero) {
       memset(p, 0, n);
       g_zero_bytes += n;
@@ -254,10 +393,14 @@ hw_alloc_nz(void *u, size_t n, size_t al, uint64_t *va)
 }
 
 static int
-hw_wait(struct mali_hwctx *h, uint64_t target)
+hw_wait(struct mali_hwctx *h, uint64_t target, enum qs_cause why)
 {
    const struct mali_backend_ops *be = mali_device_pdev(h->dev)->backend;
+   const bool timed = h->qs.on && *(volatile uint64_t *)h->sync.cpu < target;
+   const uint64_t t0 = timed ? qs_now() : 0;
    int r = be->wait_counter(h->dev->kdev, (volatile uint64_t *)h->sync.cpu, target, h->wait_ms);
+   if (timed)
+      qs_block(h, why, qs_now() - t0);
    if (r == 0 && h->fp.on)
       mali_fprof_retired(&h->fp, h->dev, target);   /* M15: prompt retire observation (the CPU is blocked here anyway) */
    return r;
@@ -270,7 +413,7 @@ hw_ovf_reap(struct mali_hwctx *h, uint64_t counter)
    unsigned w = 0;
    for (unsigned i = 0; i < h->n_ovf; i++) {
       if (h->ovf[i].tag && h->ovf[i].tag <= counter) {
-         if (h->n_pool < MALI_MAX_OVF && h->pool_bytes + h->ovf[i].bo.size <= (256u << 20)) {
+         if (h->n_pool < MALI_OVF_POOL && h->pool_bytes + h->ovf[i].bo.size <= (256u << 20)) {
             h->ovf_pool[h->n_pool++] = h->ovf[i].bo;
             h->pool_bytes += h->ovf[i].bo.size;
          } else
@@ -283,7 +426,7 @@ hw_ovf_reap(struct mali_hwctx *h, uint64_t counter)
 
 /* Drop retired frames from the in-flight list; block on the oldest while the list is full. */
 static void
-hw_retire(struct mali_hwctx *h, unsigned max_left)
+hw_retire(struct mali_hwctx *h, unsigned max_left, enum qs_cause why)
 {
    for (;;) {
       uint64_t c = *(volatile uint64_t *)h->sync.cpu;
@@ -299,7 +442,7 @@ hw_retire(struct mali_hwctx *h, unsigned max_left)
       }
       if (h->nfl <= max_left)
          return;
-      if (hw_wait(h, h->fl[0].expected))
+      if (hw_wait(h, h->fl[0].expected, why))
          return;
    }
 }
@@ -309,24 +452,20 @@ hw_drain(void *u)
 {
    struct mali_hwctx *h = u;
    if (h->nfl)
-      hw_wait(h, h->fl[h->nfl - 1].expected);
-   hw_retire(h, 0);
+      hw_wait(h, h->fl[h->nfl - 1].expected, QS_IDLE);
+   hw_retire(h, 0, QS_IDLE);
 }
 
 static void
 hw_job_begin(void *u)
 {
    struct mali_hwctx *h = u;
-   hw_retire(h, MALI_MAX_INFLIGHT - 1);
+   hw_retire(h, h->depth - 1, QS_INFLIGHT);
    kb_arena_begin(&h->ar);
    h->cur_start = h->ar.start;
-   if (h->nfl && !getenv("MALI_SYNC_SUBMIT")) {
-      /* the new frame must stay clear of the oldest in-flight frame's arena range */
-      size_t so = h->fl[0].start;
-      if (so > h->ar.start)
-         h->ar.lapped = 1;   /* already wrapped: limit is the oldest frame */
-      h->ar.start = so;
-   }
+   h->cur_bytes = 0;
+   if (h->nfl && !getenv("MALI_SYNC_SUBMIT"))
+      arena_limit(h, h->fl[0].start, true);   /* the new frame must stay clear of the oldest in-flight frame's arena range */
 }
 
 static void *
@@ -406,6 +545,10 @@ hw_submit_multi(void *u, const uint64_t *cs, unsigned n, unsigned nframes)
    }
    double q0 = prof_now();
    int r = be->submit_cs(h->dev->kdev, cs, n);
+   if (h->qs.on) {
+      h->qs.win.kicks++;
+      h->qs.win.frames += nframes;
+   }
    if (h->fp.on && r == 0)
       mali_fprof_kicked(&h->fp, prof_now() - q0);
    if (getenv("MALI_PROF")) {
@@ -424,30 +567,42 @@ hw_submit_multi(void *u, const uint64_t *cs, unsigned n, unsigned nframes)
          h->ovf[i].tag = h->expected;
    h->ovf_last = 0;   /* the next frame's overflow sequence starts small again (and finds its BOs in the pool) */
    if (!getenv("MALI_SYNC_SUBMIT")) {
-      /* The list is bounded (MALI_MAX_INFLIGHT) and hw_job_begin only guarantees nfl <= MAX-1 when it runs, which is not
+      /* The list is bounded (h->depth) and hw_job_begin only guarantees nfl <= depth-1 when it runs, which is not
        * enough: ONE command buffer can submit several times (an indirect or CPU-polygon frame flushes the frames
        * accumulated before it, mali_cmd_submit), and a drain whose wait fails leaves the entries in place, so the next
        * append wrote h->fl[h->nfl] one past the array -- over h->nfl/h->cur_start themselves (mali_queue.c, audit-sync
        * #1). Retire before appending, and wait for the oldest frame if retiring did not free a slot: an entry is the
        * arena range a submission still reads, so it is never dropped. A wait that cannot reach the oldest frame is a
        * lost device and is reported, not skipped. */
-      if (h->nfl >= MALI_MAX_INFLIGHT) {
-         hw_retire(h, MALI_MAX_INFLIGHT - 1);
-         if (h->nfl >= MALI_MAX_INFLIGHT && hw_wait(h, h->fl[0].expected))
+      if (h->nfl >= h->depth) {
+         hw_retire(h, h->depth - 1, QS_INFLIGHT);
+         if (h->nfl >= h->depth && hw_wait(h, h->fl[0].expected, QS_INFLIGHT))
             return -EIO;
-         if (h->nfl >= MALI_MAX_INFLIGHT)
-            hw_retire(h, MALI_MAX_INFLIGHT - 1);
-         if (h->nfl >= MALI_MAX_INFLIGHT)
+         if (h->nfl >= h->depth)
+            hw_retire(h, h->depth - 1, QS_INFLIGHT);
+         if (h->nfl >= h->depth)
             return -EIO;   /* the counter never reached the oldest frame: device lost */
       }
-      if (getenv("MALI_FL_DBG")) fprintf(stderr, "mali_queue: fl append nfl=%u cap=%u expected=%llu\n", h->nfl, MALI_MAX_INFLIGHT, (unsigned long long)h->expected);
+      if (getenv("MALI_FL_DBG")) fprintf(stderr, "mali_queue: fl append nfl=%u cap=%u expected=%llu\n", h->nfl, h->depth, (unsigned long long)h->expected);
       h->fl[h->nfl].expected = h->expected;
       h->fl[h->nfl].start = h->cur_start;
+      h->fl[h->nfl].end = h->ar.off;
+      h->fl[h->nfl].bytes = h->cur_bytes;
       h->nfl++;
+      if (h->qs.on) {
+         uint64_t c = *(volatile uint64_t *)h->sync.cpu;
+         unsigned live = 0;
+         for (unsigned i = 0; i < h->nfl; i++)
+            live += h->fl[i].expected > c;
+         h->qs.win.appends++;
+         h->qs.win.depth_sum += live;
+         if (live > h->qs.win.depth_max)
+            h->qs.win.depth_max = live;
+      }
       return 0;
    }
    double w0 = prof_now();
-   int wr = hw_wait(h, h->expected);
+   int wr = hw_wait(h, h->expected, QS_IDLE);
    if (getenv("MALI_PROF")) { static double acc[2]; static unsigned cnt; acc[0] += prof_now() - w0; if (++cnt % 100 == 0) fprintf(stderr, "PROF/syncwait frame GPU latency avg %.3f ms (n=%u instr)\n", acc[0] / cnt, n); }
    if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk:   wait rc=%d counter=%llu expected=%llu\n", wr, (unsigned long long)*(volatile uint64_t *)h->sync.cpu, (unsigned long long)h->expected);
    return wr;
@@ -459,6 +614,24 @@ hw_submit(void *u, const uint64_t *cs, unsigned n)
    return hw_submit_multi(u, cs, n, 1);
 }
 
+/* MALI_QUEUE_DEPTH: unset = the default; otherwise a whole number 1..MALI_QUEUE_DEPTH_MAX. Anything else is refused (-1) rather than
+ * clamped, so an A/B run can never silently measure a different setting than the one it names. */
+int
+mali_queue_depth_env(unsigned *out)
+{
+   const char *e = getenv("MALI_QUEUE_DEPTH");
+   *out = MALI_QUEUE_DEPTH_DEFAULT;
+   if (!e || !e[0])
+      return 0;
+   char *end;
+   errno = 0;
+   unsigned long v = strtoul(e, &end, 10);
+   if (errno || *end || e[0] == '-' || v < 1 || v > MALI_QUEUE_DEPTH_MAX)
+      return -1;
+   *out = (unsigned)v;
+   return 0;
+}
+
 void
 mali_hw_finish(struct mali_device *dev)
 {
@@ -468,7 +641,8 @@ mali_hw_finish(struct mali_device *dev)
    if (!h)
       return;
    if (h->expected)
-      hw_wait(h, h->expected);
+      hw_wait(h, h->expected, QS_IDLE);
+   qs_tick(h, true);
    for (unsigned i = 0; i < h->n_old_tls; i++)
       be->bo_free(dev->kdev, &h->old_tls[i]);
    free(h->old_tls);
@@ -520,12 +694,39 @@ mali_hw_init(struct mali_device *dev)
 
    if (!h)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
+   if (mali_queue_depth_env(&h->depth)) {
+      fprintf(stderr, "mali_vk: MALI_QUEUE_DEPTH=%s refused: expected an integer 1..%u; device not created\n", getenv("MALI_QUEUE_DEPTH"),
+              MALI_QUEUE_DEPTH_MAX);
+      free(h);
+      return VK_ERROR_INITIALIZATION_FAILED;
+   }
    h->dev = dev;
    dev->hw = h;
    mali_fprof_init(&h->fp, dev);
    const char *t = getenv("MALI_FRAME_TIMEOUT_MS");
    h->wait_ms = t ? (unsigned)strtoul(t, NULL, 0) : 10000;
-   if (be->bo_alloc(dev->kdev, ARENA_BYTES, MALI_BO_HOT, &h->arena))
+   h->arena_drain = true;   /* a full arena retires every submission in flight */
+   h->check = getenv("MALI_QUEUE_CHECK") && getenv("MALI_QUEUE_CHECK")[0] == '1';
+   const char *qse = getenv("MALI_QUEUE_STATS");
+   h->qs.on = qse && qse[0] == '1';
+   h->qs.t0 = h->qs.t_last = qs_now();
+   h->qs.ring_n0 = __atomic_load_n(&mali_qstat_ring_n, __ATOMIC_RELAXED);
+   h->qs.ring_ns0 = __atomic_load_n(&mali_qstat_ring_ns, __ATOMIC_RELAXED);
+   h->qs.kb_kicks0 = __atomic_load_n(&kb_stat_kicks, __ATOMIC_RELAXED);
+   /* MALI_ARENA_KB (tests, A/B): arena size in KiB, 64..1048576; default ARENA_BYTES */
+   const char *akb = getenv("MALI_ARENA_KB");
+   unsigned long arena_bytes = ARENA_BYTES;
+   if (akb && akb[0]) {
+      char *end;
+      unsigned long v = strtoul(akb, &end, 10);
+      if (*end || v < 64 || v > (1ul << 20)) {
+         fprintf(stderr, "mali_vk: MALI_ARENA_KB=%s refused: expected 64..1048576; device not created\n", akb);
+         mali_hw_finish(dev);
+         return VK_ERROR_INITIALIZATION_FAILED;
+      }
+      arena_bytes = v << 10;
+   }
+   if (be->bo_alloc(dev->kdev, arena_bytes, MALI_BO_HOT, &h->arena))
       goto fail;
    h->arena_live = true;
    if (be->bo_alloc(dev->kdev, 4096 + 65536, MALI_BO_COH, &h->geo)   /* tiler heap descriptor: the tiler updates it from several cores; coverage 0 at random without COHERENT_LOCAL (arch 11) */)
@@ -696,12 +897,19 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
          if (own)
             continue;
       }
+      const uint64_t sw0 = dev->hw && dev->hw->qs.on ? qs_now() : 0;
       VkResult r = vk_sync_wait(&dev->vk, w->sync, w->wait_value, VK_SYNC_WAIT_COMPLETE, UINT64_MAX);
+      if (sw0)
+         qs_block(dev->hw, QS_SEMWAIT, qs_now() - sw0);
       if (r != VK_SUCCESS)
          return vk_queue_set_lost(vq, "queue wait failed: %d", r);
    }
 
    double p1 = prof_now();
+   if (dev->hw && dev->hw->qs.on) {
+      dev->hw->qs.win.submits++;
+      dev->hw->qs.win.cmdbufs += submit->command_buffer_count;
+   }
    if (submit->command_buffer_count && be->host_sync)
       be->host_sync(dev->kdev);
    /* Recorded frames: each is built, submitted and retired in order (mali_cmd_submit -> hw_submit). */
@@ -724,8 +932,11 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
       always = getenv("MALI_FENCE_ALWAYS") != NULL;
    bool light = mali_ops_take_light(&dev->hw->light_pending);
    int r = 0;
-   if (submit->signal_count || light || always)
+   if (submit->signal_count || light || always) {
       r = be->submit_signal(dev->kdev, &fd);
+      if (dev->hw && dev->hw->qs.on)
+         dev->hw->qs.win.kicks++;
+   }
    if (r != 0) {
       if (getenv("MALI_PIPE_DBG")) fprintf(stderr, "mali_vk: submit_signal failed: %d\n", r);
       return vk_queue_set_lost(vq, "queue submit failed: %d", r);
@@ -760,6 +971,8 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
     * semaphore as signal (an app's fence-only submit has no waits, so it is not counted). */
    if (dev->hw && dev->hw->fp.on && submit->command_buffer_count == 0 && submit->wait_count > 0 && submit->signal_count > 0)
       mali_fprof_present(&dev->hw->fp);
+   if (dev->hw)
+      qs_tick(dev->hw, false);
    if (res != VK_SUCCESS)
       return vk_queue_set_lost(vq, "queue signal import failed: %d", res); /* GPU work is in flight, its fence is lost */
    if (getenv("MALI_PROF")) {

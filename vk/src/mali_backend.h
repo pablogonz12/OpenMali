@@ -131,4 +131,7 @@ extern const struct mali_backend_ops mali_backend_fake;
 /* MALI_BACKEND=fake selects the fake backend, anything else the kbase backend (libkbase). */
 const struct mali_backend_ops *mali_backend_select(void);
 
+/* MALI_QUEUE_STATS (mali_queue.c): number and total ns of a backend's waits for command-stream ring space. Atomic adds. */
+extern uint64_t mali_qstat_ring_n, mali_qstat_ring_ns;
+
 #endif

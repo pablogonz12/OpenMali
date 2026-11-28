@@ -557,9 +557,19 @@ kbase_bo_export(struct mali_kdev *k, const struct mali_bo *bo)
  * with CS_INSERT - CS_EXTRACT == size the firmware raises CS_CONFIG_FAULT (status 0x40, sideband 0)
  * as soon as it looks at the queue (CMF, arch 11; R3-PLAN.md M4). A 4096-byte ring therefore holds
  * 63 empty submissions. */
+static void
+ring_wait_done(struct timespec t0)
+{
+   struct timespec t1;
+   clock_gettime(CLOCK_MONOTONIC, &t1);
+   __atomic_add_fetch(&mali_qstat_ring_n, 1, __ATOMIC_RELAXED);
+   __atomic_add_fetch(&mali_qstat_ring_ns, (uint64_t)((t1.tv_sec - t0.tv_sec) * 1000000000ll + (t1.tv_nsec - t0.tv_nsec)), __ATOMIC_RELAXED);
+}
+
 static int
 wait_ring_space(struct mali_kdev *k, size_t bytes)
 {
+   struct timespec t0 = {0, 0};
    for (int i = 0; i < 200000; i++) { /* ~10 s */
       if (pthread_mutex_trylock(&k->wait_lock) == 0) {
          struct kb_event ev;
@@ -570,10 +580,16 @@ wait_ring_space(struct mali_kdev *k, size_t bytes)
       }
       if (kb_queue_faulted(&k->queue))
          return -EIO;
-      if (k->queue.insert - kb_queue_extract(&k->queue) + bytes + 64 <= k->queue.ring_size)
+      if (k->queue.insert - kb_queue_extract(&k->queue) + bytes + 64 <= k->queue.ring_size) {
+         if (i)   /* MALI_QUEUE_STATS: the ring was full on entry (only the slow path pays the clock read) */
+            ring_wait_done(t0);
          return 0;
+      }
+      if (!i)
+         clock_gettime(CLOCK_MONOTONIC, &t0);
       usleep(50);
    }
+   ring_wait_done(t0);
    return -ETIMEDOUT;
 }
 

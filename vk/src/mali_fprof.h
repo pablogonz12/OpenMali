@@ -16,7 +16,7 @@
 
 struct mali_device;
 
-#define MALI_FPROF_MAX 8 /* in-flight submissions tracked (MALI_MAX_INFLIGHT is 3; the CS ring can hold more) */
+#define MALI_FPROF_MAX 64 /* in-flight submissions tracked (mali_queue.c MALI_QUEUE_DEPTH_MAX) */
 
 /* One submission that has been kicked but not yet observed retired. */
 struct mali_fprof_fl {

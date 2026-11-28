@@ -133,7 +133,7 @@ mali_fprof_kick(struct mali_fprof *p, struct mali_device *dev, uint64_t expected
       p->last_frame_ms = (double)(now - p->last_kick_cpu_ns) / 1e6;
    p->last_kick_cpu_ns = now;
    p->have_kick = true;
-   if (p->nfl == MALI_FPROF_MAX) /* bookkeeping only (the queue tracks 3): drop the oldest */
+   if (p->nfl == MALI_FPROF_MAX) /* bookkeeping only (the queue bounds its own list): drop the oldest */
       memmove(p->fl, p->fl + 1, (MALI_FPROF_MAX - 1) * sizeof p->fl[0]), p->nfl--;
    /* Save this submission's own kick interval: last_frame_ms changes before it retires. */
    p->fl[p->nfl++] = (struct mali_fprof_fl){.expected = expected, .kick_ticks = ticks, .kick_cpu_ns = now,

@@ -174,6 +174,8 @@ int kb_timeinfo(struct kb_ctx *ctx, struct kb_timeinfo *out);
 int kb_queue_create(struct kb_ctx *ctx, const struct kb_queue_opts *opts, struct kb_queue *q);
 /* Append instructions (padded with NOPs to 64 bytes), advance CS_INSERT, then kick. -EAGAIN if the ring is full. */
 int kb_queue_submit(struct kb_queue *q, const uint64_t *ins, size_t n, enum kb_kick how);
+/* CS_QUEUE_KICK ioctls issued by kb_queue_submit in this process (all queues; atomic). */
+extern uint64_t kb_stat_kicks;
 uint64_t kb_queue_extract(const struct kb_queue *q);
 bool kb_queue_idle(const struct kb_queue *q);                       /* CS_EXTRACT == CS_INSERT */
 bool kb_queue_faulted(const struct kb_queue *q);                    /* a fatal notification was read for this group */
