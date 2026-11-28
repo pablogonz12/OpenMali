@@ -287,7 +287,7 @@ def process(path, outpath, hook=None):
                 else:
                     out.append('  %3d %-14s %016x' % (ev['i'], ev['name'], w))
                 if op in ds.RUNS: render_job(c, ev, ev['name'])
-            for msg in ds.rules(dict(mem=d.mem), evs, arch) + rules_idvs2(evs, d.mem):
+            for msg in ds.rules(dict(mem=d.mem), evs, arch) + rules_idvs2(evs, d.mem if arch == 13 else None):   # R-TILE: the field exists from v12 on
                 if 'scoreboard re-select' in msg:   # advisory: mixed compute+draw streams trip it, hardware dEQP passes them
                     warn.add(msg.split(': ', 1)[1] if ': ' in msg else msg); continue
                 viol.append('RULE R-CS: dev%d kick %d: %s' % (d.n, n, msg))
