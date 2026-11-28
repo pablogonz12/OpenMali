@@ -1133,7 +1133,9 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
        * while firmware owns grown chunks: the second frame that needed heap growth (>~600 draws) TRANSLATION_FAULTed on v11. */
       if (!env->heap_desc_ready)
          kb_draw_tiler_heap_desc(env->geo_cpu, env->heap_first_chunk_va, env->heap_chunk_size);
-      uint64_t geom = (env->geo_va + 4096) | ((getenv("MALI_GEOM_SIZE") ? (uint32_t)atoi(getenv("MALI_GEOM_SIZE")) : 65536u) >> 12);
+      static int64_t geom_size = -1;   /* MALI_GEOM_SIZE, read once: this runs per render pass */
+      if (geom_size < 0) { const char *e = getenv("MALI_GEOM_SIZE"); geom_size = e ? (uint32_t)atoi(e) : 65536u; }
+      uint64_t geom = (env->geo_va + 4096) | ((uint32_t)geom_size >> 12);
       if (v13)
          kb_v13_tiler_ctx(tctx, f->width, f->height, env->hmask, env->tile_log2, env->geo_va, geom);
       else
@@ -1231,7 +1233,10 @@ mali_frame_build(const struct mali_hw *hw, const struct mali_frame *f, uint64_t 
       E(&c, kb_cs_heap_operation(KB_CS_HEAP_VT_COMPLETED));
    }
    emit_fragment(&c, env, f, R, va_fbd, va_tctx, geometry);
-   if (geometry && !getenv("MALI_NOTF")) {
+   static int notf = -1;   /* MALI_NOTF, read once: per render pass */
+   if (notf < 0)
+      notf = getenv("MALI_NOTF") != NULL;
+   if (geometry && !notf) {
       M32(&c, R->flush_id, 0);
       E(&c, kb_cs_flush_cache2(1, 1, 0, R->flush_id));
       E(&c, kb_cs_wait(1u << KB_CS_SLOT_LS));

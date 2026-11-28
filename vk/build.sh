@@ -180,6 +180,8 @@ ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -
 # Uncapped benchmark pair (loader clients, offscreen targets: no presentation path to cap them).
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_bench_gpu" "$V/tests/t_bench_gpu.c" -ldl -lm
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_bench_cpu" "$V/tests/t_bench_cpu.c" -ldl -lm
+# Skia/ANGLE-shaped record-path benchmark + check (fake backend): counts heap allocations by interposing malloc, hence -rdynamic.
+${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -rdynamic -o "$OUT/t_skia_draws" "$V/tests/t_skia_draws.c" -ldl
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -I"$V/tests" -o "$OUT/t_vk_leak" "$V/tests/t_vk_leak.c" -ldl
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -DMALI_EXPECT_SHA=\"$MALI_SHA\" -o "$OUT/t_vk_info" "$V/tests/t_vk_info.c" -ldl
 ${CC%% *} -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-missing-field-initializers -Wno-unused-parameter -I"$MESA/include" -o "$OUT/t_vk_mem" "$V/tests/t_vk_mem.c" -ldl

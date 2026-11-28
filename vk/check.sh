@@ -94,6 +94,9 @@ for g in v11 v13; do run "dxvk_wsi $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OU
 for g in v11 v13; do run "dxvk_caps $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_dxvk_caps" --direct "$OUT/libvulkan_mali.so" --expect-missing "$DXVK_MISSING"; done
 for g in v11 v13; do run "dxvk_api $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_dxvk_api" --direct "$OUT/libvulkan_mali.so"; done
 for g in v11 v13; do run "angle_seq $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_angle_seq" --direct "$OUT/libvulkan_mali.so"; done
+# Skia/ANGLE-shaped draw stream (tests/t_skia_draws.c --check, 200 draws): one RUN_IDVS per draw, and re-issuing every bind with
+# identical arguments emits nothing (same instructions, same descriptor bytes). A correctness test, not a timing gate.
+for g in v11 v13; do run "skia_draws $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_skia_draws" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --check; done
 run "nokopper shim"      0 sh "$V/tests/t_nokopper.sh"
 run "banner status file" 0 sh "$V/tests/t_banner.sh" "$OUT"
 # Steam session (STEAM-GAPS.md): none of gamescope's vkCreateDevice requirements is missing any more.
@@ -391,6 +394,7 @@ run "vk_trace v10"    0 $F "$OUT/t_vk_trace" $DL
 # ignored SIGBUS and the no-handler (SIG_DFL) death path (FEX: replacing FEX's own SIGBUS handler killed the game)
 run "trace chain v10" 0 $F "$OUT/t_trace_chain" $DL
 run "angle_seq v10"   0 $F "$OUT/t_angle_seq" $DL
+run "skia_draws v10"  0 $F "$OUT/t_skia_draws" $DL --spv-dir "$V/shader" --check
 run "queue all v10"   0 $F $TQ
 run "resources v10"   0 $F "$OUT/t_resources"
 run "vk_draw v10"       0 $F "$OUT/t_vk_draw" $DL --spv-dir "$V/shader" --loop 200

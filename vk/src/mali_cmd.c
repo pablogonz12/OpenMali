@@ -544,7 +544,7 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
          }
       /* MALI_TF_DBG=1 (off by default): the device-side half of a transform-feedback diagnosis, next to the
        * compile-side line in mali_compile.c - what the draw believes the four buffer bases are. */
-      if (getenv("MALI_TF_DBG") && xfb && cmd->tf.active) {
+      if (xfb && cmd->tf.active && getenv("MALI_TF_DBG")) {   /* getenv last: it ran for every push-dirty draw (t_vk_feat flips it at run time, so it is not cached) */
          uint64_t q[4];
          memcpy(q, bu->push[0] + xfb_pc, sizeof q);
          fprintf(stderr, "mali_tf: draw xfb_pc %u bases %llx %llx %llx %llx\n", xfb_pc,
