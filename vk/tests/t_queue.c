@@ -67,7 +67,7 @@ now_us(void)
    X(QueueSubmit) X(QueueWaitIdle) X(DeviceWaitIdle) X(GetSemaphoreCounterValueKHR)                   \
    X(WaitSemaphoresKHR) X(SignalSemaphoreKHR) X(GetMemoryFdKHR) X(GetSemaphoreFdKHR)                     \
    X(ImportSemaphoreFdKHR) X(GetFenceFdKHR) X(CreateBuffer) X(DestroyBuffer) X(GetBufferMemoryRequirements) \
-   X(BindBufferMemory) X(BindImageMemory) X(GetMemoryFdPropertiesKHR) X(CmdClearColorImage) X(CreateImage) X(DestroyImage) X(GetImageMemoryRequirements) X(GetImageSubresourceLayout) X(CreateCommandPool) X(AllocateCommandBuffers) X(BeginCommandBuffer) X(EndCommandBuffer) X(CmdFillBuffer) X(CmdCopyBuffer) \
+   X(BindBufferMemory) X(BindImageMemory) X(GetMemoryFdPropertiesKHR) X(CmdClearColorImage) X(CmdPipelineBarrier) X(CreateImage) X(DestroyImage) X(GetImageMemoryRequirements) X(GetImageSubresourceLayout) X(CreateCommandPool) X(AllocateCommandBuffers) X(BeginCommandBuffer) X(EndCommandBuffer) X(CmdFillBuffer) X(CmdCopyBuffer) \
    X(CreateDescriptorSetLayout) X(CreatePipelineLayout) X(CreateDescriptorPool) X(AllocateDescriptorSets) \
    X(UpdateDescriptorSets) X(CmdBindDescriptorSets) X(DestroyPipelineLayout) X(DestroyDescriptorSetLayout) \
    X(DestroyDescriptorPool) X(DestroyCommandPool)
@@ -1208,10 +1208,11 @@ test_modrt(void)
    for (int phase = 0; phase < 2; phase++) {
       const bool explicit_layout = phase == 1;
       VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
-                              .format = VK_FORMAT_R8G8B8A8_SRGB, .extent = {256, 128, 1}, .mipLevels = 1,
+                              .format = VK_FORMAT_B8G8R8A8_UNORM, .extent = {256, 128, 1}, .mipLevels = 1,
                               .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
                               .tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT,
-                              .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                              .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                       VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                               .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
       VkExternalMemoryImageCreateInfo ext = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
                                              .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
@@ -1229,6 +1230,7 @@ test_modrt(void)
             phase, (unsigned long long)lay.rowPitch, (unsigned long long)lay.size);
 
       if (explicit_layout) {
+         DestroyImage(dev, img, NULL);
          VkSubresourceLayout pl = {.offset = lay.offset, .rowPitch = lay.rowPitch};
          VkImageDrmFormatModifierExplicitCreateInfoEXT me = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT, .pNext = &ext,
@@ -1263,6 +1265,12 @@ test_modrt(void)
       VkCommandBufferBeginInfo bgi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
       CHECK(BeginCommandBuffer(cb, &bgi) == VK_SUCCESS, "phase %d: begin", phase);
       VkImageSubresourceRange rng = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .levelCount = 1, .layerCount = 1};
+      VkImageMemoryBarrier barrier = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+          .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+          .newLayout = VK_IMAGE_LAYOUT_GENERAL, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+          .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = img, .subresourceRange = rng};
+      CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, NULL, 0, NULL, 1, &barrier);
       CmdClearColorImage(cb, img, VK_IMAGE_LAYOUT_GENERAL, &col, 1, &rng);
       CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "phase %d: end", phase);
 
@@ -1283,8 +1291,8 @@ test_modrt(void)
          InvalidateMappedMemoryRanges(dev, 1, &(VkMappedMemoryRange){.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
                                                                     .memory = mem, .size = VK_WHOLE_SIZE});
          const uint8_t *px = p + lay.offset + (uint64_t)lay.rowPitch * 17 + 5 * 4;
-         CHECK(px[0] == 64 && px[1] == 128 && px[2] == 191 && px[3] == 255,
-               "phase %d: mapped pixel at the reported layout is (%u,%u,%u,%u), want (64,128,191,255)", phase,
+         CHECK(px[0] == 191 && px[1] == 128 && px[2] == 64 && px[3] == 255,
+               "phase %d: mapped pixel at the reported layout is (%u,%u,%u,%u), want (191,128,64,255)", phase,
                px[0], px[1], px[2], px[3]);
          /* The same bytes through the exported descriptor, i.e. what Xwayland/DRI3 will read. */
          VkMemoryGetFdInfoKHR gi = {.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR, .memory = mem,
@@ -1295,8 +1303,8 @@ test_modrt(void)
          CHECK(m2 != MAP_FAILED, "phase %d: mmap the exported dma-buf", phase);
          if (m2 != MAP_FAILED) {
             const uint8_t *qx = (const uint8_t *)m2 + lay.offset + (uint64_t)lay.rowPitch * 17 + 5 * 4;
-            CHECK(qx[0] == 64 && qx[1] == 128 && qx[2] == 191 && qx[3] == 255,
-                  "phase %d: exported dma-buf pixel is (%u,%u,%u,%u), want (64,128,191,255)", phase,
+            CHECK(qx[0] == 191 && qx[1] == 128 && qx[2] == 64 && qx[3] == 255,
+                  "phase %d: exported dma-buf pixel is (%u,%u,%u,%u), want (191,128,64,255)", phase,
                   qx[0], qx[1], qx[2], qx[3]);
             munmap(m2, mr.size);
          }
@@ -1316,9 +1324,26 @@ int
 main(int argc, char **argv)
 {
    const char *icd = NULL;
+   char staged_icd[4096];
    int submits = 10000;
    for (int i = 1; i < argc; i++) {
-      if (!strcmp(argv[i], "--direct") && i + 1 < argc) icd = argv[++i];
+      if (!strcmp(argv[i], "--direct")) {
+         if (i + 1 < argc && strncmp(argv[i + 1], "--", 2)) {
+            icd = argv[++i];
+         } else {
+            /* smoke --guest-bin supplies the generated dev-so manifest. */
+            const char *manifest = getenv("VK_DRIVER_FILES");
+            if (!manifest) manifest = getenv("VK_ICD_FILENAMES");
+            const char *slash = manifest ? strrchr(manifest, '/') : NULL;
+            if (!slash || strchr(manifest, ':') ||
+                (size_t)(slash - manifest) + sizeof("/libvulkan_mali.so") > sizeof staged_icd) {
+               fprintf(stderr, "--direct without a path needs a single absolute dev-so ICD manifest\n");
+               return 2;
+            }
+            snprintf(staged_icd, sizeof staged_icd, "%.*s/libvulkan_mali.so", (int)(slash - manifest), manifest);
+            icd = staged_icd;
+         }
+      }
       else if (!strcmp(argv[i], "--submits") && i + 1 < argc) submits = atoi(argv[++i]);
       else if (!strcmp(argv[i], "--only") && i + 1 < argc) g_only = argv[++i];
       else if (!strcmp(argv[i], "--burst") && i + 1 < argc) g_burst = atoi(argv[++i]);
