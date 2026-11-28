@@ -1,0 +1,42 @@
+{
+  "_doc": "Hand-curated facts the extractor cannot read from a file. Every entry names its source. 'hw' per arch: yes | no | emulate | unknown. 'no' means: never advertise. Overrides the automatic 'hardware possible' column (which is otherwise 'yes' when PanVK or the Arm blob advertises the item on that architecture, else 'unknown').",
+  "hardware": {
+    "VK_KHR_acceleration_structure": {"v10": "no", "v11": "no", "v13": "unknown", "note": "No ray-tracing units in Mali-G610/G615 (Valhall 4th gen). Mali-G925 is listed as 'Mali-G925-Immortalis' in gpuinfo #51936; the blob column shows whether that report advertises it. Compute emulation is possible in principle but no consumer of ours needs it: never advertise on v10/v11."},
+    "VK_KHR_ray_query": {"v10": "no", "v11": "no", "v13": "unknown", "note": "As VK_KHR_acceleration_structure."},
+    "VK_KHR_ray_tracing_pipeline": {"v10": "no", "v11": "no", "v13": "unknown", "note": "As VK_KHR_acceleration_structure."},
+    "VK_KHR_ray_tracing_maintenance1": {"v10": "no", "v11": "no", "v13": "unknown", "note": "Depends on ray tracing."},
+    "VK_KHR_ray_tracing_position_fetch": {"v10": "no", "v11": "no", "v13": "unknown", "note": "Depends on ray tracing."},
+    "VK_EXT_opacity_micromap": {"v10": "no", "v11": "no", "v13": "unknown", "note": "Depends on ray tracing."},
+    "VK_KHR_video_queue": {"v10": "no", "v11": "no", "v13": "no", "note": "Video decode/encode is a separate VPU block on these SoCs, not the GPU; kbase has no video queue. Never advertise (all VK_KHR_video_*)."},
+    "geometryShader": {"v10": "emulate", "v11": "emulate", "v13": "emulate", "note": "Valhall has no geometry stage (vk/src/mali_gs.h; PanVK: geometryShader = false, panvk_vX_physical_device.c). Only emulation (vertex/compute lowering) is possible; the pass-through subset exists behind MALI_EXPERIMENTAL_GS=1 and is not advertised. Needs an orchestrator design decision (mali-open skill rule)."},
+    "tessellationShader": {"v10": "emulate", "v11": "emulate", "v13": "emulate", "note": "No tessellation hardware on Valhall (PanVK: tessellationShader = false). Compute emulation only."},
+    "shaderTessellationAndGeometryPointSize": {"v10": "emulate", "v11": "emulate", "v13": "emulate", "note": "Meaningless without geometry/tessellation emulation."},
+    "multiViewport": {"v10": "unknown", "v11": "unknown", "v13": "unknown", "note": "Mali tiler takes one viewport/scissor per draw; PanVK multiViewport = false. A per-draw split (one draw per viewport with gl_ViewportIndex lowering) is a driver-side emulation; unverified."},
+    "fillModeNonSolid": {"v10": "unknown", "v11": "unknown", "v13": "unknown", "note": "PanVK: false. Point/line polygon mode would need a primitive-conversion pass; see Arm blob column for whether Arm exposes it."},
+    "depthBounds": {"v10": "unknown", "v11": "unknown", "v13": "unknown", "note": "PanVK: false. Can be emulated with a fragment discard on the depth read; unverified."},
+    "VK_EXT_mesh_shader": {"v10": "no", "v11": "no", "v13": "unknown", "note": "No mesh/task stage in Valhall 4th gen; emulation via compute + indirect is not worth it for our consumers."},
+    "VK_KHR_fragment_shading_rate": {"v10": "unknown", "v11": "unknown", "v13": "unknown", "note": "Variable-rate shading exists on later Mali generations; the Arm blob column is the evidence per GPU."}
+  },
+  "env_gates": [
+    {"switch": "MALI_EXPERIMENTAL_MSAA", "default": "on (unset = on; =0 off)", "affects": "VK_SAMPLE_COUNT_4_BIT in framebuffer*/sampledImage*/storageImageSampleCounts limits and VkImageFormatProperties", "source": "vk/src/mali_msaa.h:17-18 (the header comment above it still says opt-in: stale)", "evidence": "vulkaninfo v11 unset == v11 MALI_EXPERIMENTAL_MSAA=1 byte for byte; =0 drops the 4x bits"},
+    {"switch": "MALI_EXPERIMENTAL_TF", "default": "on (=0 off)", "affects": "VK_EXT_transform_feedback + transformFeedback feature + properties; maxPerStageDescriptorUniformBuffers 128 -> 12, maxDescriptorSetUniformBuffers 128 -> 72", "source": "vk/src/mali_tf.h:47, mali_physical_device.c:45-46,242,473,498", "evidence": "vulkaninfo v11 vs MALI_EXPERIMENTAL_TF=0 diff"},
+    {"switch": "MALI_EXPERIMENTAL_GS", "default": "off (=1 on)", "affects": "Only maxGeometry* limits become non-zero; geometryShader stays false", "source": "vk/src/mali_gs.h:22, mali_physical_device.c:112-116", "evidence": "vulkaninfo v11 vs MALI_EXPERIMENTAL_GS=1 diff"},
+    {"switch": "BL_DRM_STANDIN / DD_DRM_STANDIN / MALI_DRM_DIR / MALI_DRM_AUTO_STANDIN", "default": "node-dependent", "affects": "VK_EXT_physical_device_drm (advertised only when a DRM node alias of the GPU char device exists)", "source": "vk/src/mali_physical_device.c:320,351,478,793-900; vk/check.sh 'drm *' cases", "evidence": "phones x4/cmf list it (vulkaninfo.txt), the fake backend without a node does not"}
+  ],
+  "angle_gates": {
+    "_source": "ANGLE chromium/6478 src/libANGLE/renderer/vulkan/vk_renderer.cpp:3777-3880 (Renderer::getMaxSupportedESVersion) and vk_caps_utils.cpp:1215-1224 (CanSupportGPUShader5EXT)",
+    "es31_blockers": [
+      {"limit": "maxPerStageDescriptorStorageBuffers", "min": 12, "cite": "vk_renderer.cpp:3807-3812 (kMinimumComputeStorageBuffers 4, Constants.h:118 + IMPLEMENTATION_MAX_ATOMIC_COUNTER_BUFFER_BINDINGS 8, Constants.h:88)"},
+      {"limit": "maxVertexInputAttributeOffset", "min": 2047, "cite": "vk_renderer.cpp:3818"}
+    ],
+    "es30_blockers": [
+      {"limit": "standardSampleLocations", "min": true, "cite": "vk_renderer.cpp:3836"},
+      {"feature": "independentBlend", "cite": "vk_renderer.cpp:3845"},
+      {"any_of": ["ext:VK_EXT_transform_feedback", "feature:vertexPipelineStoresAndAtomics"], "cite": "vk_renderer.cpp:3853-3857"}
+    ],
+    "es32_needs": [
+      {"all_of": ["feature:shaderImageGatherExtended", "feature:shaderSampledImageArrayDynamicIndexing", "feature:shaderUniformBufferArrayDynamicIndexing"], "cite": "vk_caps_utils.cpp:1222 (EXT_gpu_shader5)"},
+      {"all_of": ["feature:geometryShader", "feature:tessellationShader"], "cite": "vk_caps_utils.cpp:985,1038; vk_renderer.cpp:3888-3896 (conformant ES 3.2 needs GS + tessellation; otherwise ANGLE caps at 3.1 unless exposeNonConformantExtensionsAndVersions)"}
+    ]
+  }
+}
