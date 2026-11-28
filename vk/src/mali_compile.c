@@ -34,7 +34,7 @@
 #include <unistd.h>
 
 /* Bump when the lowering or the serialized layout changes. */
-#define MALI_COMPILE_VERSION 44 /* 44: cull flags: the FS reads the second flag slot through base + slot (offset 0), not offset slot + base that counted it twice, and a VS that never writes its declared cull distances is not lowered, so code differs from 43 ; 43: this lane: shaderCullDistance (the VS stores d>=0 as 1 in the cull half of the merged CLIP_DIST array at the varying the VS reports, the FS discards where one is 0), so generated code differs from 42 ; 42: xfb/xfb_pc are part of the cache key and MALI_XFB_PLAIN (an XFB shader that stores nothing) is a legal compile instead of a cache-hit copy of the STORES binary, so an XFB vertex program's code differs from 41 ; 41: the gl_PointSize output stripped for a non-point topology also fixes the deref modes, so such a VS now compiles (it aborted nir_validate and every such pipeline failed to create) ; 40: the robust store bound spans the lowest..highest written component (a sparse write mask left a gap uncounted) and rejects a wrapping component offset, so the code differs from 39 ; 39: robust SSBO stores are bounded by our own wrap-safe predicate instead of Mesa's 32-bit "offset + size - 1" test (a scalar-layout vec4 at 0xfffffff4 wrapped to 3 and wrote past the descriptor), so their code differs from 38 ; 38: the get_ssbo_size/get_ubo_size lowering runs for every shader (a non-robust shader with a size query kept an intrinsic Valhall does not have), so its code differs from 37 ; 37: robust load bounds reject a wrapping end offset (offset 0xfffffff4 + 4 summed to 3 and passed the size test) and the pass invalidates metadata (it inserts an if), so a robust program's code differs from 36 ; 36: number collision on 34 merged -- main's 34 (noperspective varyings) and this lane's 34/35 (robustness2 size query, then out-of-bounds loads returning zero) both change generated code, so neither alone may be reused ; 35: robustness2 out-of-bounds LOADS return zero (mali_descriptor_lower.c lower_load_bounds wraps them in an if; Mesa's pass only rewrote the offset, which read element 0), so a robust program's code differs from 34 ; 34: robustness2 buffer bounds: get_ssbo_size/get_ubo_size is lowered to a load of dw1 of the hardware Buffer descriptor through resource table 62 (mali_descriptor_lower.c lower_size_query), so a robust program's code differs from 33 ; 33: a texelFetch (txf/txf_ms) of a combined image sampler takes the sampler half of that binding instead of the all-zero dummy sampler (the fetch returned 0 on the phone) ; 32: nir_lower_xfb_to_stores keeps the captured outputs for rasterization (keep_outputs), so the generated code of an XFB vertex shader differs from 31 ; 31: mali_spirv_has_xfb() keys on OpExecutionMode Xfb (16/11) from word 5, the same word spirv_to_nir reads (29/30 detected nothing, so no stores were ever emitted) ; 29: transform-feedback outputs lowered to global stores, per-buffer bases loaded from the driver's push-constant area ; 27: transform-feedback vertex shaders are detected and refused (MALI_COMPILE_UNSUPPORTED), before anything is cached ; 26: requested subgroup size (arch warp, 16) is validated, part of the cache key and recorded in mali_compiled ; 25: logicOp blend shader; logicOp in mali_compile_blend (opts struct grew) ; 24: merged fau_reserved API-push-block fix with the unique cache temporary (pid + sequence, O_EXCL) ; 23: fau_reserved covers the API push block (promoted immediates could land in it: >56 B VS, >32 B CS/FS-v11) / cache_store unique temporary ; 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table 34: noperspective varyings: the VS gets the linked FS's noperspective bitfield inlined (nir_intrinsic_load_noperspective_varyings_pan), so the VS stores x w wherever the FS multiplies by gl_FragCoord.w; cached 33 VS code of a noperspective pipeline has no multiply and renders c/w */
+#define MALI_COMPILE_VERSION 45 /* 45: cull flags: the FS culls where the flag AND its fine x/y derivatives are 0 (exact on the edge joining two culled vertices), and records the EarlyFragmentTests conflict, so FS code differs from 44 ; 44: cull flags: the FS reads the second flag slot through base + slot (offset 0), not offset slot + base that counted it twice, and a VS that never writes its declared cull distances is not lowered, so code differs from 43 ; 43: this lane: shaderCullDistance (the VS stores d>=0 as 1 in the cull half of the merged CLIP_DIST array at the varying the VS reports, the FS discards where one is 0), so generated code differs from 42 ; 42: xfb/xfb_pc are part of the cache key and MALI_XFB_PLAIN (an XFB shader that stores nothing) is a legal compile instead of a cache-hit copy of the STORES binary, so an XFB vertex program's code differs from 41 ; 41: the gl_PointSize output stripped for a non-point topology also fixes the deref modes, so such a VS now compiles (it aborted nir_validate and every such pipeline failed to create) ; 40: the robust store bound spans the lowest..highest written component (a sparse write mask left a gap uncounted) and rejects a wrapping component offset, so the code differs from 39 ; 39: robust SSBO stores are bounded by our own wrap-safe predicate instead of Mesa's 32-bit "offset + size - 1" test (a scalar-layout vec4 at 0xfffffff4 wrapped to 3 and wrote past the descriptor), so their code differs from 38 ; 38: the get_ssbo_size/get_ubo_size lowering runs for every shader (a non-robust shader with a size query kept an intrinsic Valhall does not have), so its code differs from 37 ; 37: robust load bounds reject a wrapping end offset (offset 0xfffffff4 + 4 summed to 3 and passed the size test) and the pass invalidates metadata (it inserts an if), so a robust program's code differs from 36 ; 36: number collision on 34 merged -- main's 34 (noperspective varyings) and this lane's 34/35 (robustness2 size query, then out-of-bounds loads returning zero) both change generated code, so neither alone may be reused ; 35: robustness2 out-of-bounds LOADS return zero (mali_descriptor_lower.c lower_load_bounds wraps them in an if; Mesa's pass only rewrote the offset, which read element 0), so a robust program's code differs from 34 ; 34: robustness2 buffer bounds: get_ssbo_size/get_ubo_size is lowered to a load of dw1 of the hardware Buffer descriptor through resource table 62 (mali_descriptor_lower.c lower_size_query), so a robust program's code differs from 33 ; 33: a texelFetch (txf/txf_ms) of a combined image sampler takes the sampler half of that binding instead of the all-zero dummy sampler (the fetch returned 0 on the phone) ; 32: nir_lower_xfb_to_stores keeps the captured outputs for rasterization (keep_outputs), so the generated code of an XFB vertex shader differs from 31 ; 31: mali_spirv_has_xfb() keys on OpExecutionMode Xfb (16/11) from word 5, the same word spirv_to_nir reads (29/30 detected nothing, so no stores were ever emitted) ; 29: transform-feedback outputs lowered to global stores, per-buffer bases loaded from the driver's push-constant area ; 27: transform-feedback vertex shaders are detected and refused (MALI_COMPILE_UNSUPPORTED), before anything is cached ; 26: requested subgroup size (arch warp, 16) is validated, part of the cache key and recorded in mali_compiled ; 25: logicOp blend shader; logicOp in mali_compile_blend (opts struct grew) ; 24: merged fau_reserved API-push-block fix with the unique cache temporary (pid + sequence, O_EXCL) ; 23: fau_reserved covers the API push block (promoted immediates could land in it: >56 B VS, >32 B CS/FS-v11) / cache_store unique temporary ; 22: nir_lower_wpos_center (gl_FragCoord.xy is a pixel centre in Vulkan, hardware gives the corner) ; 21: MALI_OPT_GCM env pass added (output unchanged when unset) ; 20: 4a10c07 moved the dynamic-buffer handles (table 0 entry 64 -> table 9 entry 0) without a bump: cached v19 shaders addressed the old table 34: noperspective varyings: the VS gets the linked FS's noperspective bitfield inlined (nir_intrinsic_load_noperspective_varyings_pan), so the VS stores x w wherever the FS multiplies by gl_FragCoord.w; cached 33 VS code of a noperspective pipeline has no multiply and renders c/w */
 
 _Static_assert(sizeof(struct pan_varying_layout) <= MALI_VARYING_BLOB_MAX, "varying blob too small");
 _Static_assert(PAN_MAX_VARYINGS <= 64 || 1, "");
@@ -167,8 +167,9 @@ type_size(const struct glsl_type *t, bool bindless)
  * where that interpolant is 0. An interpolated 0/1 quantity is 0 across a triangle iff all three vertex values
  * were 0 (= all three distances negative); a triangle with one negative vertex interpolates to a positive value
  * everywhere except at that one vertex, so it is kept whole. (Asahi does the same in
- * src/asahi/compiler/agx_nir_lower_cull_distance.c, reading the interpolation coefficients directly; the two
- * comparisons below are the same test against value + derivative-free exactness: the u/v weights are all >= 0.)
+ * src/asahi/compiler/agx_nir_lower_cull_distance.c, reading the interpolation coefficients directly; Valhall has no
+ * coefficient read, so the FS tests the value AND its fine x/y derivatives: a primitive with a kept vertex is never 0
+ * in all three, including on the edge between two culled vertices where the value alone is exactly 0.)
  * nir_merge_clip_cull_distance_vars packs the cull distances behind the clip distances in VARYING_SLOT_CLIP_DIST0,
  * so [0, clip) stays real distances for nir_lower_clip_fs and [clip, clip + cull) carries the flags. */
 
@@ -233,7 +234,15 @@ lower_cull_fs(nir_shader *nir, unsigned clip_size, unsigned cull_size, unsigned 
                                                    .io_semantics.location = VARYING_SLOT_VAR0 + base + slot,
                                                    .io_semantics.num_slots = 1);
       }
-      nir_def *zero = nir_feq_imm(&b, nir_channel(&b, loaded[slot], comp), 0.0);
+      /* Exact per-primitive test (see the block comment above lower_cull_write): the flag q is a smooth varying read at the
+       * PIXEL CENTRE (never centroid or sample: the three lanes the fine derivatives combine must sit on the pixel lattice).
+       * All three vertices culled -> q is 0 * w summed = exactly 0 in every lane, derivatives 0. Any vertex kept -> q is a
+       * non-constant (rational) function whose zero set is one line (the edge between the culled vertices, or its
+       * extension), and this pixel, its x and its y neighbour are never collinear, so q and both fine differences cannot
+       * all be 0. A value-only test (q == 0) dropped covered samples lying exactly on that edge. */
+      nir_def *q = nir_channel(&b, loaded[slot], comp);
+      nir_def *zero = nir_iand(&b, nir_feq_imm(&b, q, 0.0),
+                               nir_iand(&b, nir_feq_imm(&b, nir_ddx_fine(&b, q), 0.0), nir_feq_imm(&b, nir_ddy_fine(&b, q), 0.0)));
       culled = culled ? nir_ior(&b, culled, zero) : zero;
    }
    *varying_first = base;
@@ -242,7 +251,7 @@ lower_cull_fs(nir_shader *nir, unsigned clip_size, unsigned cull_size, unsigned 
    nir->info.fs.uses_discard = true;
    nir_progress(true, impl, nir_metadata_control_flow);
    if (getenv("MALI_CULL_DBG"))
-      fprintf(stderr, "mali_cull: fs clip %u cull %u at varying %u (%u slot%s) -> %u..%u, discard inserted\n",
+      fprintf(stderr, "mali_cull: fs clip %u cull %u at varying %u (%u slot%s) -> %u..%u, discard if q == 0 && ddx_fine(q) == 0 && ddy_fine(q) == 0\n",
               clip_size, cull_size, base, slots, slots == 1 ? "" : "s", *varying_first, *varying_last);
 }
 
@@ -654,6 +663,7 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    memset(&vl, 0, sizeof vl);
    const struct pan_varying_layout *vs_layout = NULL;
    unsigned clip_distances = 0, cull_distances = 0, cull_varying = 0, cull_varying_first = 0, cull_varying_last = 0;
+   bool app_kills = false;   /* FS: the application shader discards/demotes (captured before lower_cull_fs) */
 
    if (stage == MESA_SHADER_COMPUTE) {
       NIR_PASS(_, nir, nir_lower_vars_to_explicit_types, nir_var_mem_shared, glsl_get_natural_size_align_bytes);
@@ -698,10 +708,14 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
          nir_assign_io_var_locations(nir, nir_var_shader_in);
          nir_assign_io_var_locations(nir, nir_var_shader_out);
          /* after the location assignment: the pass emits load_interpolated_input intrinsics with the var's driver_location as base */
+         /* the application's own kill, before the injected clip/cull discards make uses_discard true (EarlyFragmentTests
+          * check below); discard and demote alike (Mesa 26 has one bit) */
+         app_kills = nir->info.fs.uses_discard;
          if (o->clip_distances)
             NIR_PASS(_, nir, nir_lower_clip_fs, (1u << o->clip_distances) - 1, true, true);
-         if (o->cull_distances)
+         if (o->cull_distances) {
             lower_cull_fs(nir, o->clip_distances, o->cull_distances, o->cull_varying, &cull_varying_first, &cull_varying_last);
+         }
       }
       NIR_PASS(_, nir, nir_lower_var_copies);
       NIR_PASS(_, nir, nir_lower_indirect_derefs_to_if_else_trees, nir_var_shader_in | nir_var_shader_out, UINT32_MAX);
@@ -942,6 +956,19 @@ do_compile(const struct mali_compile_opts *o, unsigned fau_reserved, unsigned pu
    if (stage == MESA_SHADER_FRAGMENT) {
       out->fs_can_discard = info.fs.can_discard;
       out->fs_cull_discard = o->cull_distances != 0;
+      /* The injected discard forces late Z/S (mali_cs_emit.c), or a culled primitive would update depth/stencil/occlusion.
+       * For an EarlyFragmentTests shader late tests are observably the same ONLY when the shader cannot change what the
+       * tests see or do anything the early tests would have suppressed: no own discard/demote, no memory writes (they would
+       * run for depth-failing fragments), no depth/stencil/sample-mask export (EFT ignores them, late tests would use
+       * them), no PostDepthCoverage (its SampleMaskIn reflects the early test). Anything else is refused at pipeline
+       * creation (mali_pipeline.c) instead of rendered with the wrong ordering. */
+      if (getenv("MALI_CULL_DBG") && o->cull_distances)
+         fprintf(stderr, "mali_cull: fs eft %d kills %d mem %d z %d s %d mask %d pdc %d\n", info.fs.early_fragment_tests, app_kills,
+                 nir->info.writes_memory, info.fs.writes_depth, info.fs.writes_stencil,
+                 !!(nir->info.outputs_written & BITFIELD64_BIT(FRAG_RESULT_SAMPLE_MASK)), nir->info.fs.post_depth_coverage);
+      out->fs_cull_eft_conflict = o->cull_distances && info.fs.early_fragment_tests &&
+         (app_kills || nir->info.writes_memory || info.fs.writes_depth || info.fs.writes_stencil ||
+          (nir->info.outputs_written & BITFIELD64_BIT(FRAG_RESULT_SAMPLE_MASK)) || nir->info.fs.post_depth_coverage);
       out->fs_writes_depth = info.fs.writes_depth;
       out->fs_writes_stencil = info.fs.writes_stencil;
       out->fs_writes_colour = (info.outputs_written >> 4 /* FRAG_RESULT_DATA0 */) & 0xff ? 1 : 0;

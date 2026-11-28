@@ -270,6 +270,11 @@ for g in v11 v13; do
    run "vk_feat cull2 $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only cull2
    run "vk_feat cull_unwritten $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only cull_unwritten
    run "vk_feat cull_dynpoly $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only cull_dynpoly
+   # exactness edge (two culled vertices on a pixel-centre row, +-0.0 distances: pixels on hardware), EarlyFragmentTests
+   # conflict refused / plain EFT accepted, 16 user vec4 + 8 cull distances at the varying budget
+   run "vk_feat cull_edge $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only cull_edge
+   run "vk_feat cull_eft $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only cull_eft
+   run "vk_feat cull_slots $g" 0 MALI_BACKEND=fake MALI_FAKE_GPU=$g "$OUT/t_vk_feat" --direct "$OUT/libvulkan_mali.so" --spv-dir "$V/shader" --only cull_slots
 done
 
 # an unknown --only selector must fail (a typo or a missing case used to pass without running anything)

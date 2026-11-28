@@ -2,7 +2,7 @@
 /* R4-B2: behaviour tests for the DXVK-required core features, one test per feature (the honesty rule: a feature is advertised only
  * with a passing test here or in t_vk_draw). Loader-free like t_vk_draw. One JSON line per case; exit 0 = all pass.
  *
- *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only spill|cull|cull2|cull_unwritten|cull_dynpoly|firstinst|provoking|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|tf_reject|tf_write|tf_default|tf_inactive|tf_reset|tf_multi|tf_overflow|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|quadsize|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|samplerate|dparams|gather|gatherlim|fsstore|memmodel|robust2|imgmax] [--robust2]
+ *   t_vk_feat --direct <icd.so> [--spv-dir dir] [--only spill|cull|cull2|cull_unwritten|cull_dynpoly|cull_edge|cull_eft|cull_slots|firstinst|provoking|idx32|aniso|mirror|cubearray|arrtex|inlineub|push256|wide|linerast|tf_reject|tf_write|tf_default|tf_inactive|tf_reset|tf_multi|tf_overflow|storfmt|storfmt_nf|ycbcr|imageless|spec|maint5|cbc|divisor|bda|didx|quadsize|didxbuf|nulld|scalar|ubostd|zinit|demote|subgroup|sgctl|int16|int8|int64|intdot|clip|clip8|samplerate|dparams|gather|gatherlim|fsstore|memmodel|robust2|imgmax] [--robust2]
  *
  * A case whose feature is not advertised prints "skipped" (so it can be run against the driver before the bit is flipped:
  * the flip is made, the test run, and reverted if it fails). Pixels are checked only on hardware (fake backend renders nothing).
@@ -56,6 +56,7 @@ static int g_eds3_poly;         /* the device has extendedDynamicState3PolygonMo
 static PFN_vkCmdSetPolygonModeEXT CmdSetPolygonModeEXT;
 static VkPolygonMode g_poly;    /* make_pipe polygonMode (0 = VK_POLYGON_MODE_FILL) */
 static int g_expect_xfb_fail;   /* make_pipe: a transform-feedback shader must be refused, with a message naming TF */
+static const char *g_expect_refuse;   /* make_pipe: the pipeline must be refused (FEATURE_NOT_PRESENT) with a message containing this */
 static VkBool32 g_lr_rect, g_lr_bres, g_lr_smooth, g_lr_stip_rect, g_lr_stip_bres, g_lr_stip_smooth;   /* VK_EXT_line_rasterization features */
 
 static int g_matched;   /* --only names that matched a case: zero means the selector is unknown (a typo must not pass) */
@@ -296,7 +297,7 @@ make_pipe(struct tgt *t, const char *vs, const char *fs, VkDescriptorSetLayout d
                                       .pRasterizationState = &rs, .pMultisampleState = &ms, .pColorBlendState = &cbs,
                                       .pDynamicState = &dys, .layout = *lay, .renderPass = t->rp};
    VkResult r;
-   if (g_expect_xfb_fail) {
+   if (g_expect_xfb_fail || g_expect_refuse) {
       /* Capture stderr: the refusal must name the reason, not just return an error code. */
       char msg[512] = "";
       fflush(stderr);
@@ -311,8 +312,9 @@ make_pipe(struct tgt *t, const char *vs, const char *fs, VkDescriptorSetLayout d
       if (cap) { size_t n = fread(msg, 1, sizeof(msg) - 1, cap); msg[n] = 0; fclose(cap); }
       if (g_modless) { free(vcode); free(fcode); }
       else { DestroyShaderModule(dev, v, NULL); DestroyShaderModule(dev, f, NULL); }
-      CHECK(r == VK_ERROR_FEATURE_NOT_PRESENT, "a transform-feedback pipeline must be refused (%d)", r);
-      CHECK(strstr(msg, "transform feedback") != NULL, "the refusal must name transform feedback: %s", msg);
+      const char *want = g_expect_refuse ? g_expect_refuse : "transform feedback";
+      CHECK(r == VK_ERROR_FEATURE_NOT_PRESENT, "the pipeline must be refused (%d), expected: %s", r, want);
+      CHECK(strstr(msg, want) != NULL, "the refusal must name %s: %s", want, msg);
       return 1;
    }
    r = CreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gp, NULL, pipe);
@@ -3244,6 +3246,134 @@ test_cull_unwritten(void)
    return 1;
 }
 
+/* shaderCullDistance exactness (cull_edge.vert, see its header): Q1 = a kept triangle whose top edge joins two culled vertices on
+ * the pixel-centre row 128, Q2 = the same geometry unculled (the control for the rasteriser's tie-break on that row), R = distances
+ * exactly +0.0 / -0.0 (not negative: drawn). Q1 must equal Q2 pixel for pixel, R must be solid. A value-only FS test drops row 128
+ * of Q1 whenever the tie-break covers it; "edge_row" in the output says whether this run exercised that row at all. */
+static int
+test_cull_edge(void)
+{
+   if (!g_feat.shaderCullDistance) {
+      CHECK(0, "shaderCullDistance is not advertised");
+      return 0;
+   }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   if (!make_pipe(&t, "cull_edge.vert.spv", "solid.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe)) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   begin_pass(cb, &t, pipe);
+   CmdDraw(cb, 18, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   cull_host_barrier(cb);
+   if (!cb_submit(&t, cb) || !cull_host_invalidate(&t)) return 0;
+   if (!g_fake) {
+      int bad = 0, n = 0, edge_row = 0, row128_q1 = 0;
+      for (int y = 0; y < H; y++)
+         for (int x = 1; x < W / 4 - 1; x++) {
+            const uint8_t *a = pix(&t, x, y), *c = pix(&t, x + W / 4, y);
+            n++;
+            bad += memcmp(a, c, 4) != 0;
+            if (y == 128) { edge_row += c[3] != 0; row128_q1 += a[3] != 0; }
+         }
+      for (int y = 2; y < H - 2; y++)
+         for (int x = W / 2 + 2; x < W - 2; x++) {
+            n++;
+            bad += !near(pix(&t, x, y), 255, 0, 0, 255, 2);
+         }
+      CHECK(bad == 0, "%d of %d pixels wrong (row 128: control %d covered, culled-edge quarter %d; R centre %u,%u,%u,%u)", bad, n,
+            edge_row, row128_q1, pix(&t, 3 * W / 4, H / 2)[0], pix(&t, 3 * W / 4, H / 2)[1], pix(&t, 3 * W / 4, H / 2)[2],
+            pix(&t, 3 * W / 4, H / 2)[3]);
+      printf("{\"test\":\"cull_edge\",\"pixels\":%d,\"bad\":%d,\"edge_row\":%d,\"ok\":true}\n", n, bad, edge_row);
+   } else printf("{\"test\":\"cull_edge\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   return 1;
+}
+
+/* shaderCullDistance + EarlyFragmentTests: the cull discard forces late depth/stencil. A shader late tests cannot tell apart from
+ * early ones (eft.frag: no kill, no memory write, no Z/S export) is accepted; eft_discard.frag (own discard) and eft_depth.frag
+ * (gl_FragDepth) would see different Z/S results and are refused at pipeline creation, naming the reason. Without cull distances
+ * (quad.vert) all three are ordinary pipelines. */
+static int
+test_cull_eft(void)
+{
+   if (!g_feat.shaderCullDistance) {
+      CHECK(0, "shaderCullDistance is not advertised");
+      return 0;
+   }
+   /* the no-cull controls use clip.vert (clip distances only): no cull lowering, so EarlyFragmentTests is unconstrained */
+   static const struct { const char *vs, *fs; int refuse, nv; } c[] = {
+      {"cull.vert.spv", "eft.frag.spv", 0, 18},        {"cull.vert.spv", "eft_discard.frag.spv", 1, 18},
+      {"cull.vert.spv", "eft_depth.frag.spv", 1, 18},  {"clip.vert.spv", "eft_discard.frag.spv", 0, 6},
+      {"clip.vert.spv", "eft_depth.frag.spv", 0, 6},
+   };
+   int fails0 = g_fail;
+   for (unsigned k = 0; k < sizeof c / sizeof c[0]; k++) {
+      struct tgt t;
+      if (!tgt_create(&t)) return 0;
+      VkPipelineLayout lay;
+      VkPipeline pipe = VK_NULL_HANDLE;
+      g_expect_refuse = c[k].refuse ? "EarlyFragmentTests" : NULL;
+      int mp = make_pipe(&t, c[k].vs, c[k].fs, VK_NULL_HANDLE, 0, &lay, &pipe);
+      g_expect_refuse = NULL;
+      if (!mp) { tgt_destroy(&t); return 0; }
+      if (!c[k].refuse) {
+         VkCommandBuffer cb = cb_begin(&t);
+         CHECK(cb, "cmdbuf");
+         begin_pass(cb, &t, pipe);
+         CmdDraw(cb, c[k].nv, 1, 0, 0);
+         CmdEndRenderPass(cb);
+         if (!cb_submit(&t, cb)) return 0;
+         DestroyPipeline(dev, pipe, NULL);
+      }
+      DestroyPipelineLayout(dev, lay, NULL);
+      tgt_destroy(&t);
+   }
+   printf("{\"test\":\"cull_eft\",\"cases\":%u,\"ok\":%s}\n", (unsigned)(sizeof c / sizeof c[0]), g_fail == fails0 ? "true" : "false");
+   return g_fail == fails0;
+}
+
+/* shaderCullDistance at the varying budget: cull8.vert writes 16 user vec4 (maxVertexOutputComponents) + 8 cull distances
+ * (maxCullDistances), cull8.frag reads all 16. The two flag slots come on top; the pipeline must be created (the VS/FS
+ * flag-range cross-check passes) and the draw submitted. */
+static int
+test_cull_slots(void)
+{
+   if (!g_feat.shaderCullDistance) {
+      CHECK(0, "shaderCullDistance is not advertised");
+      return 0;
+   }
+   struct tgt t;
+   if (!tgt_create(&t)) return 0;
+   VkPipelineLayout lay;
+   VkPipeline pipe;
+   if (!make_pipe(&t, "cull8.vert.spv", "cull8.frag.spv", VK_NULL_HANDLE, 0, &lay, &pipe)) return 0;
+   VkCommandBuffer cb = cb_begin(&t);
+   CHECK(cb, "cmdbuf");
+   begin_pass(cb, &t, pipe);
+   CmdDraw(cb, 6, 1, 0, 0);
+   CmdEndRenderPass(cb);
+   cull_host_barrier(cb);
+   if (!cb_submit(&t, cb) || !cull_host_invalidate(&t)) return 0;
+   if (!g_fake) {
+      /* gl_CullDistance[7] = ndc.x: each of the quad's two triangles has a vertex at x = +1, so neither is culled and the
+       * whole target is drawn (a value-only or wrong-slot test would lose part of it) */
+      int bad = 0, n = 0;
+      for (int y = 2; y < H - 2; y++)
+         for (int x = 2; x < W - 2; x++) { n++; bad += !near(pix(&t, x, y), 255, 0, 0, 255, 2); }
+      CHECK(bad == 0, "%d of %d pixels wrong", bad, n);
+      printf("{\"test\":\"cull_slots\",\"pixels\":%d,\"bad\":%d,\"ok\":true}\n", n, bad);
+   } else printf("{\"test\":\"cull_slots\",\"skipped\":\"pixels: fake backend\",\"ok\":true}\n");
+   DestroyPipeline(dev, pipe, NULL);
+   DestroyPipelineLayout(dev, lay, NULL);
+   tgt_destroy(&t);
+   return 1;
+}
+
 /* shaderCullDistance + a dynamic polygon mode: the pipeline is FILL, the application switches to POINT/LINE with
  * vkCmdSetPolygonModeEXT. The rewrite to points/lines would leave per-vertex flags (wrong picture), so the draw must be refused
  * (the command buffer ends with an error) exactly as the static case is refused at pipeline creation. FILL must still work. */
@@ -4461,6 +4591,9 @@ main(int argc, char **argv)
    if (ok && CASE_ON("cull2")) ok &= test_cull2();
    if (ok && CASE_ON("cull_unwritten")) ok &= test_cull_unwritten();
    if (ok && CASE_ON("cull_dynpoly")) ok &= test_cull_dynpoly();
+   if (ok && CASE_ON("cull_edge")) ok &= test_cull_edge();
+   if (ok && CASE_ON("cull_eft")) ok &= test_cull_eft();
+   if (ok && CASE_ON("cull_slots")) ok &= test_cull_slots();
    if (ok && CASE_ON("spill")) ok &= test_spill();
    if (ok && CASE_ON("dparams")) ok &= test_dparams();
    if (ok && CASE_ON("gather")) ok &= test_gather();

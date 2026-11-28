@@ -672,6 +672,106 @@ t_xfb_key(void)
    free(vs.w);
 }
 
+/* ---- shaderCullDistance ---- */
+void disassemble_valhall(FILE *fp, const void *code, size_t size, bool verbose);   /* libpanfrost_valhall_disasm */
+
+/* 1 when the Valhall disassembly of c contains op (e.g. "CLPER": the cross-lane permute fine derivatives are built from) */
+static int
+bin_has_op(const struct mali_compiled *c, const char *op)
+{
+   char *buf = NULL;
+   size_t len = 0;
+   FILE *m = open_memstream(&buf, &len);
+   if (!m) return -1;
+   disassemble_valhall(m, c->bin, c->bin_size, false);
+   fclose(m);
+   int r = buf && strstr(buf, op) != NULL;
+   if (g_verbose && r) printf("    %s found in %u B\n", op, c->bin_size);
+   free(buf);
+   return r;
+}
+
+static int
+cull_fs(unsigned arch, const char *fsname, const struct mali_compiled *vs, struct mali_compiled *f)
+{
+   struct spv fs = load(fsname);
+   if (!fs.w) return -1;
+   struct mali_compile_opts o = {.arch = arch, .stage = MALI_STAGE_FRAGMENT, .spirv = fs.w, .spirv_words = fs.n,
+                                 .link_vs = vs ? &vs->layout : NULL, .cache_dir = "",
+                                 .clip_distances = vs ? vs->vs_clip_distances : 0, .cull_distances = vs ? vs->vs_cull_distances : 0,
+                                 .cull_varying = vs ? vs->cull_varying : 0};
+   char err[256] = "";
+   int r = mali_compile(&o, f, err, sizeof err);
+   if (r) printf("  %s compile error: %s\n", fsname, err);
+   free(fs.w);
+   return r;
+}
+
+/* The compile-level half of the cull edges (the pixel half is t_vk_feat cull / cull2 / cull_edge on hardware):
+ *  - exactness: the injected test uses fine derivatives (CLPER in the FS) and only when cull distances are written;
+ *  - zero cost: a VS without (written) cull distances reports none, so its FS gets no flag load and no discard;
+ *  - EarlyFragmentTests: the conflict flag is set exactly for a kill / Z export, not for a plain EFT shader or without cull;
+ *  - varying budget: 16 user vec4 + 8 cull distances compile and both stages agree on the two flag slots. */
+static void
+test_cull(void)
+{
+   printf("shaderCullDistance (exact FS test, zero cost, EarlyFragmentTests conflict, varying budget)\n");
+   struct spv vcull = load("cull.vert.spv"), vunw = load("cull_unw.vert.spv"), vrot = load("rot.vert.spv"), v8 = load("cull8.vert.spv");
+   if (!vcull.w || !vunw.w || !vrot.w || !v8.w) return;
+   for (unsigned arch = 11; arch <= 13; arch += 2) {
+      struct mali_compiled vs, f;
+      if (compile(arch, MALI_STAGE_VERTEX, &vcull, NULL, "", &vs)) continue;
+      CHECK(vs.vs_cull_distances == 1 && vs.vs_clip_distances == 1 && vs.cull_varying >= 1, "v%u cull.vert: clip %u cull %u varying %u",
+            arch, vs.vs_clip_distances, vs.vs_cull_distances, vs.cull_varying);
+      if (!cull_fs(arch, "solid.frag.spv", &vs, &f)) {
+         CHECK(f.fs_cull_discard && !f.fs_cull_eft_conflict, "v%u solid.frag + cull: discard %u conflict %u", arch, f.fs_cull_discard, f.fs_cull_eft_conflict);
+         CHECK(f.cull_varying_first == vs.cull_varying_first && f.cull_varying_last == vs.cull_varying_last,
+               "v%u cull flags: VS %u..%u FS %u..%u", arch, vs.cull_varying_first, vs.cull_varying_last, f.cull_varying_first, f.cull_varying_last);
+         CHECK(bin_has_op(&f, "CLPER") == 1, "v%u cull FS has no CLPER: the value-only test drops the edge between two culled vertices", arch);
+         mali_compiled_free(&f);
+      }
+      if (!cull_fs(arch, "solid.frag.spv", NULL, &f)) {
+         CHECK(!f.fs_cull_discard && bin_has_op(&f, "CLPER") == 0, "v%u solid.frag without cull: discard %u", arch, f.fs_cull_discard);
+         mali_compiled_free(&f);
+      }
+      static const struct { const char *fs; int conflict; } e[] = {
+         {"eft.frag.spv", 0}, {"eft_discard.frag.spv", 1}, {"eft_depth.frag.spv", 1}, {"solid.frag.spv", 0}};
+      for (unsigned k = 0; k < 4; k++) {
+         if (!cull_fs(arch, e[k].fs, &vs, &f)) {
+            CHECK(f.fs_cull_eft_conflict == (unsigned)e[k].conflict, "v%u %s + cull: EFT conflict %u, want %d", arch, e[k].fs, f.fs_cull_eft_conflict, e[k].conflict);
+            mali_compiled_free(&f);
+         }
+         if (!cull_fs(arch, e[k].fs, NULL, &f)) {
+            CHECK(!f.fs_cull_eft_conflict && !f.fs_cull_discard, "v%u %s without cull: conflict %u", arch, e[k].fs, f.fs_cull_eft_conflict);
+            mali_compiled_free(&f);
+         }
+      }
+      mali_compiled_free(&vs);
+      /* zero cost: a VS without cull distances is not lowered (no flag varying, so its FS gets no load and no discard) */
+      if (!compile(arch, MALI_STAGE_VERTEX, &vunw, NULL, "", &vs)) {
+         /* cull_unw writes [0] of [2]: lowered (the unwritten flag starts at 1, t_vk_feat cull_unwritten), same varying as cull.vert */
+         CHECK(vs.vs_cull_distances == 2 && vs.cull_varying >= 1, "v%u cull_unw.vert: cull %u varying %u", arch, vs.vs_cull_distances, vs.cull_varying);
+         mali_compiled_free(&vs);
+      }
+      if (!compile(arch, MALI_STAGE_VERTEX, &vrot, NULL, "", &vs)) {
+         CHECK(vs.vs_cull_distances == 0 && vs.cull_varying_first == 0 && vs.cull_varying_last == 0, "v%u rot.vert: cull %u", arch, vs.vs_cull_distances);
+         mali_compiled_free(&vs);
+      }
+      /* varying budget */
+      if (!compile(arch, MALI_STAGE_VERTEX, &v8, NULL, "", &vs)) {
+         CHECK(vs.vs_cull_distances == 8 && vs.cull_varying_last == vs.cull_varying_first + 1, "v%u cull8.vert: cull %u flags %u..%u",
+               arch, vs.vs_cull_distances, vs.cull_varying_first, vs.cull_varying_last);
+         if (!cull_fs(arch, "cull8.frag.spv", &vs, &f)) {
+            CHECK(f.cull_varying_first == vs.cull_varying_first && f.cull_varying_last == vs.cull_varying_last,
+                  "v%u cull8: VS %u..%u FS %u..%u", arch, vs.cull_varying_first, vs.cull_varying_last, f.cull_varying_first, f.cull_varying_last);
+            mali_compiled_free(&f);
+         }
+         mali_compiled_free(&vs);
+      }
+   }
+   free(vcull.w); free(vunw.w); free(vrot.w); free(v8.w);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -698,6 +798,7 @@ main(int argc, char **argv)
    test_spec();
    test_errors();
    test_logicop();
+   test_cull();
    printf("%s (%.2f s)\n", g_fail ? "FAILED" : "OK", now() - t0);
    return g_fail != 0;
 }

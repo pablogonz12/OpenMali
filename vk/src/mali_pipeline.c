@@ -297,6 +297,15 @@ create_one(struct mali_device *dev, const VkGraphicsPipelineCreateInfo *ci, cons
       goto fail;
    }
 
+   /* shaderCullDistance + EarlyFragmentTests: the cull discard needs late Z/S (a culled primitive must not touch depth,
+    * stencil or occlusion), EarlyFragmentTests needs them before the shader. Late is indistinguishable only for a shader
+    * that cannot kill, write memory or export Z/S/mask (mali_compile.c fs_cull_eft_conflict); refuse the rest. */
+   if (!rs_discard && p->vs.vs_cull_distances && p->fs.fs_cull_eft_conflict) {
+      fprintf(stderr, "mali_vk: shaderCullDistance with an EarlyFragmentTests fragment shader that discards, writes memory or exports depth/stencil/sample mask refused: the cull discard needs late depth/stencil tests\n");
+      res = VK_ERROR_FEATURE_NOT_PRESENT;
+      goto fail;
+   }
+
    /* dualSrcBlend: SRC1 factors (VkBlendFactor 15..18) on attachment 0 need a blend shader (fixed function cannot read SRC1) */
    bool has_blend = false;
    if (fss && st.cb && st.cb->attachment_count > 0 && !(BITSET_TEST(st.dynamic, MESA_VK_DYNAMIC_CB_BLEND_EQUATIONS))) {
