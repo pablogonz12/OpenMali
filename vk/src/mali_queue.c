@@ -713,6 +713,8 @@ mali_queue_submit_impl(struct vk_queue *vq, struct vk_queue_submit *submit, uint
       if (cr != VK_SUCCESS)
          return vk_error(vq, cr);
    }
+   if (submit->command_buffer_count)
+      mali_pass_stats_submit();   /* MALI_PASS_STATS: passes per submit, the periodic summary line */
 
    double p2 = prof_now();
    int fd = -1;

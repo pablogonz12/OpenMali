@@ -14,6 +14,8 @@ struct pm_pass {
    bool nodraw;
    uint32_t layers, view_mask;         /* layerCount (0 = 1) and viewMask */
    bool resolve1;                      /* a second colour slot (view 1) with an AVERAGE resolve: not rendered, still resolves */
+   int32_t sx, sy;                     /* the draw's scissor when sw != 0 (else the render area) */
+   uint32_t sw, sh;
 };
 
 /* vkCmdPipelineBarrier (1.0, the runtime turns it into CmdPipelineBarrier2) with one global memory barrier */
@@ -65,8 +67,10 @@ pm_rec(VkCommandBuffer cb, const struct pm_pass *p)
    if (!p->nodraw) {
       CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipeline)(uintptr_t)1);
       VkViewport vp = {(float)p->x, (float)p->y, (float)w, (float)h, 0.0f, 1.0f};
-      VkRect2D scr = {{p->x, p->y}, {w, h}};
+      VkRect2D scr = p->sw ? (VkRect2D){{p->sx, p->sy}, {p->sw, p->sh}} : (VkRect2D){{p->x, p->y}, {w, h}};
       CmdSetViewport(cb, 0, 1, &vp);
+      if (p->sw)   /* the test pipeline has no static scissor count (0 = render area): give it one so the scissor applies */
+         vk_command_buffer_from_handle(cb)->dynamic_graphics_state.vp.scissor_count = 1;
       CmdSetScissor(cb, 0, 1, &scr);
       CmdDraw(cb, 3, 1, 0, 0);
    }
@@ -105,11 +109,113 @@ pm_stats_expect(const char *name, const uint64_t *want, const int *idx, unsigned
 {
    uint64_t s[MALI_PS_N];
    mali_pass_stats_read(s, true);
-   static const char *const nm[MALI_PS_N] = {"passes", "load_c", "load_z", "load_s", "mergeable", "merged", "folded", "empty",
-                                             "preloads", "preload_px", "store_px", "partial", "frames", "resumed"};
    for (unsigned i = 0; i < n; i++)
-      CHECK(s[idx[i]] == want[i], "%s: stat %s = %llu (want %llu)", name, nm[idx[i]], (unsigned long long)s[idx[i]],
+      CHECK(s[idx[i]] == want[i], "%s: stat %s = %llu (want %llu)", name, mali_pass_stat_name(idx[i]), (unsigned long long)s[idx[i]],
             (unsigned long long)want[i]);
+}
+
+/* MALI_PASS_STATS predictor counters with merging off (the default): one reason per pass that is not mergeable with
+ * the previous one, loadOps per attachment, render-area vs touched tiles, the predicted saving, passes per submit, and
+ * the summary lines (one per MALI_PASS_STATS_EVERY submits, the totals at vkDestroyDevice). */
+static void
+test_pass_counters(VkCommandPool pool, struct vk_buffer *b0)
+{
+   const VkAttachmentLoadOp CLR = VK_ATTACHMENT_LOAD_OP_CLEAR, DC = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+   const uint64_t px = (uint64_t)W * H, tiles = (uint64_t)(W / 16) * (H / 16);
+   VkCommandBuffer cb;
+   uint64_t s[MALI_PS_N];
+   unsetenv("MALI_PASS_MERGE");
+   mali_pass_stats_read(s, true);
+   /* three command buffers (the test ring holds about five frames per submit), one submit each */
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR, .sx = 8, .sy = 8, .sw = 16, .sh = 16});   /* A: first; 2 x 2 tiles */
+   pm_rec(cb, &(struct pm_pass){.col = 1});                                                    /* B: mergeable */
+   {
+      DFN(CmdCopyBuffer);
+      VkBufferCopy bc = {0, 2048, 256};
+      CmdCopyBuffer(cb, vk_buffer_to_handle(b0), vk_buffer_to_handle(b0), 1, &bc);
+   }
+   pm_rec(cb, &(struct pm_pass){.col = 1});                                                    /* C: a frame between */
+   pm_mbar(cb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+           VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+   pm_rec(cb, &(struct pm_pass){.col = 1});                                                    /* D: a barrier */
+   pm_finish(cb, "counters_a", 5);   /* 4 passes + the copy */
+   mali_pass_stats_submit();
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1});                                                    /* P: first */
+   pm_rec(cb, &(struct pm_pass){.col = 1, .dep = 2, .ld = DC});                               /* F: attachments */
+   pm_rec(cb, &(struct pm_pass){.col = 1, .dep = 2, .lc = CLR});                              /* G: clears */
+   pm_rec(cb, &(struct pm_pass){.col = 1, .x = 16, .y = 16, .w = 64, .h = 64});              /* E: area; 4 x 4 tiles */
+   pm_finish(cb, "counters_b", 4);
+   mali_pass_stats_submit();
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1});                                                    /* P2: first */
+   pm_rec(cb, &(struct pm_pass){.col = 1, .resolve1 = true});                                 /* H: flags (resolve) */
+   pm_rec(cb, &(struct pm_pass){.col = 1});                                                    /* I: H could not park */
+   mali_cmd_set_occlusion(mali_cmd_buffer_from_vk(vk_command_buffer_from_handle(cb)), F.vb.gpu_va + 512, MALI_OCC_MODE_COUNTER);
+   pm_rec(cb, &(struct pm_pass){.col = 1});                                                    /* J: a query */
+   mali_cmd_set_occlusion(mali_cmd_buffer_from_vk(vk_command_buffer_from_handle(cb)), 0, 0);
+   pm_finish(cb, "counters_c", 4);
+   mali_pass_stats_submit();
+   mali_pass_stats_read(s, false);
+   uint64_t sum = s[MALI_PS_MERGEABLE] + s[MALI_PS_FOLDED];
+   for (unsigned i = 0; i < MALI_PW_N; i++)
+      sum += s[MALI_PS_NM0 + i];
+   CHECK(sum == s[MALI_PS_PASSES], "counters: %llu passes but %llu classified", (unsigned long long)s[MALI_PS_PASSES],
+         (unsigned long long)sum);
+   {
+      static const int ix[] = {MALI_PS_PASSES, MALI_PS_MERGEABLE, MALI_PS_MERGED, MALI_PS_NM0 + MALI_PW_FIRST,
+                               MALI_PS_NM0 + MALI_PW_FRAME, MALI_PS_NM0 + MALI_PW_BARRIER, MALI_PS_NM0 + MALI_PW_AREA,
+                               MALI_PS_NM0 + MALI_PW_ATTACH, MALI_PS_NM0 + MALI_PW_CLEAR, MALI_PS_NM0 + MALI_PW_FLAGS,
+                               MALI_PS_NM0 + MALI_PW_UNPARKED, MALI_PS_NM0 + MALI_PW_QUERY, MALI_PS_NM0 + MALI_PW_SIZE,
+                               MALI_PS_CLEAR_C, MALI_PS_CLEAR_Z, MALI_PS_DC_Z, MALI_PS_SAVE_PX, MALI_PS_AREA_TILES,
+                               MALI_PS_TOUCHED_TILES, MALI_PS_SUBMITS, MALI_PS_SUB_PASSES, MALI_PS_SUB_FRAMES,
+                               MALI_PS_SUB_MAXPASSES};
+      /* G clears colour and LOADs depth; F's depth is DONT_CARE. Save for B: its colour preload + A's colour store.
+       * Area tiles: 11 full passes + E's 4 x 4. Touched: A's 2 x 2 scissor, 10 full draws, E's 4 x 4. */
+      const uint64_t want[] = {12, 1, 0, 3, 1, 1, 1, 1, 1, 1, 1, 1, 0, 2, 0, 1, 2 * px, 11 * tiles + 16, 4 + 10 * tiles + 16,
+                               3, 12, 12, 4};
+      pm_stats_expect("counters", want, ix, sizeof ix / sizeof ix[0]);
+   }
+   /* after the reset in pm_stats_expect: one more command buffer, its pass is "first" */
+   new_cmd(pool, &cb);
+   pm_rec(cb, &(struct pm_pass){.col = 1, .lc = CLR});
+   pm_finish(cb, "counters_2", 1);
+   /* the summary lines on stderr: one per MALI_PASS_STATS_EVERY=2 submits, the totals at device destroy */
+   setenv("MALI_PASS_STATS_EVERY", "2", 1);
+   fflush(stderr);
+   FILE *t = tmpfile();
+   const int save = dup(2);
+   CHECK(t && save >= 0 && dup2(fileno(t), 2) >= 0, "counters: stderr redirect");
+   mali_pass_stats_submit();   /* submit 1 since the reset above (counters_2) */
+   mali_pass_stats_submit();   /* submit 2: a line, the deltas since the reset */
+   mali_pass_stats_submit();   /* submit 3: none */
+   mali_pass_stats_submit();   /* submit 4: a line, nothing happened since the previous one */
+   mali_pass_stats_print_total();
+   fflush(stderr);
+   dup2(save, 2);
+   close(save);
+   unsetenv("MALI_PASS_STATS_EVERY");
+   char line[2048];
+   unsigned nper = 0, ntot = 0;
+   rewind(t);
+   while (fgets(line, sizeof line, t)) {
+      if (!strncmp(line, "mali_pass: ", 11)) {
+         if (nper++ == 0)
+            CHECK(strstr(line, " submits=2 ") && strstr(line, " passes=1 ") && strstr(line, " nm_first=1 ") &&
+                  strstr(line, " max_passes_per_submit=1 ") && strstr(line, " passes_per_submit=0.50 merge=0"),
+                  "counters: first per-N line: %s", line);
+         else
+            CHECK(strstr(line, " submits=2 ") && strstr(line, " passes=0 ") && strstr(line, " max_passes_per_submit=0 ") &&
+                  strstr(line, " passes_per_submit=0.00 "), "counters: the second per-N line is a delta: %s", line);
+      } else if (!strncmp(line, "mali_pass_total: ", 17)) {
+         ntot++;
+         CHECK(strstr(line, " submits=4 ") && strstr(line, " passes=1 ") && strstr(line, " max_passes_per_submit=1 ") &&
+               strstr(line, " nm_first=1 ") && strstr(line, " touched_tiles="), "counters: total line: %s", line);
+      }
+   }
+   fclose(t);
+   CHECK(nper == 2 && ntot == 1, "counters: %u per-N lines (want 2), %u total lines (want 1)", nper, ntot);
 }
 
 static void
@@ -498,6 +604,7 @@ test_passmerge(VkCommandPool pool)
       CHECK(m->frames[0].colour.store && !m->frames[1].colour.clear && ls_preloads(&m->frames[1]) == 1,
             "suspend_resume_off: store %d / clear %d preloads %u", m->frames[0].colour.store, m->frames[1].colour.clear,
             ls_preloads(&m->frames[1]));
+   test_pass_counters(pool, b0);
    unsetenv("MALI_PASS_MERGE");
    unsetenv("MALI_PASS_STATS");
    free(b0);
