@@ -130,7 +130,7 @@ emit(struct mali_cmd_buffer *cmd, struct mali_meta_list *l, int plan_err, const 
    if (cmd->in_render && getenv("MALI_META_DBG"))
       fprintf(stderr, "mali_meta_vk: %s deferred to the end of the render pass\n", op);
    struct mali_meta_mem *mem = mem_of(cmd);
-   if (getenv("MALI_META_DBG")) fprintf(stderr, "mali_meta_vk: emit %u jobs\n", l->n);
+   if (getenv("MALI_META_DBG")) fprintf(stderr, "mali_meta_vk: %s: emit %u jobs\n", op, l->n);
    for (unsigned i = 0; i < l->n; i++) {
       struct mali_frame f;
       memset(&f, 0, sizeof f);

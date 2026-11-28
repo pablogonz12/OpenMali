@@ -1454,6 +1454,8 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
 void
 mali_resolve_region(const struct mali_frame *f, VkImageResolve2 *r)
 {
+   if (getenv("MALI_PIPE_DBG"))
+      fprintf(stderr, "mali_cmd: deferred resolve region %dx%d at %d,%d\n", f->area[2], f->area[3], f->area[0], f->area[1]);
    const int32_t *ar = f->area;
    const uint32_t x = ar[2] ? (uint32_t)ar[0] : 0, y = ar[3] ? (uint32_t)ar[1] : 0;
    memset(r, 0, sizeof *r);
@@ -1505,6 +1507,9 @@ mali_CmdEndRendering(VkCommandBuffer h)
       return;
    }
    const uint64_t resolve_src = cmd->cur.resolve_src, resolve_dst = cmd->cur.resolve_dst;
+   /* `rr` and `area` are taken from the frame BEFORE it is pushed and wiped; nothing below may read cmd->cur for them.
+    * Rebuilding the region from the wiped frame gave 0x0, blit_one returned early (mali_meta_vk.c) and the resolve image
+    * of a STORE + resolve pass was never written: stale memory or blank in whatever sampled it (PR #390 first found this). */
    const bool resolve_1x = cmd->cur.resolve_1x;
    const VkFormat src_format = cmd->cur.resolve_src_format, dst_format = cmd->cur.resolve_dst_format;
    VkImageResolve2 rr;
@@ -1551,7 +1556,6 @@ mali_CmdEndRendering(VkCommandBuffer h)
       /* MSAA storeOp STORE with a resolve: the samples are in memory now, resolve them in their own pass (the
        * hardware cannot write the average and the samples in one go). mali_CmdResolveImage2 plans a compute job
        * that is appended after the pass frame, which is "after the pass" on the in-order CS ring. */
-      mali_resolve_region(&cmd->cur, &rr);
       VkResolveImageInfo2 ri = {.sType = VK_STRUCTURE_TYPE_RESOLVE_IMAGE_INFO_2,
                                 .srcImage = (VkImage)(uintptr_t)resolve_src,
                                 .srcImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -1637,7 +1641,7 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
          partial = true;
    if (partial || f->ndraws) {
       /* after a draw, or a sub-rectangle: a constant-colour quad (preload.frag kind 19: the clear words are the format's raw shader output) per rect.
-       * Single-sampled, layer 0; whole-area depth/stencil clears before the first draw keep the loadOp-patch path below. */
+       * Layer 0 (1x or 4x); whole-area depth/stencil clears before the first draw keep the loadOp-patch path below. */
       /* depth/stencil: fixed function, no shader read. The constant-colour quad with colour writes masked; the depth value is the viewport
        * min=max depth (depth test ALWAYS + write, clip off), the stencil value a REPLACE-always reference. */
       for (uint32_t i = 0; i < na; i++) {
@@ -1653,11 +1657,6 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
             if (!zc && !sc)
                continue;
          }
-         if (f->samples != 1) {
-            /* the depth/stencil quad writes one sample per fragment; at 4x that is not the clear Vulkan asks for */
-            degrade(cmd, "CmdClearAttachments depth/stencil inside a multisampled pass");
-            continue;
-         }
          for (uint32_t r = 0; r < nr; r++) {
             if (rects[r].baseArrayLayer != 0 || rects[r].layerCount != 1) {
                unsupported(cmd, "CmdClearAttachments depth/stencil quad: layers");
@@ -1672,6 +1671,13 @@ mali_CmdClearAttachments(VkCommandBuffer h, uint32_t na, const VkClearAttachment
                return;
             }
             d.dirty = MALI_D_ALL;
+            /* Multisampled pass (zink's in-pass glClear(STENCIL), zink_clear.c clear_in_rp): the quad is rasterised with
+             * the pass' sample count, so its coverage holds every sample of a covered pixel and the fixed-function depth
+             * write / stencil REPLACE update each of them (PanVK clears ZS in a render pass with a draw too, vk_meta_clear).
+             * No per-sample shading: nothing here comes from the shader. It used to be dropped, which left the previous
+             * stencil under Skia's stencil-then-cover draws. */
+            if (f->samples > 1)
+               d.gfx.samples = f->samples;
             d.fx.set = true;
             d.fx.front_ccw = true;
             d.fx.depth_clip = false;
