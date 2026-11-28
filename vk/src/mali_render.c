@@ -8,6 +8,7 @@
  * FBD word 12 bits 31:28 are NOT set on v13 (they fault the queue, V13-NEXT2.md). */
 #include <errno.h>
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "kbase_fb.h"
@@ -190,6 +191,48 @@ mali_unorm8(float c)
    return (uint8_t)lroundf(c * 255.0f);
 }
 
+/* log2 of the tile AREA the FBD ends up declaring as its Effective Tile Size. kb_fb_pack writes 8 (16x16) for 4x MSAA and
+ * its default 10 (32x32) otherwise; mali_render_pack_fbd then overrides it on v13 with env->tile_log2, quartered for 4x.
+ * Anything that has to agree with the tile (the hierarchy mask, this bound box) must use this, not env->tile_log2. */
+unsigned
+mali_fbd_tile_log2(const struct mali_env *env, const struct mali_frame *f)
+{
+   if (env->arch == 13)
+      return f->samples == 4 ? env->tile_log2 - 2 : env->tile_log2;
+   return f->samples == 4 ? 8u : 10u;
+}
+
+/* FBD Bound Min/Max: the tile range the fragment job covers, as PanVK packs it (pan_fb.c pan_fb_bbox_align rounds the
+ * draw extent to whole tiles, panvk_vX_cmd_draw.c puts it in the FBD). kb_fb_pack writes the whole attachment; a render
+ * area smaller than the attachment then makes the fragment job cover (LOAD-preload) tiles no draw touches.
+ * MALI_BBOX32: unset/0 = round to the effective tile (the real one, from mali_fbd_tile_log2); 1 = round to 32 px, the
+ * pre-audit behaviour (a 32-px box is not tile-aligned on a 64x64 tile); 2 = the whole attachment, what main did before
+ * this change, for a three-way phone A/B. out = { minx, miny, maxx, maxy }, inclusive, clipped to the attachment. */
+void
+mali_fbd_bounds(const struct mali_env *env, const struct mali_frame *f, uint32_t *out)
+{
+   const unsigned w = f->width, h = f->height;
+   out[0] = 0; out[1] = 0; out[2] = w ? w - 1 : 0; out[3] = h ? h - 1 : 0;
+   const char *e = getenv("MALI_BBOX32");
+   const int mode = e ? atoi(e) : 0;
+   if (mode == 2 || !w || !h || f->area[2] <= 0 || f->area[3] <= 0)
+      return;
+   /* Render area clipped to the attachment, in pixels. */
+   long x0 = f->area[0] < 0 ? 0 : f->area[0], y0 = f->area[1] < 0 ? 0 : f->area[1];
+   long x1 = (long)f->area[0] + f->area[2], y1 = (long)f->area[1] + f->area[3];
+   if (x0 > (long)w || y0 > (long)h || x1 <= x0 || y1 <= y0)
+      return;
+   if (x1 > (long)w) x1 = w;
+   if (y1 > (long)h) y1 = h;
+   const unsigned tl = mode == 1 ? 10u : mali_fbd_tile_log2(env, f);   /* 10 = 32x32 */
+   const long step = 1L << (tl / 2);                                   /* tile edge in pixels: 32 or 64 */
+   long minx = x0 & ~(step - 1), miny = y0 & ~(step - 1);              /* round outward: never clip a pixel the pass covers */
+   long maxx = ((x1 + step - 1) & ~(step - 1)) - 1, maxy = ((y1 + step - 1) & ~(step - 1)) - 1;
+   if (maxx > (long)w - 1) maxx = w - 1;
+   if (maxy > (long)h - 1) maxy = h - 1;
+   out[0] = (uint32_t)minx; out[1] = (uint32_t)miny; out[2] = (uint32_t)maxx; out[3] = (uint32_t)maxy;
+}
+
 int
 mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uint8_t *out, uint64_t tiler_ctx_va,
                      uint64_t sample_locations_va)
@@ -248,6 +291,7 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
       p.zs_format = (enum kb_zs_format)f->zs.zs_format;
       p.zs_gpu_va = f->zs.va;
       p.zs_row_stride = f->zs.row_stride;
+      if (msaa) p.zs_layered_stride = f->zs.surface_stride;
       p.clear_depth = f->zs.clear ? f->zs.clear_depth : 0.0f;
       p.zs_no_store = !f->zs.store;
    }
@@ -257,6 +301,7 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
       p.s_row_stride = f->st.row_stride;
       p.clear_stencil = f->st.clear ? f->st.clear_stencil : 0;
       p.s_no_store = !f->st.store;
+      if (msaa) p.s_layered_stride = f->st.surface_stride;
    }
    p.arch = env->arch == 13 ? 13 : 0;
    int rc = kb_fb_pack(out, &p);
@@ -267,8 +312,15 @@ mali_render_pack_fbd(const struct mali_env *env, const struct mali_frame *f, uin
       unsigned al = ((1u << env->tile_log2) * (f->colour.rt ? f->colour.rt->alloc : 4u)) >> 10;
       if (!al)
          al = 1;
-      unsigned tl = env->tile_log2 - (msaa ? 2 : 0);   /* 4x: smaller tile, same bytes (pixels * samples unchanged) */
+      unsigned tl = mali_fbd_tile_log2(env, f);   /* 4x: smaller tile, same bytes (pixels * samples unchanged) */
       w[11] = (w[11] & ~((0xfu << 9) | (0xffu << 24))) | ((tl & 0xfu) << 9) | (al << 24);
+   }
+   /* FBD Bound Min/Max (words 9, 10) = the render area rounded outward to whole tiles. */
+   {
+      uint32_t b[4], *w = (uint32_t *)out;
+      mali_fbd_bounds(env, f, b);
+      w[9] = (b[0] & 0xffffu) | (b[1] << 16);
+      w[10] = (b[2] & 0xffffu) | (b[3] << 16);
    }
    return 0;
 }

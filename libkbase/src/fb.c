@@ -49,6 +49,7 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 	const int ext = zs || st;
 	uint32_t s_row = p->s_row_stride ? p->s_row_stride : (p->width + 15u) & ~15u;
 	if (st && ((p->s_gpu_va & 63) || (s_row & 15))) return -EINVAL;
+	if (st && p->s_layered_stride && s_row >= (1u << 27)) return -EINVAL;
 	uint32_t zs_row = p->zs_row_stride ? p->zs_row_stride : (p->width * kb_zs_bytes_per_pixel(p->zs_format) + 15u) & ~15u;
 	if (zs && ((p->zs_gpu_va & 63) || (zs_row & 15) || p->zs_format > KB_ZS_D16)) return -EINVAL;
 	memset(out, 0, ext ? KB_FB_DESC_SIZE_ZS : KB_FB_DESC_SIZE);
@@ -85,12 +86,12 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 		/* S Target (v10.xml): word 0 bits 16 Write Format S8 (1), 20 Block Format linear, 24 MSAA single, 31 Clean Tile Write Enable (shared bit with ZS) */
 		put(x, 0, 16, 4, 1);
 		put(x, 0, 20, 4, 2);
-		put(x, 0, 24, 2, 0);
+		put(x, 0, 24, 2, p->zs_msaa);
 		put(x, 0, 31, 1, 1);
 		put(x, 12, 0, 32, (uint32_t)p->s_gpu_va);            /* Base */
 		put(x, 13, 0, 32, (uint32_t)(p->s_gpu_va >> 32));
 		put(x, 14, 0, 32, s_row);                            /* Row Stride */
-		put(x, 15, 0, 32, (uint32_t)((uint64_t)s_row * p->height));   /* Surface Stride */
+		put(x, 15, 0, 32, p->s_layered_stride ? p->s_layered_stride : (uint32_t)((uint64_t)s_row * p->height));   /* Surface Stride */
 	}
 	if (zs) {
 		put(f, 12, 18, 1, !p->zs_no_store);                  /* Z Write Enable */
@@ -98,13 +99,14 @@ int kb_fb_pack(uint8_t *out, const struct kb_fb_params *p)
 		/* ZS Target (v11.xml "ZS Target"; pan_desc.c pan_emit_linear_zs_attachment) */
 		put(x, 0, 0, 4, p->zs_format == KB_ZS_D32F ? 14 : p->zs_format == KB_ZS_D24X8 ? 4 : 1);   /* Write Format D32 / D24X8 / D16 */
 		put(x, 0, 4, 4, 2);                                  /* Block Format: Linear */
-		put(x, 0, 8, 2, 0);                                  /* MSAA single */
+		put(x, 0, 8, 2, p->zs_msaa);
 		put(x, 0, 31, 1, 1);                                 /* Clean Tile Write Enable: write the cleared depth of empty tiles */
 		put(x, 8, 0, 32, (uint32_t)p->zs_gpu_va);            /* Base */
 		put(x, 9, 0, 32, (uint32_t)(p->zs_gpu_va >> 32));
 		put(x, 10, 0, 27, zs_row);                           /* Row Stride */
-		put(x, 10, 27, 5, ((uint64_t)zs_row * p->height) >> 32);   /* Surface Stride hi */
-		put(x, 11, 0, 32, (uint32_t)((uint64_t)zs_row * p->height));   /* (per-sample plane; MSAA samples are consecutive) */   /* Surface Stride */
+		uint64_t stride = p->zs_layered_stride ? p->zs_layered_stride : (uint64_t)zs_row * p->height;
+		put(x, 10, 27, 5, stride >> 32);
+		put(x, 11, 0, 32, stride);
 	}
 	/* word 13: Z clear = 0. Words 14..15: Tiler Context pointer (0 = none). Words 16..17: VRS (0). */
 	put(f, 14, 0, 32, (uint32_t)p->tiler_va);

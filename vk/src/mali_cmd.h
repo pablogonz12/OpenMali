@@ -22,6 +22,10 @@
 
 #define MALI_CMD_WROTE_MAX 64
 
+struct mali_cmd_buffer;
+/* The reason is copied when retained for rate limiting. */
+void mali_cmd_unsupported(struct mali_cmd_buffer *cmd, const char *what);
+
 /* A render target or depth image as the command buffer needs it. */
 struct mali_cmd_target {
    uint64_t va;
@@ -33,6 +37,7 @@ struct mali_cmd_target {
    bool has_s;      /* the view has a stencil aspect: s_va / s_row_stride name the S8 plane */
    uint64_t s_va;
    uint32_t s_row_stride;
+   uint32_t s_surface_stride;
    unsigned samples;     /* image sample count (1 or 4) */
    uint32_t surface_stride;   /* bytes per sample plane (MSAA images: samples consecutive) */
    bool multi;      /* image has more than one level/layer/sample or is not 2D: vkCmdClearColorImage takes the M12 compute path */
@@ -134,6 +139,9 @@ void mali_CmdBeginTransformFeedbackEXT(VkCommandBuffer h, uint32_t first_counter
 void mali_CmdEndTransformFeedbackEXT(VkCommandBuffer h, uint32_t first_counter_buffer, uint32_t counter_buffer_count,
                                      const VkBuffer *counter_buffers, const VkDeviceSize *counter_buffer_offsets);
 void mali_cmd_mark_image_written(struct mali_cmd_buffer *cmd, VkImage i);
+bool mali_resolve_1x_clamp(VkImageResolve2 *region, const int32_t area[4],
+                           uint32_t sw, uint32_t sh, uint32_t dw, uint32_t dh);
+void mali_resolve_1x_slices(VkImageResolve2 *region, bool src3d, bool dst3d);
 
 /* Install as dev->vk.command_buffer_ops (vk_common_Create/Allocate/Free/ResetCommandPool and Begin/End then work as is). */
 extern const struct vk_command_buffer_ops mali_cmd_ops;

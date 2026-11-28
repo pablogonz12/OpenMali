@@ -24,6 +24,9 @@
 #include "vk_alloc.h"
 #include "vk_graphics_state.h"
 #include "util/bitset.h"
+#include "util/u_math.h"
+#include "util/format/u_format.h"
+#include "vk_format.h"
 
 static struct mali_cmd_res_ops g_res;
 static struct mali_hw g_hw;
@@ -48,13 +51,33 @@ mali_cmd_set_hw(const struct mali_hw *hw)
 
 #define CMD(h) struct mali_cmd_buffer *cmd = mali_cmd_buffer_from_vk(vk_command_buffer_from_handle(h))
 
-static void
-unsupported(struct mali_cmd_buffer *cmd, const char *what)
+void
+mali_cmd_unsupported(struct mali_cmd_buffer *cmd, const char *what)
 {
-   if (getenv("MALI_PIPE_DBG"))
+   /* Reasons may be temporary buffers. Recording is concurrent. */
+   static char *seen[256];
+   static unsigned count;
+   static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+   bool first = true;
+   pthread_mutex_lock(&mutex);
+   for (unsigned i = 0; i < count; i++)
+      if (!strcmp(seen[i], what)) {
+         first = false;
+         break;
+      }
+   if (first && count < sizeof(seen) / sizeof(seen[0])) {
+      char *copy = strdup(what);
+      if (copy)
+         seen[count++] = copy;
+      /* On allocation failure, log this occurrence and retry next time. */
+   }
+   pthread_mutex_unlock(&mutex);
+   if (first)
       fprintf(stderr, "mali_cmd: unsupported %s\n", what);
    vk_command_buffer_set_error(&cmd->vk, VK_ERROR_FEATURE_NOT_PRESENT);
 }
+
+#define unsupported mali_cmd_unsupported
 
 /* Legal-but-unimplemented state: render the closest legal thing, log ONE line, do not poison the command buffer.
  * PanVK's only vk_command_buffer_set_error is OOM (panvk_vX_cmd_desc_state.c:82); illegal state is UNREACHABLE and
@@ -625,6 +648,21 @@ snapshot_draw(struct mali_cmd_buffer *cmd, struct mali_rec *d, uint32_t count, u
       x->src_a = cb->src_alpha_blend_factor; x->dst_a = cb->dst_alpha_blend_factor;
       x->op_c = cb->color_blend_op; x->op_a = cb->alpha_blend_op;
       memcpy(x->bconst, dyn->cb.blend_constants, sizeof x->bconst);
+      /* attachments 1..3 have their own blend state (independentBlend is advertised). Only the CPU rasteriser draws
+       * them today — a frame with more than one colour attachment is refused on the hardware path — so recording it
+       * here cannot change the command stream; it is what the renderer that does draw them reads. */
+      for (unsigned r = 1; r < 4; r++) {
+         const struct vk_color_blend_attachment_state *cr = &dyn->cb.attachments[r];
+         struct mali_fx_att *o = &x->xatt[r - 1];
+         o->en = BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_BLEND_ENABLES) && cr->blend_enable;
+         o->wmask = BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_WRITE_MASKS) ? cr->write_mask : 0xf;
+         if (BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_CB_COLOR_WRITE_ENABLES) && !(dyn->cb.color_write_enables & (1u << r)))
+            o->wmask = 0;
+         o->src_c = cr->src_color_blend_factor; o->dst_c = cr->dst_color_blend_factor;
+         o->src_a = cr->src_alpha_blend_factor; o->dst_a = cr->dst_alpha_blend_factor;
+         o->op_c = cr->color_blend_op; o->op_a = cr->alpha_blend_op;
+         memcpy(o->bconst, dyn->cb.blend_constants, sizeof o->bconst);
+      }
       /* vk_graphics_state keeps the previous pass' logic_op_enable when a pipeline without colour blending is bound:
        * a depth-only pass must ignore it, not fail the command buffer on retained state */
       if (dyn->cb.logic_op_enable && cmd->cur.has_colour) {
@@ -710,8 +748,10 @@ mali_CmdDrawIndexed(VkCommandBuffer h, uint32_t icount, uint32_t inst, uint32_t 
    mali_frame_note_rec(&cmd->cur, sl);
 }
 
-/* Indirect draws: the command array is read through the CPU mapping when the frame is submitted (frames are serialised, so every
- * earlier write to the buffer has retired) and expanded into plain draws (expand_indirect). */
+/* Indirect draws: the command array is either read through the CPU mapping when the frame is submitted (frames are serialised,
+ * so every earlier write to the buffer has retired) and expanded into plain draws (expand_indirect), or - the default - handed
+ * to the command stream as one record per command and loaded into the IDVS registers at execution time (emit_draw_regs), which
+ * is the only way a descriptor a compute job wrote can drive the draw. */
 static const uint8_t *
 buffer_cpu(VkBuffer b, VkDeviceSize off, VkDeviceSize need)
 {
@@ -720,6 +760,12 @@ buffer_cpu(VkBuffer b, VkDeviceSize off, VkDeviceSize need)
       return NULL;
    return (const uint8_t *)mb->mem->bo.cpu + mb->mem_off + off;
 }
+
+/* Commands are unrolled: one LOAD_MULTIPLE + RUN_IDVS per VkDraw*IndirectCommand, because libkbase has no CS control flow
+ * (no WHILE/IF, kbase_cs.h). A drawCount above this therefore keeps the CPU expansion of every earlier release -- a real
+ * multiDrawIndirect needs the CS loop PanVK uses (panvk_vX_cmd_draw.c:3353), which is also what DrawIndirectCount waits
+ * for. 256 x ~15 words is a frame's worth of stream; the cases this exists for (DXVK, GPU-driven engines) issue 1..16. */
+#define MALI_IND_UNROLL_MAX 256u
 
 static void
 record_indirect(VkCommandBuffer h, bool indexed, VkBuffer b, VkDeviceSize off, VkBuffer cb, VkDeviceSize coff, uint32_t n, uint32_t stride)
@@ -737,13 +783,39 @@ record_indirect(VkCommandBuffer h, bool indexed, VkBuffer b, VkDeviceSize off, V
       stride = sz;
    if (!n)
       return;
-   const uint8_t *p = buffer_cpu(b, off, (VkDeviceSize)stride * (n - 1) + sz);
+   /* The arguments are read by the CS at execution time (`va`) unless something needs them on the CPU: a count buffer (no
+    * CS control flow yet), the software rasteriser, transform feedback's single-instance check, and polygonMode
+    * LINE/POINT's index assembly. Those keep reading the CPU mapping, which is provably what they did before; every other
+    * indirect draw is the one that must NOT read it, because the mapping still holds what the host wrote even after a
+    * compute job rewrote the descriptor. The shaderDrawParameters sysvals are not in this list: the FAU words they read are
+    * patched from the loaded registers by the command stream (mali_cs_emit.c emit_indirect_args). */
+   /* cmd->gfx.poly_mode is the pipeline's STATIC polygon mode; with VK_EXT_extended_dynamic_state3 the record-time value
+    * lives in the dynamic state, and LINE/POINT there also rewrites the draw into an index list at build time, which needs
+    * the arguments on the CPU */
+   const struct vk_dynamic_graphics_state *dyn = &cmd->vk.dynamic_graphics_state;
+   const bool dyn_poly = BITSET_TEST(dyn->set, MESA_VK_DYNAMIC_RS_POLYGON_MODE) && dyn->rs.polygon_mode != VK_POLYGON_MODE_FILL;
+   /* MALI_IND_CPU selects the CPU read as a control. Its two values are the two halves of the old behaviour, and only
+    * "drain" is correct: the CPU reads the mapping at SUBMIT time (expand_indirect), so it sees a compute job's write only
+    * if every earlier frame has retired first -- which the drain did, and which is exactly the serialization this lane
+    * removes. MALI_IND_CPU=1 therefore means "read the mapping, do NOT drain": the stale read, i.e. the failing control
+    * (nothing is drawn when a compute job in the same submission produced the command). MALI_IND_CPU=drain keeps the
+    * historical pair (read + drain) for the A/B, where the picture must stay correct. */
+   const char *ind_cpu_env = getenv("MALI_IND_CPU");
+   const bool force_cpu = ind_cpu_env && *ind_cpu_env && strcmp(ind_cpu_env, "0") != 0;
+   const bool cpu_drain = force_cpu && !strcmp(ind_cpu_env, "drain");
+   const bool cpu_args = cb || g_hw.soft || cmd->tf.active || cmd->gfx.poly_mode || dyn_poly || n > MALI_IND_UNROLL_MAX || force_cpu;
+   const uint8_t *p = NULL;
    const uint32_t *cp = NULL;
+   uint64_t va = 0;
    if (cb && !(cp = (const uint32_t *)buffer_cpu(cb, coff, 4))) {
       unsupported(cmd, "indirect count buffer");
       return;
    }
-   if (!p) {
+   if (cpu_args)
+      p = buffer_cpu(b, off, (VkDeviceSize)stride * (n - 1) + sz);
+   else
+      va = vk_buffer_address(vk_buffer_from_handle(b), off);
+   if (!p && !va) {
       unsupported(cmd, "indirect buffer (no CPU mapping)");
       return;
    }
@@ -759,9 +831,15 @@ record_indirect(VkCommandBuffer h, bool indexed, VkBuffer b, VkDeviceSize off, V
       d.index_size = cmd->ib_size;
    }
    d.ind = p;
+   d.ind_va = va;
    d.ind_count = cp;
    d.ind_n = n;
    d.ind_stride = stride;
+   d.ind_nodrain = force_cpu && !cpu_drain;   /* the failing control: a CPU read with no ordering */
+   if (getenv("MALI_PIPE_DBG"))
+      fprintf(stderr, "mali_vk: indirect draw (n=%u, %s): arguments read on the %s%s\n", n, indexed ? "indexed" : "direct",
+              va ? "GPU (command stream)" : "CPU (mapping at submit)",
+              p && d.ind_nodrain ? ", NO drain: a compute job's write in this submission is invisible" : "");
    if (mali_frame_add_rec(&cmd->cur, &d))
       vk_command_buffer_set_error(&cmd->vk, VK_ERROR_OUT_OF_HOST_MEMORY);
 }
@@ -801,12 +879,12 @@ expand_indirect(struct mali_frame *f)
    for (unsigned i = 0; i < f->ndraws; i++) {
       const struct mali_rec *d = &f->draws[i];
       int rc = 0;
-      if (!d->ind) {
+      if (!d->ind && !d->ind_va) {
          struct mali_rec e = *d;
          e.dirty |= carry;
          carry = 0;
          rc = mali_frame_add_rec(&o, &e);
-      } else {
+      } else if (d->ind) {
          uint32_t n = d->ind_n;
          if (d->ind_count && *d->ind_count < n)
             n = *d->ind_count;
@@ -835,6 +913,20 @@ expand_indirect(struct mali_frame *f)
                rc = mali_frame_add_rec(&o, &e);
             } else
                carry |= e.dirty;
+         }
+      } else {
+         /* GPU-read descriptor: one record per command, each carrying its own VA; the count/instance/first_* words stay
+          * unknown here and the command stream loads them (emit_draw_regs). Nothing is skipped as empty: the CPU cannot
+          * see the values, and a skipped descriptor would leave the frame's dirty mask behind. */
+         for (uint32_t k = 0; k < d->ind_n && !rc; k++) {
+            struct mali_rec e = *d;
+            if (k)
+               e.dirty = 0;
+            e.ind_va = d->ind_va + (uint64_t)k * d->ind_stride;
+            e.draw_id = k;
+            e.dirty |= carry;
+            carry = 0;
+            rc = mali_frame_add_rec(&o, &e);
          }
       }
       if (rc) {
@@ -1219,8 +1311,31 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          psrc.sample_stride = t.surface_stride;
       }
    } else if (ca->resolveMode != VK_RESOLVE_MODE_NONE) {
-      unsupported(cmd, "resolve of a single-sampled attachment");
-      return;
+      struct mali_image_view *cv = mali_image_view_from_handle(ca->imageView);
+      struct mali_image_view *rv = mali_image_view_from_handle(ca->resolveImageView);
+      if (f->samples != 1 || ca->resolveMode != VK_RESOLVE_MODE_AVERAGE_BIT ||
+          !cv || !rv || !cv->vk.image || !rv->vk.image || ri->layerCount != 1 || ri->viewMask ||
+          cv->vk.base_mip_level >= cv->vk.image->mip_levels ||
+          rv->vk.base_mip_level >= rv->vk.image->mip_levels) {
+         unsupported(cmd, "resolve of a single-sampled attachment");
+         return;
+      }
+      unsigned vb = util_format_get_blocksize(vk_format_to_pipe_format(rv->vk.view_format));
+      unsigned ib = util_format_get_blocksize(vk_format_to_pipe_format(rv->vk.image->format));
+      if (vb && ib && vb != ib) {
+         /* An incompatible view cannot safely address the underlying image. */
+      } else {
+         f->resolve_src = (uint64_t)(uintptr_t)cv->vk.image;
+         f->resolve_dst = (uint64_t)(uintptr_t)rv->vk.image;
+         f->resolve_level = cv->vk.base_mip_level;
+         f->resolve_layer = cv->vk.base_array_layer;
+         f->resolve_dst_level = rv->vk.base_mip_level;
+         f->resolve_dst_layer = rv->vk.base_array_layer;
+         f->resolve_src_format = cv->vk.view_format;
+         f->resolve_dst_format = rv->vk.view_format;
+         f->resolve_1x = true;
+         f->colour.store = true;
+      }
    }
    }
    struct mali_preload_src zsrc;
@@ -1249,7 +1364,7 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          zsrc.va[0] = t.va;
          zsrc.row[0] = t.row_stride;
          /* every sample plane, not just sample 0: the per-sample variant reads gl_SampleID * surface_stride on */
-         zsrc.bytes[0] = t.row_stride * t.height * (t.samples > 1 ? t.samples : 1);
+          zsrc.bytes[0] = t.samples > 1 ? t.surface_stride * t.samples : t.row_stride * t.height;
          zsrc.arg = t.zs_format == 3 ? 1 : t.zs_format == 2 ? 2 : 0;   /* preload_zs.frag: 0 D32F, 1 D16, 2 D24 */
          /* multisampled: the per-sample variant reads sample gl_SampleID's plane (surface_stride bytes further on) */
          zsrc.samples = t.samples > 1 ? t.samples : 0;
@@ -1259,10 +1374,7 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
       if (no_col) {
          f->width = t.width;
          f->height = t.height;
-         if (t.samples > 1) {
-            unsupported(cmd, "multisampled depth/stencil without a colour attachment");
-            return;
-         }
+          f->samples = t.samples > 1 ? t.samples : 1;
       }
       if (da->resolveMode != VK_RESOLVE_MODE_NONE || (t.samples > 1) != (f->samples == 4)) {
          unsupported(cmd, "depth resolve / depth sample count differs from the colour attachment");
@@ -1288,23 +1400,26 @@ mali_CmdBeginRendering(VkCommandBuffer h, const VkRenderingInfo *ri)
          sload = true;
          zsrc.va[1] = t.s_va;
          zsrc.row[1] = t.s_row_stride;
-         zsrc.bytes[1] = t.s_row_stride * t.height * (t.samples > 1 ? t.samples : 1);   /* all sample planes (see bytes[0]) */
+          zsrc.bytes[1] = t.samples > 1 ? t.s_surface_stride * t.samples : t.s_row_stride * t.height;
          /* multisampled (the zink/CEF shape): each sample reads its own S8 plane before the pass' draws stencil-test
           * against it. Preloaded per sample like the multisampled colour LOAD; nothing here is sample-0 only. */
          zsrc.samples = t.samples > 1 ? t.samples : 0;
-         zsrc.sample_stride = t.samples > 1 ? t.surface_stride : 0;
+          zsrc.stencil_sample_stride = t.samples > 1 ? t.s_surface_stride : 0;
       }
       f->has_st = true;
       if (no_col) {
          f->width = t.width;
          f->height = t.height;
-         if (t.samples > 1) {
-            unsupported(cmd, "multisampled depth/stencil without a colour attachment");
-            return;
-         }
+         if (!f->has_zs)
+            f->samples = t.samples > 1 ? t.samples : 1;
+      }
+      if ((t.samples > 1) != (f->samples == 4) || sa->resolveMode != VK_RESOLVE_MODE_NONE) {
+         unsupported(cmd, "stencil resolve / stencil sample count differs from other attachment");
+         return;
       }
       f->st.va = t.s_va;
       f->st.row_stride = t.s_row_stride;
+      f->st.surface_stride = t.s_surface_stride;
       f->st.clear = sa->loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR;
       f->st.clear_stencil = (uint8_t)sa->clearValue.depthStencil.stencil;
       f->st.store = sa->storeOp == VK_ATTACHMENT_STORE_OP_STORE;
@@ -1352,6 +1467,35 @@ mali_resolve_region(const struct mali_frame *f, VkImageResolve2 *r)
    r->extent = (VkExtent3D){ar[2] ? (uint32_t)ar[2] : f->width, ar[3] ? (uint32_t)ar[3] : f->height, 1};
 }
 
+bool
+mali_resolve_1x_clamp(VkImageResolve2 *r, const int32_t area[4],
+                      uint32_t sw, uint32_t sh, uint32_t dw, uint32_t dh)
+{
+   int64_t x = MAX2(area[0], 0), y = MAX2(area[1], 0);
+   int64_t ex = MIN2((int64_t)area[0] + MAX2(area[2], 0), MIN2(sw, dw));
+   int64_t ey = MIN2((int64_t)area[1] + MAX2(area[3], 0), MIN2(sh, dh));
+   if (ex <= x || ey <= y)
+      return false;
+   r->srcOffset.x = r->dstOffset.x = (int32_t)x;
+   r->srcOffset.y = r->dstOffset.y = (int32_t)y;
+   r->extent.width = (uint32_t)(ex - x);
+   r->extent.height = (uint32_t)(ey - y);
+   return true;
+}
+
+void
+mali_resolve_1x_slices(VkImageResolve2 *r, bool src3d, bool dst3d)
+{
+   if (src3d) {
+      r->srcOffset.z = r->srcSubresource.baseArrayLayer;
+      r->srcSubresource.baseArrayLayer = 0;
+   }
+   if (dst3d) {
+      r->dstOffset.z = r->dstSubresource.baseArrayLayer;
+      r->dstSubresource.baseArrayLayer = 0;
+   }
+}
+
 VKAPI_ATTR void VKAPI_CALL
 mali_CmdEndRendering(VkCommandBuffer h)
 {
@@ -1363,14 +1507,52 @@ mali_CmdEndRendering(VkCommandBuffer h)
       return;
    }
    const uint64_t resolve_src = cmd->cur.resolve_src, resolve_dst = cmd->cur.resolve_dst;
+   const bool resolve_1x = cmd->cur.resolve_1x;
+   const VkFormat src_format = cmd->cur.resolve_src_format, dst_format = cmd->cur.resolve_dst_format;
+   VkImageResolve2 rr;
+   mali_resolve_region(&cmd->cur, &rr);
+   int32_t area[4];
+   memcpy(area, cmd->cur.area, sizeof area);
    push_frame(cmd, &cmd->cur);
    memset(&cmd->cur, 0, sizeof cmd->cur);   /* the draw list now belongs to the finished frame */
    cmd->in_render = false;
-   if (resolve_src && resolve_dst) {
+   if (resolve_src && resolve_dst && resolve_1x) {
+      struct mali_image *src = (struct mali_image *)(uintptr_t)resolve_src;
+      struct mali_image *dst = (struct mali_image *)(uintptr_t)resolve_dst;
+      uint32_t sw = u_minify(src->vk.extent.width, rr.srcSubresource.mipLevel);
+      uint32_t sh = u_minify(src->vk.extent.height, rr.srcSubresource.mipLevel);
+      uint32_t dw = u_minify(dst->vk.extent.width, rr.dstSubresource.mipLevel);
+      uint32_t dh = u_minify(dst->vk.extent.height, rr.dstSubresource.mipLevel);
+      if (mali_resolve_1x_clamp(&rr, area, sw, sh, dw, dh)) {
+         mali_resolve_1x_slices(&rr, src->vk.image_type == VK_IMAGE_TYPE_3D, dst->vk.image_type == VK_IMAGE_TYPE_3D);
+         if (src_format == dst_format) {
+            VkImageCopy2 r = {.sType = VK_STRUCTURE_TYPE_IMAGE_COPY_2,
+               .srcSubresource = rr.srcSubresource, .srcOffset = rr.srcOffset,
+               .dstSubresource = rr.dstSubresource, .dstOffset = rr.dstOffset, .extent = rr.extent};
+            VkCopyImageInfo2 ci = {.sType = VK_STRUCTURE_TYPE_COPY_IMAGE_INFO_2,
+               .srcImage = (VkImage)(uintptr_t)resolve_src, .srcImageLayout = VK_IMAGE_LAYOUT_GENERAL,
+               .dstImage = (VkImage)(uintptr_t)resolve_dst, .dstImageLayout = VK_IMAGE_LAYOUT_GENERAL,
+               .regionCount = 1, .pRegions = &r};
+            mali_CmdCopyImage2(h, &ci);
+         } else {
+            VkOffset3D send = {rr.srcOffset.x + (int32_t)rr.extent.width,
+                               rr.srcOffset.y + (int32_t)rr.extent.height, rr.srcOffset.z + 1};
+            VkOffset3D dend = {rr.dstOffset.x + (int32_t)rr.extent.width,
+                               rr.dstOffset.y + (int32_t)rr.extent.height, rr.dstOffset.z + 1};
+            VkImageBlit2 r = {.sType = VK_STRUCTURE_TYPE_IMAGE_BLIT_2,
+               .srcSubresource = rr.srcSubresource, .srcOffsets = {rr.srcOffset, send},
+               .dstSubresource = rr.dstSubresource, .dstOffsets = {rr.dstOffset, dend}};
+            VkBlitImageInfo2 bi = {.sType = VK_STRUCTURE_TYPE_BLIT_IMAGE_INFO_2,
+               .srcImage = (VkImage)(uintptr_t)resolve_src, .srcImageLayout = VK_IMAGE_LAYOUT_GENERAL,
+               .dstImage = (VkImage)(uintptr_t)resolve_dst, .dstImageLayout = VK_IMAGE_LAYOUT_GENERAL,
+               .regionCount = 1, .pRegions = &r, .filter = VK_FILTER_NEAREST};
+            mali_meta_blit_views(h, &bi, src_format, dst_format);
+         }
+      }
+   } else if (resolve_src && resolve_dst) {
       /* MSAA storeOp STORE with a resolve: the samples are in memory now, resolve them in their own pass (the
        * hardware cannot write the average and the samples in one go). mali_CmdResolveImage2 plans a compute job
        * that is appended after the pass frame, which is "after the pass" on the in-order CS ring. */
-      VkImageResolve2 rr;
       mali_resolve_region(&cmd->cur, &rr);
       VkResolveImageInfo2 ri = {.sType = VK_STRUCTURE_TYPE_RESOLVE_IMAGE_INFO_2,
                                 .srcImage = (VkImage)(uintptr_t)resolve_src,
@@ -1659,10 +1841,12 @@ mali_cmd_submit(struct vk_command_buffer *vk)
    }
    for (unsigned i = 0; i < cmd->nframes; i++) {
       struct mali_frame fr = cmd->frames[i];
-      /* any_ind / poly_cpu are accumulated at record time (mali_frame_note_rec): no second pass over the frame's records */
-      bool ind = fr.any_ind, poly_cpu = fr.poly_cpu;
-      if ((ind || poly_cpu) && g_hw.drain) {
-         /* indirect args and polygon-mode index contents are read by the CPU: every earlier frame (also those of this command buffer) must have retired */
+      /* any_ind / any_ind_cpu / poly_cpu are accumulated at record time (mali_frame_note_rec): no second pass over the frame's records */
+      bool ind = fr.any_ind, ind_cpu = fr.any_ind_cpu, poly_cpu = fr.poly_cpu;
+      if ((ind_cpu || poly_cpu) && g_hw.drain) {
+         /* CPU-read indirect args and polygon-mode index contents: every earlier frame (also those of this command buffer) must have retired.
+          * A GPU-read indirect draw is NOT in this set: the command stream loads it after the producing job, so a drain here would serialize
+          * exactly the GPU-driven case this exists for. */
          if (nall) {
             kb_wmb();
             if (g_hw.submit_multi(g_hw.user, all, nall, counted)) {
@@ -1672,6 +1856,8 @@ mali_cmd_submit(struct vk_command_buffer *vk)
             nall = counted = 0;
          }
          g_hw.drain(g_hw.user);
+         if (getenv("MALI_PIPE_DBG"))
+            fprintf(stderr, "mali_vk: drained before frame %u/%u (CPU-read indirect arguments)\n", i, cmd->nframes);
       }
       if (ind && g_hw.soft) {
          /* MALI_SOFT=1: the rasteriser rejects an indirect draw on the frame record, and expansion below would

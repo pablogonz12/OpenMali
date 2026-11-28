@@ -102,7 +102,7 @@ static struct st_state g_st2;  /* second pipeline (s->pipe2) for the LOAD pass: 
 
 /* MODE_SHAREIDX stays BELOW MODE_PUSHFS: the >= MODE_PUSHFS test means "the full-screen indexed quad", and that branch must not bind
  * an index buffer of its own before the share_idx draws (the point of that case is the exact index-buffer register sequence). */
-enum { MODE_TRI, MODE_IDX16, MODE_IDX32, MODE_CLEARATT, MODE_CLEARQUAD, MODE_SCISSOR, MODE_VPORT, MODE_MVP, MODE_SHAREIDX, MODE_PUSHFS, MODE_TEX, MODE_UBO, MODE_DESCUPD, MODE_MDI, MODE_SETS8 };
+enum { MODE_TRI, MODE_IDX16, MODE_IDX32, MODE_CLEARATT, MODE_CLEARQUAD, MODE_SCISSOR, MODE_VPORT, MODE_MVP, MODE_SHAREIDX, MODE_PUSHFS, MODE_TEX, MODE_UBO, MODE_DESCUPD, MODE_MDI, MODE_SETS8, MODE_INDGPU };
 
 #define CASE_ON(n) ((!g_only || !strcmp(g_only, n)) && !case_skipped(n))
 /* MALI_SKIP_CASES="a,b": cases to leave out (farm --env route: lets one failing case be isolated without a phone shell) */
@@ -128,7 +128,7 @@ case_skipped(const char *n)
    } while (0)
 
 #define DEV_FNS(X)                                                                                 \
-   X(DestroyDevice) X(GetDeviceQueue) X(AllocateMemory) X(FreeMemory) X(MapMemory) X(UnmapMemory) X(InvalidateMappedMemoryRanges)  \
+   X(DestroyDevice) X(GetDeviceQueue) X(AllocateMemory) X(FreeMemory) X(MapMemory) X(UnmapMemory) X(InvalidateMappedMemoryRanges) X(FlushMappedMemoryRanges)  \
    X(CreateFence) X(DestroyFence) X(WaitForFences) X(ResetFences) X(QueueSubmit) X(DeviceWaitIdle)  \
    X(CreateImage) X(DestroyImage) X(GetImageMemoryRequirements) X(BindImageMemory)                  \
    X(CreateImageView) X(DestroyImageView) X(GetImageSubresourceLayout) X(CreateBuffer)             \
@@ -139,11 +139,12 @@ case_skipped(const char *n)
    X(AllocateCommandBuffers) X(FreeCommandBuffers) X(BeginCommandBuffer) X(EndCommandBuffer)        \
    X(CmdBeginRenderPass) X(CmdEndRenderPass) X(CmdBindPipeline) X(CmdSetViewport) X(CmdSetScissor)  \
    X(CmdBindVertexBuffers) X(CmdBindVertexBuffers2) X(CmdPushConstants) X(CmdDraw) X(CmdDrawIndexed) X(CmdBindIndexBuffer) X(CmdDrawIndexedIndirect)  \
+   X(CmdDrawIndirect) X(CreateComputePipelines) X(CmdDispatch) \
    X(CmdClearAttachments) X(CreateDescriptorSetLayout) X(DestroyDescriptorSetLayout)  \
    X(CreateDescriptorPool) X(DestroyDescriptorPool) X(AllocateDescriptorSets) X(UpdateDescriptorSets) X(CreateSampler) \
    X(DestroySampler) X(CmdBindDescriptorSets) X(CreateQueryPool) X(DestroyQueryPool)       \
    X(CmdSetStencilReference) X(CmdSetStencilCompareMask) X(CmdSetStencilWriteMask) X(CmdSetCullMode) X(CmdSetFrontFace) X(CmdSetDepthBias) X(CmdSetBlendConstants) X(CmdResetQueryPool) X(CmdBeginQuery) X(CmdEndQuery) X(GetQueryPoolResults) \
-   X(CmdBeginRendering) X(CmdEndRendering) X(CmdPipelineBarrier2) X(CmdSetViewportWithCount)      \
+   X(CmdBeginRendering) X(CmdEndRendering) X(CmdPipelineBarrier2) X(CmdPipelineBarrier) X(CmdSetViewportWithCount)      \
    X(CmdSetScissorWithCount) X(CmdSetLineWidth) X(CmdSetDepthBoundsTestEnable) X(CmdSetPrimitiveTopology)    \
    X(CmdSetDepthTestEnable) X(CmdSetDepthWriteEnable) X(CmdSetDepthCompareOp)                      \
    X(CmdSetStencilTestEnable) X(CmdSetStencilOp)                                                   \
@@ -219,6 +220,15 @@ struct scene {
    VkDescriptorSet dset[2];
    VkDescriptorSet dset8[8]; /* MODE_SETS8: eight sets bound in one draw */
    VkDescriptorSetLayout dsl8[8]; /* persistent set-layout array (a stack array dangled behind the pipeline layout) */
+   VkBuffer args;            /* MODE_INDGPU: the VkDrawIndirectCommand array a compute job writes (zeroed by the host) */
+   VkDeviceMemory argsmem;
+   uint8_t *argsp;           /* mapped, 64 bytes: read back after the fence to see what the GPU wrote */
+   VkShaderModule csm;       /* MODE_INDGPU: indargs.comp */
+   VkDescriptorSetLayout cdsl;
+   VkDescriptorPool cpool;
+   VkDescriptorSet cset;
+   VkPipelineLayout clayout;
+   VkPipeline cpipe;         /* MODE_INDGPU: the compute pipeline that writes the draw command */
    VkBuffer ubo[8];          /* uniform buffers (colours) */
    VkDeviceMemory ubomem;
    uint8_t *ubop;            /* mapped, 256 bytes per buffer */
@@ -638,6 +648,54 @@ scene_create(struct scene *s, int depth)
 
    VkCommandPoolCreateInfo pci = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
    CHECK(CreateCommandPool(dev, &pci, NULL, &s->pool) == VK_SUCCESS, "pool");
+
+   if (mode == MODE_INDGPU) {
+      /* One VkDrawIndirectCommand the GPU writes: {vertexCount, instanceCount, firstVertex, firstInstance}. The host
+       * zeroes it and does not touch it again, so the draw is empty unless the command stream itself reads it after the
+       * compute job has run. */
+      VkBufferCreateInfo abi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 64,
+                                .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT};
+      CHECK(CreateBuffer(dev, &abi, NULL, &s->args) == VK_SUCCESS, "args buffer");
+      GetBufferMemoryRequirements(dev, s->args, &mr);
+      VkMemoryAllocateInfo aai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size,
+                                  .memoryTypeIndex = memtype(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)};
+      CHECK(AllocateMemory(dev, &aai, NULL, &s->argsmem) == VK_SUCCESS, "args mem");
+      CHECK(MapMemory(dev, s->argsmem, 0, VK_WHOLE_SIZE, 0, (void **)&s->argsp) == VK_SUCCESS, "map args");
+      memset(s->argsp, 0, 64);
+      {   /* only HOST_VISIBLE was required: without a flush a non-coherent allocation may not have the zeros the GPU is
+           * meant to start from (the record-time zero check and the compute's read both depend on them) */
+         VkMappedMemoryRange mr0 = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = s->argsmem, .offset = 0,
+                                    .size = VK_WHOLE_SIZE};
+         FlushMappedMemoryRanges(dev, 1, &mr0);
+      }
+      CHECK(BindBufferMemory(dev, s->args, s->argsmem, 0) == VK_SUCCESS, "bind args");
+
+      s->csm = load_spv("indargs.comp.spv");
+      CHECK(s->csm, "load indargs.comp.spv");
+      VkDescriptorSetLayoutBinding csb = {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                          .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT};
+      VkDescriptorSetLayoutCreateInfo cdli = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                                              .bindingCount = 1, .pBindings = &csb};
+      CHECK(CreateDescriptorSetLayout(dev, &cdli, NULL, &s->cdsl) == VK_SUCCESS, "compute dsl");
+      VkPipelineLayoutCreateInfo cpli = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                                         .setLayoutCount = 1, .pSetLayouts = &s->cdsl};
+      CHECK(CreatePipelineLayout(dev, &cpli, NULL, &s->clayout) == VK_SUCCESS, "compute layout");
+      VkComputePipelineCreateInfo cpci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = s->clayout,
+                                          .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                    .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = s->csm, .pName = "main"}};
+      CHECK(CreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpci, NULL, &s->cpipe) == VK_SUCCESS, "compute pipeline");
+      VkDescriptorPoolSize cps = {.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .descriptorCount = 1};
+      VkDescriptorPoolCreateInfo cpci2 = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1,
+                                          .poolSizeCount = 1, .pPoolSizes = &cps};
+      CHECK(CreateDescriptorPool(dev, &cpci2, NULL, &s->cpool) == VK_SUCCESS, "compute pool");
+      VkDescriptorSetAllocateInfo cdai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = s->cpool,
+                                          .descriptorSetCount = 1, .pSetLayouts = &s->cdsl};
+      CHECK(AllocateDescriptorSets(dev, &cdai, &s->cset) == VK_SUCCESS, "compute set");
+      VkDescriptorBufferInfo cbi = {.buffer = s->args, .offset = 0, .range = 64};
+      VkWriteDescriptorSet cw = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = s->cset, .dstBinding = 0,
+                                 .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &cbi};
+      UpdateDescriptorSets(dev, 1, &cw, 0, NULL);
+   }
    return 1;
 }
 
@@ -646,6 +704,13 @@ scene_destroy(struct scene *s)
 {
    DeviceWaitIdle(dev);
    if (s->pool) DestroyCommandPool(dev, s->pool, NULL);
+   if (s->cpipe) DestroyPipeline(dev, s->cpipe, NULL);
+   if (s->clayout) DestroyPipelineLayout(dev, s->clayout, NULL);
+   if (s->cpool) DestroyDescriptorPool(dev, s->cpool, NULL);
+   if (s->cdsl) DestroyDescriptorSetLayout(dev, s->cdsl, NULL);
+   if (s->csm) DestroyShaderModule(dev, s->csm, NULL);
+   if (s->args) DestroyBuffer(dev, s->args, NULL);
+   if (s->argsmem) FreeMemory(dev, s->argsmem, NULL);
    if (s->pipe) DestroyPipeline(dev, s->pipe, NULL);
    if (s->pipe2) DestroyPipeline(dev, s->pipe2, NULL);
    if (s->fb) DestroyFramebuffer(dev, s->fb, NULL);
@@ -710,6 +775,22 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
                                .framebuffer = s->fb, .renderArea = {{0, 0}, {W, H}},
                                .clearValueCount = g_nocol ? 1 : g_msds ? 3 : s->depth ? 2 : 1,
                                .pClearValues = cv};
+   if (s->mode == MODE_INDGPU) {
+      /* The producer runs BEFORE the render pass: a compute job writes the VkDrawIndirectCommand into s->args, and the
+       * draw inside the pass must read it. The barrier is the app's own (Vulkan requires the app to synchronise the
+       * write against DRAW_INDIRECT; the driver must then not re-read the CPU mapping), and it is also what the
+       * driver's own ordering must survive: no drain, no host wait. */
+      CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, s->cpipe);
+      CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, s->clayout, 0, 1, &s->cset, 0, NULL);
+      CmdDispatch(cb, 1, 1, 1);
+      VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                             .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                             .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,
+                             .dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_HOST_BIT,
+                             .dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_HOST_READ_BIT};
+      VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+      CmdPipelineBarrier2(cb, &di);
+   }
    CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
    CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->second && g_st2.on && s->pipe2 ? s->pipe2 : s->pipe);
    VkViewport vp = {0, 0, W, H, 0.0f, 1.0f};
@@ -836,6 +917,8 @@ scene_draw(struct scene *s, int n, const float (*rot)[4], VkFence fence)
          CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s->layout, 0, 1, &s->dset[i & 1], 0, NULL);
       if (s->mode == MODE_MDI)
          CmdDrawIndexedIndirect(cb, s->ib, 64, 2, 20);   /* multiDrawIndirect: drawCount 2 */
+      else if (s->mode == MODE_INDGPU)
+         CmdDrawIndirect(cb, s->args, 0, 1, 16);   /* the command the compute job above wrote */
       else if (s->mode >= MODE_PUSHFS)
          CmdDrawIndexed(cb, 6, 1, 0, 7, g_share == 3 ? g_share_fi[i] : 0);
       else if (s->mode == MODE_IDX16 || s->mode == MODE_IDX32 || s->mode == MODE_SCISSOR || s->mode == MODE_VPORT || s->mode == MODE_MVP)
@@ -1433,6 +1516,48 @@ test_blitreplay(void)
 
 static const float ID[4] = {1, 0, 0, 0};
 
+/* GPU-read indirect draw (rung 2/3): the VkDrawIndirectCommand exists only on the GPU. The host zeroes the buffer at
+ * record time, a compute job writes {vertexCount 3, instanceCount 1, firstVertex 0, firstInstance 0}, the app's barrier
+ * orders the write against DRAW_INDIRECT, and the draw (non-indexed, the same triangle as "triangle") must paint 8192
+ * pixels. A driver that expands the command on the CPU at submit sees vertexCount 0 and draws nothing, which is exactly
+ * what main did and why DXVK/GPU-driven frames could not use indirect draws.
+ *
+ * Three runs make the point on hardware (MALI_PIPE_DBG=1 names each one):
+ *   (default)           arguments read on the GPU (command stream), no drain  -> coverage 8192
+ *   MALI_IND_CPU=1      arguments read on the CPU, NO drain (the failing control) -> coverage 0: the compute job's write
+ *                       is invisible because the mapping is read at submit, before the producer frame is even submitted
+ *   MALI_IND_CPU=drain  arguments read on the CPU after a drain (the pre-rung-2 shape, correct but serialized) -> 8192
+ * So the default cannot be passing through the same path as the control: without the drain the CPU read has nothing. */
+static int
+test_indirect_gpu(void)
+{
+   struct scene s = {.mode = MODE_INDGPU};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   if (!scene_create(&s, 0)) return 0;
+   float rot[1][4] = {{ID[0], ID[1], ID[2], ID[3]}};
+   CHECK(!memcmp(s.argsp, "\0\0\0\0\0\0\0\0", 8), "the command buffer must still be zero at record time");
+   g_hostread = 1;   /* the coverage check below reads the colour image through its mapping: it needs the dependency */
+   if (!scene_draw(&s, 1, rot, f)) return 0;
+   /* the producer ran: the GPU wrote the command (texture and buffer writes reach a coherent mapping after the fence) */
+   uint32_t cmd[4];
+   {   /* both allocations are read here (the command buffer and, in report(), the colour image): invalidate both, since
+        * HOST_VISIBLE memory need not be coherent */
+      VkMappedMemoryRange mr[2] = {{.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = s.argsmem, .offset = 0, .size = VK_WHOLE_SIZE},
+                                    {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = s.colmem, .offset = 0, .size = VK_WHOLE_SIZE}};
+      InvalidateMappedMemoryRanges(dev, 2, mr);
+   }
+   memcpy(cmd, s.argsp, sizeof cmd);
+   if (!g_fake)
+      CHECK(cmd[0] == 3 && cmd[1] == 1 && cmd[2] == 0 && cmd[3] == 0,
+            "compute job wrote {vertexCount %u, instanceCount %u, firstVertex %u, firstInstance %u}", cmd[0], cmd[1], cmd[2], cmd[3]);
+   int ok = report("indirect_gpu", &s, 8192.0, 1.0, 0);
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return ok;
+}
+
 static int
 test_triangle(void)
 {
@@ -1467,18 +1592,25 @@ test_triangle(void)
 
 /* The counter file is per process: a fixed /tmp name was shared by every test run on the machine (other worktrees, parallel check.sh) and
  * made share_inst / share_dirty fail at random with wrapped or foreign byte totals. */
-static char g_alloc_stats[64];
+static char g_alloc_stats[256];   /* an externally set MALI_ALLOC_STATS may be an absolute path */
+static int g_alloc_stats_own;   /* we made the name: remove it at exit. An externally set MALI_ALLOC_STATS is the caller's */
 static void
 alloc_stats_rm(void)
 {
-   if (g_alloc_stats[0]) unlink(g_alloc_stats);
+   if (g_alloc_stats[0] && g_alloc_stats_own) unlink(g_alloc_stats);
 }
 static void
 alloc_stats_start(void)   /* fresh counter file; the library writes the running total of hw_alloc bytes to $MALI_ALLOC_STATS at every submit */
 {
    if (!g_alloc_stats[0]) {
-      snprintf(g_alloc_stats, sizeof g_alloc_stats, "/tmp/mali_alloc_stats.%d.txt", (int)getpid());
-      atexit(alloc_stats_rm);
+      const char *e = getenv("MALI_ALLOC_STATS");   /* build-t_arena.sh compares two processes through the same file name */
+      if (e && e[0]) {
+         snprintf(g_alloc_stats, sizeof g_alloc_stats, "%s", e);
+      } else {
+         snprintf(g_alloc_stats, sizeof g_alloc_stats, "/tmp/mali_alloc_stats.%d.txt", (int)getpid());
+         g_alloc_stats_own = 1;
+         atexit(alloc_stats_rm);
+      }
    }
    unlink(g_alloc_stats);
    setenv("MALI_ALLOC_STATS", g_alloc_stats, 1);
@@ -2360,6 +2492,73 @@ test_mode(const char *name, int mode, double expect, double tol)
 }
 
 
+/* The in-flight frame list (mali_queue.c: struct mali_hwctx.fl[MALI_MAX_INFLIGHT] = 3, appended at hw_submit_multi)
+ * is bounded by hw_job_begin's retire(max-1), which assumes ONE submission per command buffer. mali_cmd_submit does
+ * not hold that: it submits the frames accumulated so far whenever an indirect draw arrives (the args are read on the
+ * CPU, mali_cmd.c:1613-1627) and then the tail, so a command buffer with five frames whose second, third, fourth and
+ * fifth draws are indirect appends five entries. On main the append h->fl[h->nfl] ran past fl[3] into nfl/cur_start
+ * (mali_queue.c:414): ASan reports the heap-buffer-overflow, without it nfl becomes the retire-counter value and the
+ * next retire memmoves a wild length. Nothing may be dropped either: an entry is the arena range a submission still
+ * reads, so the fix retires (or grows), it never skips the append. */
+static int
+test_fl_bound(void)
+{
+   struct scene s = {.mode = MODE_MDI};
+   VkFence f;
+   VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+   CHECK(CreateFence(dev, &fi, NULL, &f) == VK_SUCCESS, "fence");
+   if (!scene_create(&s, 0)) return 0;
+   s.mode = MODE_MDI;
+   VkCommandBuffer cb;
+   VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = s.pool,
+                                     .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+   CHECK(AllocateCommandBuffers(dev, &ai, &cb) == VK_SUCCESS, "alloc cb");
+   CHECK(BeginCommandBuffer(cb, &(VkCommandBufferBeginInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+           .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT}) == VK_SUCCESS, "begin");
+   for (int k = 0; k < 5; k++) {   /* five render passes = five frames = (four flushes + tail) submissions */
+      if (k) {
+         /* every pass writes the same colour attachment and the pass's own incoming dependency is TOP_OF_PIPE, which does
+          * not order a write-after-write: make the previous pass's writes available/visible to this one */
+         VkImageMemoryBarrier waw = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                     .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                                     .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                                     .oldLayout = s.rp == VK_NULL_HANDLE ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                     .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                     .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                     .image = s.col, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+         CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                            0, 0, NULL, 0, NULL, 1, &waw);
+      }
+      VkClearValue cv[2] = {{.color = {{0, 0, 0, 0}}}, {.depthStencil = {1.0f, 0}}};
+      VkRenderPassBeginInfo rb = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = s.rp, .framebuffer = s.fb,
+                                  .renderArea = {{0, 0}, {W, H}}, .clearValueCount = s.depth ? 2 : 1, .pClearValues = cv};
+      CmdBeginRenderPass(cb, &rb, VK_SUBPASS_CONTENTS_INLINE);
+      CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, s.pipe);
+      CmdSetViewport(cb, 0, 1, &(VkViewport){0, 0, W, H, 0.0f, 1.0f});
+      CmdSetScissor(cb, 0, 1, &(VkRect2D){{0, 0}, {W, H}});
+      VkBuffer vbs[2] = {s.vb[0], s.vb[1]};
+      VkDeviceSize offs[2] = {0, 0};
+      CmdBindVertexBuffers(cb, 0, 2, vbs, offs);
+      CmdBindIndexBuffer(cb, s.ib, 16, VK_INDEX_TYPE_UINT32);
+      CmdDrawIndexedIndirect(cb, s.ib, 64, 2, 20);   /* every frame is the drain point, so all four flushes happen */
+      CmdEndRenderPass(cb);
+   }
+   CHECK(EndCommandBuffer(cb) == VK_SUCCESS, "end");
+   VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb};
+   VkResult r = QueueSubmit(queue, 1, &si, f);
+   CHECK(r == VK_SUCCESS, "submit = %d", r);
+   CHECK(WaitForFences(dev, 1, &f, VK_TRUE, 20000000000ull) == VK_SUCCESS, "wait");
+   ResetFences(dev, 1, &f);
+   if (!g_fake)
+      printf("{\"test\":\"fl_bound\",\"frames\":5,\"submissions\":5,\"ok\":true}\n");
+   else
+      printf("{\"test\":\"fl_bound\",\"submissions\":5,\"skipped\":\"buffer contents: fake backend\",\"ok\":true}\n");
+   FreeCommandBuffers(dev, s.pool, 1, &cb);
+   scene_destroy(&s);
+   DestroyFence(dev, f, NULL);
+   return 1;
+}
+
 /* fillModeNonSolid: polygonMode LINE / POINT. Filled coverage of the quad modes is 16384 (idx) / 8192 (triangle); LINE must leave the
  * interior empty and cover only the edges (lo..hi pixels, triangle perimeter ~ 440 + diagonal for the quad), POINT only the vertices. */
 static int
@@ -3180,7 +3379,8 @@ main(int argc, char **argv)
    VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueCount = 1, .pQueuePriorities = &prio};
    VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qi};
    GPF(pd, &g_feat);
-   VkPhysicalDeviceFeatures en = {.depthClamp = g_feat.depthClamp, .independentBlend = g_feat.independentBlend, .fillModeNonSolid = g_feat.fillModeNonSolid, .depthBiasClamp = g_feat.depthBiasClamp, .multiViewport = g_feat.multiViewport, .dualSrcBlend = g_feat.dualSrcBlend, .logicOp = g_feat.logicOp, .sampleRateShading = g_feat.sampleRateShading};
+   VkPhysicalDeviceFeatures en = {.depthClamp = g_feat.depthClamp, .independentBlend = g_feat.independentBlend, .fillModeNonSolid = g_feat.fillModeNonSolid, .depthBiasClamp = g_feat.depthBiasClamp, .multiViewport = g_feat.multiViewport, .dualSrcBlend = g_feat.dualSrcBlend, .logicOp = g_feat.logicOp, .sampleRateShading = g_feat.sampleRateShading,
+                                   .multiDrawIndirect = g_feat.multiDrawIndirect};   /* the frame-bound case records drawCount 2 */
    di.pEnabledFeatures = &en;
    /* VK_EXT_depth_clip_enable: enabled when advertised (feature struct chained without a Features2) */
    VkPhysicalDeviceDepthClipEnableFeaturesEXT dce_f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT};
@@ -3250,6 +3450,7 @@ main(int argc, char **argv)
 
    int ok = 1;
    if (CASE_ON("triangle") || CASE_ON("rot")) ok &= test_triangle();
+   if (ok && g_only && CASE_ON("indirect_gpu")) ok &= test_indirect_gpu();
    if (ok && g_only && CASE_ON("blitreplay")) ok &= test_blitreplay();   /* --only only: it allocates two 800x600 images */
    if (ok && g_only && CASE_ON("blitwin")) { setenv("BLITREPLAY", "6", 1); ok &= test_blitreplay(); unsetenv("BLITREPLAY"); }   /* the twin control: our own shaders */
    if (ok && CASE_ON("sparse_loc")) { g_sparse = 1; ok &= test_triangle(); g_sparse = 0; }   /* same triangle as "triangle" through attribute locations 0 and 2 */
@@ -3317,6 +3518,7 @@ main(int argc, char **argv)
    if (ok && CASE_ON("idx16")) ok &= test_mode("idx16", MODE_IDX16, 16384.0, 0.5);
    if (ok && CASE_ON("idx32")) ok &= test_mode("idx32", MODE_IDX32, 16384.0, 0.5);
    if (ok && CASE_ON("mdi")) ok &= test_mode("mdi", MODE_MDI, 16384.0, 0.5);
+   if (ok && g_only && CASE_ON("fl_bound")) ok &= test_fl_bound();
    if (ok && CASE_ON("scissor")) ok &= test_mode("scissor", MODE_SCISSOR, 8192.0, 0.5);
    if (ok && CASE_ON("viewport")) ok &= test_mode("viewport", MODE_VPORT, 8192.0, 0.5);
    if (ok && CASE_ON("multivp")) {
